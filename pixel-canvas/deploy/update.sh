@@ -3,7 +3,7 @@
 # 用法: bash deploy/update.sh
 
 set -e
-APP_DIR="/opt/pixel-canvas"
+APP_DIR="/opt/pixel-canvas/pixel-canvas"
 
 echo "=== 更新部署 ==="
 cd $APP_DIR

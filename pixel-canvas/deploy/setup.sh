@@ -9,7 +9,7 @@ DOMAIN="pixia.cc"
 ADMIN_PASSWORD="123456"
 DB_PASSWORD="pixelcanvas_$(openssl rand -hex 8)"
 JWT_SECRET="$(openssl rand -hex 32)"
-APP_DIR="/opt/pixel-canvas"
+APP_DIR="/opt/pixel-canvas/pixel-canvas"
 
 echo "============================================"
 echo "  Pixel Canvas 一键部署"
@@ -61,10 +61,11 @@ echo "Redis 已启动"
 # 5. 克隆代码
 echo ""
 echo "[5/8] 克隆代码..."
+CLONE_DIR="/opt/pixel-canvas"
 if [ -d "$APP_DIR" ]; then
   cd $APP_DIR && git pull origin main
 else
-  git clone https://github.com/JellyZYD/pixel-canvas.git $APP_DIR
+  git clone https://github.com/JellyZYD/pixel-canvas.git $CLONE_DIR
   cd $APP_DIR
 fi
 
@@ -106,7 +107,7 @@ module.exports = {
       name: 'pixel-canvas',
       script: 'node_modules/.bin/next',
       args: 'start',
-      cwd: '/opt/pixel-canvas',
+      cwd: '/opt/pixel-canvas/pixel-canvas',
       env: { NODE_ENV: 'production', PORT: 3000 },
       max_memory_restart: '300M',
     },
@@ -114,7 +115,7 @@ module.exports = {
       name: 'pixel-socket',
       script: 'node_modules/.bin/ts-node',
       args: '--project tsconfig.server.json server/socket.ts',
-      cwd: '/opt/pixel-canvas',
+      cwd: '/opt/pixel-canvas/pixel-canvas',
       env: { NODE_ENV: 'production' },
       max_memory_restart: '100M',
     },
