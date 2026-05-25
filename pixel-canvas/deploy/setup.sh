@@ -9,6 +9,9 @@ DOMAIN="pixia.cc"
 ADMIN_PASSWORD="123456"
 DB_PASSWORD="pixelcanvas_$(openssl rand -hex 8)"
 JWT_SECRET="$(openssl rand -hex 32)"
+
+# Git 仓库克隆后的实际项目目录
+CLONE_DIR="/opt/pixel-canvas"
 APP_DIR="/opt/pixel-canvas/pixel-canvas"
 
 echo "============================================"
@@ -61,7 +64,6 @@ echo "Redis 已启动"
 # 5. 克隆代码
 echo ""
 echo "[5/8] 克隆代码..."
-CLONE_DIR="/opt/pixel-canvas"
 if [ -d "$APP_DIR" ]; then
   cd $APP_DIR && git pull origin main
 else
@@ -88,6 +90,7 @@ echo ""
 echo "[7/8] 安装依赖并构建..."
 cd $APP_DIR
 npm install
+npm install ts-node
 npx prisma generate
 npx prisma db push --accept-data-loss
 npm run build
@@ -128,41 +131,41 @@ pm2 start ecosystem.config.js
 pm2 save
 pm2 startup
 
-# Nginx SSL 配置（假设证书已上传）
+# Nginx SSL 配置
 mkdir -p /etc/nginx/ssl
 
-cat > /etc/nginx/sites-available/pixel-canvas << NGEOF
+cat > /etc/nginx/sites-available/pixel-canvas << 'NGEOF'
 server {
     listen 80;
-    server_name ${DOMAIN} www.${DOMAIN};
-    return 301 https://\$host\$request_uri;
+    server_name pixia.cc www.pixia.cc;
+    return 301 https://$host$request_uri;
 }
 
 server {
     listen 443 ssl;
-    server_name ${DOMAIN} www.${DOMAIN};
+    server_name pixia.cc www.pixia.cc;
 
-    ssl_certificate /etc/nginx/ssl/${DOMAIN}.pem;
-    ssl_certificate_key /etc/nginx/ssl/${DOMAIN}.key;
+    ssl_certificate /etc/nginx/ssl/www.pixia.cc.pem;
+    ssl_certificate_key /etc/nginx/ssl/www.pixia.cc.key;
 
     location / {
         proxy_pass http://127.0.0.1:3000;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 
     location /socket.io/ {
         proxy_pass http://127.0.0.1:3001;
         proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
+        proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
     }
 }
 NGEOF
@@ -185,13 +188,8 @@ echo "  JWT密钥: ${JWT_SECRET}"
 echo "  (以上密码请妥善保管)"
 echo ""
 echo "  SSL 证书需要放到以下位置:"
-echo "    /etc/nginx/ssl/${DOMAIN}.pem"
-echo "    /etc/nginx/ssl/${DOMAIN}.key"
-echo ""
-echo "  上传证书命令（在本地执行）:"
-echo "    scp ${DOMAIN}.pem root@服务器IP:/etc/nginx/ssl/"
-echo "    scp ${DOMAIN}.key root@服务器IP:/etc/nginx/ssl/"
-echo "    然后在服务器执行: nginx -t && systemctl reload nginx"
+echo "    /etc/nginx/ssl/www.${DOMAIN}.pem"
+echo "    /etc/nginx/ssl/www.${DOMAIN}.key"
 echo ""
 echo "  常用命令:"
 echo "    pm2 status          # 查看服务状态"

@@ -8,15 +8,13 @@ APP_DIR="/opt/pixel-canvas/pixel-canvas"
 echo "=== 更新部署 ==="
 cd $APP_DIR
 
-# 拉取最新代码（如果用 git）
-# git pull origin main
-
-# 或者从本地同步
-rsync -av --exclude='node_modules' --exclude='.next' --exclude='.git' \
-  ./ $APP_DIR/
-
+# 拉取最新代码
+cd /opt/pixel-canvas
+git pull origin main
 cd $APP_DIR
+
 npm install --production=false
+npm install ts-node
 npx prisma generate
 npx prisma db push --accept-data-loss
 npm run build
