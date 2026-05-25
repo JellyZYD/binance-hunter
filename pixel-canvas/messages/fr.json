@@ -1,0 +1,80 @@
+{
+  "common": {
+    "title": "Canvas Pixel",
+    "subtitle": "Créons ensemble, un pixel à la fois",
+    "loading": "Chargement...",
+    "error": "Une erreur est survenue",
+    "save": "Enregistrer",
+    "cancel": "Annuler",
+    "confirm": "Confirmer",
+    "close": "Fermer"
+  },
+  "canvas": {
+    "zoomIn": "Zoom avant",
+    "zoomOut": "Zoom arrière",
+    "resetView": "Réinitialiser la vue",
+    "placePixel": "Placer un pixel",
+    "pixelPlaced": "Pixel placé !",
+    "noPoints": "Pas assez de points, veuillez patienter",
+    "selectColor": "Sélectionner une couleur",
+    "customColor": "Couleur personnalisée"
+  },
+  "points": {
+    "title": "Mes Points",
+    "current": "Points : {count}",
+    "nextPoint": "Prochain point : {time}",
+    "maxReached": "Maximum atteint",
+    "cooldown": "Refroidissement"
+  },
+  "chat": {
+    "title": "Chat",
+    "onlineUsers": "En ligne : {count}",
+    "placeholder": "Tapez un message...",
+    "send": "Envoyer",
+    "cooldown": "Attendez {seconds}s avant de renvoyer",
+    "maxLength": "Max {count} caractères",
+    "noMessages": "Pas encore de messages"
+  },
+  "user": {
+    "guest": "Invité",
+    "login": "Connexion",
+    "logout": "Déconnexion",
+    "loginWith": "Se connecter avec GitHub",
+    "stats": "Mes Statistiques",
+    "totalPixels": "Total pixels : {count}",
+    "joinedAt": "Inscrit le : {date}"
+  },
+  "pixelInfo": {
+    "author": "Auteur : {name}",
+    "placedAt": "Placé le : {time}",
+    "coordinates": "Coordonnées : ({x}, {y})"
+  },
+  "admin": {
+    "title": "Panneau d'administration",
+    "password": "Mot de passe admin",
+    "login": "Connexion",
+    "reset": "Réinitialiser le canvas",
+    "resetConfirm": "Réinitialiser le canvas ? Cette action est irréversible.",
+    "rollback": "Annuler",
+    "rollbackCount": "Nombre d'annulations",
+    "onlineUsers": "Utilisateurs en ligne",
+    "totalPixels": "Total pixels",
+    "adCode": "Code publicitaire",
+    "saveAdCode": "Enregistrer le code"
+  },
+  "language": {
+    "label": "Langue",
+    "zh-CN": "中文简体",
+    "zh-TW": "中文繁體",
+    "en": "English",
+    "ja": "日本語",
+    "ko": "한국어",
+    "fr": "Français",
+    "de": "Deutsch",
+    "es": "Español",
+    "pt": "Português",
+    "ru": "Русский",
+    "ar": "العربية",
+    "hi": "हिन्दी"
+  }
+}

@@ -1,0 +1,80 @@
+{
+  "common": {
+    "title": "픽셀 캔버스",
+    "subtitle": "함께 그리기, 한 픽셀씩",
+    "loading": "로딩 중...",
+    "error": "오류가 발생했습니다",
+    "save": "저장",
+    "cancel": "취소",
+    "confirm": "확인",
+    "close": "닫기"
+  },
+  "canvas": {
+    "zoomIn": "확대",
+    "zoomOut": "축소",
+    "resetView": "뷰 초기화",
+    "placePixel": "픽셀 배치",
+    "pixelPlaced": "픽셀을 배치했습니다!",
+    "noPoints": "포인트가 부족합니다",
+    "selectColor": "색상 선택",
+    "customColor": "사용자 정의 색상"
+  },
+  "points": {
+    "title": "내 포인트",
+    "current": "포인트: {count}",
+    "nextPoint": "다음 포인트: {time}",
+    "maxReached": "한도 도달",
+    "cooldown": "쿨다운 중"
+  },
+  "chat": {
+    "title": "채팅",
+    "onlineUsers": "온라인: {count}명",
+    "placeholder": "메시지를 입력하세요...",
+    "send": "보내기",
+    "cooldown": "{seconds}초 후에 다시 보내세요",
+    "maxLength": "최대 {count}자",
+    "noMessages": "아직 메시지가 없습니다"
+  },
+  "user": {
+    "guest": "게스트",
+    "login": "로그인",
+    "logout": "로그아웃",
+    "loginWith": "GitHub으로 로그인",
+    "stats": "내 통계",
+    "totalPixels": "총 픽셀: {count}",
+    "joinedAt": "가입일: {date}"
+  },
+  "pixelInfo": {
+    "author": "작성자: {name}",
+    "placedAt": "배치 시간: {time}",
+    "coordinates": "좌표: ({x}, {y})"
+  },
+  "admin": {
+    "title": "관리 패널",
+    "password": "관리 비밀번호",
+    "login": "로그인",
+    "reset": "캔버스 초기화",
+    "resetConfirm": "캔버스를 초기화하시겠습니까? 이 작업은 되돌릴 수 없습니다.",
+    "rollback": "롤백",
+    "rollbackCount": "롤백 수",
+    "onlineUsers": "온라인 사용자",
+    "totalPixels": "총 픽셀",
+    "adCode": "광고 코드",
+    "saveAdCode": "광고 코드 저장"
+  },
+  "language": {
+    "label": "언어",
+    "zh-CN": "中文简体",
+    "zh-TW": "中文繁體",
+    "en": "English",
+    "ja": "日本語",
+    "ko": "한국어",
+    "fr": "Français",
+    "de": "Deutsch",
+    "es": "Español",
+    "pt": "Português",
+    "ru": "Русский",
+    "ar": "العربية",
+    "hi": "हिन्दी"
+  }
+}

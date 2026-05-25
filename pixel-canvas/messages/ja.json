@@ -1,0 +1,80 @@
+{
+  "common": {
+    "title": "ピクセルキャンバス",
+    "subtitle": "みんなで一つのピクセルを描こう",
+    "loading": "読み込み中...",
+    "error": "エラーが発生しました",
+    "save": "保存",
+    "cancel": "キャンセル",
+    "confirm": "確認",
+    "close": "閉じる"
+  },
+  "canvas": {
+    "zoomIn": "拡大",
+    "zoomOut": "縮小",
+    "resetView": "ビューをリセット",
+    "placePixel": "ピクセルを配置",
+    "pixelPlaced": "ピクセルを配置しました！",
+    "noPoints": "ポイントが不足しています",
+    "selectColor": "色を選択",
+    "customColor": "カスタムカラー"
+  },
+  "points": {
+    "title": "マイポイント",
+    "current": "ポイント：{count}",
+    "nextPoint": "次のポイント：{time}",
+    "maxReached": "上限に達しました",
+    "cooldown": "クールダウン中"
+  },
+  "chat": {
+    "title": "チャット",
+    "onlineUsers": "オンライン：{count}人",
+    "placeholder": "メッセージを入力...",
+    "send": "送信",
+    "cooldown": "{seconds}秒お待ちください",
+    "maxLength": "最大{count}文字",
+    "noMessages": "メッセージはまだありません"
+  },
+  "user": {
+    "guest": "ゲスト",
+    "login": "ログイン",
+    "logout": "ログアウト",
+    "loginWith": "GitHubでログイン",
+    "stats": "マイ統計",
+    "totalPixels": "合計ピクセル：{count}",
+    "joinedAt": "参加日：{date}"
+  },
+  "pixelInfo": {
+    "author": "作者：{name}",
+    "placedAt": "配置日時：{time}",
+    "coordinates": "座標：({x}, {y})"
+  },
+  "admin": {
+    "title": "管理パネル",
+    "password": "管理パスワード",
+    "login": "ログイン",
+    "reset": "キャンバスをリセット",
+    "resetConfirm": "キャンバスをリセットしますか？この操作は元に戻せません。",
+    "rollback": "ロールバック",
+    "rollbackCount": "ロールバック数",
+    "onlineUsers": "オンラインユーザー",
+    "totalPixels": "合計ピクセル",
+    "adCode": "広告コード",
+    "saveAdCode": "広告コードを保存"
+  },
+  "language": {
+    "label": "言語",
+    "zh-CN": "中文简体",
+    "zh-TW": "中文繁體",
+    "en": "English",
+    "ja": "日本語",
+    "ko": "한국어",
+    "fr": "Français",
+    "de": "Deutsch",
+    "es": "Español",
+    "pt": "Português",
+    "ru": "Русский",
+    "ar": "العربية",
+    "hi": "हिन्दी"
+  }
+}

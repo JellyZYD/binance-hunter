@@ -1,0 +1,80 @@
+{
+  "common": {
+    "title": "Pixel-Canvas",
+    "subtitle": "Gemeinsam erschaffen, Pixel für Pixel",
+    "loading": "Laden...",
+    "error": "Ein Fehler ist aufgetreten",
+    "save": "Speichern",
+    "cancel": "Abbrechen",
+    "confirm": "Bestätigen",
+    "close": "Schließen"
+  },
+  "canvas": {
+    "zoomIn": "Vergrößern",
+    "zoomOut": "Verkleinern",
+    "resetView": "Ansicht zurücksetzen",
+    "placePixel": "Pixel platzieren",
+    "pixelPlaced": "Pixel platziert!",
+    "noPoints": "Nicht genug Punkte, bitte warten",
+    "selectColor": "Farbe wählen",
+    "customColor": "Benutzerdefinierte Farbe"
+  },
+  "points": {
+    "title": "Meine Punkte",
+    "current": "Punkte: {count}",
+    "nextPoint": "Nächster Punkt: {time}",
+    "maxReached": "Maximum erreicht",
+    "cooldown": "Abkühlung"
+  },
+  "chat": {
+    "title": "Chat",
+    "onlineUsers": "Online: {count}",
+    "placeholder": "Nachricht eingeben...",
+    "send": "Senden",
+    "cooldown": "Warten Sie {seconds}s vor dem nächsten Senden",
+    "maxLength": "Max {count} Zeichen",
+    "noMessages": "Noch keine Nachrichten"
+  },
+  "user": {
+    "guest": "Gast",
+    "login": "Anmelden",
+    "logout": "Abmelden",
+    "loginWith": "Mit GitHub anmelden",
+    "stats": "Meine Statistiken",
+    "totalPixels": "Gesamtpixel: {count}",
+    "joinedAt": "Beigetreten: {date}"
+  },
+  "pixelInfo": {
+    "author": "Autor: {name}",
+    "placedAt": "Platziert am: {time}",
+    "coordinates": "Koordinaten: ({x}, {y})"
+  },
+  "admin": {
+    "title": "Admin-Panel",
+    "password": "Admin-Passwort",
+    "login": "Anmelden",
+    "reset": "Canvas zurücksetzen",
+    "resetConfirm": "Canvas zurücksetzen? Diese Aktion kann nicht rückgängig gemacht werden.",
+    "rollback": "Rückgängig",
+    "rollbackCount": "Anzahl",
+    "onlineUsers": "Online-Nutzer",
+    "totalPixels": "Gesamtpixel",
+    "adCode": "Werbe-Code",
+    "saveAdCode": "Werbe-Code speichern"
+  },
+  "language": {
+    "label": "Sprache",
+    "zh-CN": "中文简体",
+    "zh-TW": "中文繁體",
+    "en": "English",
+    "ja": "日本語",
+    "ko": "한국어",
+    "fr": "Français",
+    "de": "Deutsch",
+    "es": "Español",
+    "pt": "Português",
+    "ru": "Русский",
+    "ar": "العربية",
+    "hi": "हिन्दी"
+  }
+}

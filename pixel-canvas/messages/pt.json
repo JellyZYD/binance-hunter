@@ -1,0 +1,80 @@
+{
+  "common": {
+    "title": "Canvas de Pixels",
+    "subtitle": "Criando juntos, um pixel por vez",
+    "loading": "Carregando...",
+    "error": "Algo deu errado",
+    "save": "Salvar",
+    "cancel": "Cancelar",
+    "confirm": "Confirmar",
+    "close": "Fechar"
+  },
+  "canvas": {
+    "zoomIn": "Aumentar zoom",
+    "zoomOut": "Diminuir zoom",
+    "resetView": "Redefinir visualização",
+    "placePixel": "Colocar pixel",
+    "pixelPlaced": "Pixel colocado!",
+    "noPoints": "Pontos insuficientes, aguarde",
+    "selectColor": "Selecionar cor",
+    "customColor": "Cor personalizada"
+  },
+  "points": {
+    "title": "Meus Pontos",
+    "current": "Pontos: {count}",
+    "nextPoint": "Próximo ponto: {time}",
+    "maxReached": "Máximo atingido",
+    "cooldown": "Esperando"
+  },
+  "chat": {
+    "title": "Chat",
+    "onlineUsers": "Online: {count}",
+    "placeholder": "Digite uma mensagem...",
+    "send": "Enviar",
+    "cooldown": "Espere {seconds}s antes de enviar novamente",
+    "maxLength": "Máximo {count} caracteres",
+    "noMessages": "Nenhuma mensagem ainda"
+  },
+  "user": {
+    "guest": "Convidado",
+    "login": "Entrar",
+    "logout": "Sair",
+    "loginWith": "Entrar com GitHub",
+    "stats": "Minhas Estatísticas",
+    "totalPixels": "Total de pixels: {count}",
+    "joinedAt": "Entrou em: {date}"
+  },
+  "pixelInfo": {
+    "author": "Autor: {name}",
+    "placedAt": "Colocado em: {time}",
+    "coordinates": "Coordenadas: ({x}, {y})"
+  },
+  "admin": {
+    "title": "Painel de Administração",
+    "password": "Senha de administrador",
+    "login": "Entrar",
+    "reset": "Redefinir canvas",
+    "resetConfirm": "Redefinir canvas? Esta ação não pode ser desfeita.",
+    "rollback": "Desfazer",
+    "rollbackCount": "Quantidade",
+    "onlineUsers": "Usuários online",
+    "totalPixels": "Total de pixels",
+    "adCode": "Código de anúncios",
+    "saveAdCode": "Salvar código"
+  },
+  "language": {
+    "label": "Idioma",
+    "zh-CN": "中文简体",
+    "zh-TW": "中文繁體",
+    "en": "English",
+    "ja": "日本語",
+    "ko": "한국어",
+    "fr": "Français",
+    "de": "Deutsch",
+    "es": "Español",
+    "pt": "Português",
+    "ru": "Русский",
+    "ar": "العربية",
+    "hi": "हिन्दी"
+  }
+}

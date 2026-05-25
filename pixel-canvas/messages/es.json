@@ -1,0 +1,80 @@
+{
+  "common": {
+    "title": "Lienzo de Píxeles",
+    "subtitle": "Creemos juntos, un píxel a la vez",
+    "loading": "Cargando...",
+    "error": "Algo salió mal",
+    "save": "Guardar",
+    "cancel": "Cancelar",
+    "confirm": "Confirmar",
+    "close": "Cerrar"
+  },
+  "canvas": {
+    "zoomIn": "Acercar",
+    "zoomOut": "Alejar",
+    "resetView": "Restablecer vista",
+    "placePixel": "Colocar píxel",
+    "pixelPlaced": "¡Píxel colocado!",
+    "noPoints": "No hay suficientes puntos, por favor espera",
+    "selectColor": "Seleccionar color",
+    "customColor": "Color personalizado"
+  },
+  "points": {
+    "title": "Mis Puntos",
+    "current": "Puntos: {count}",
+    "nextPoint": "Próximo punto: {time}",
+    "maxReached": "Máximo alcanzado",
+    "cooldown": "Enfriando"
+  },
+  "chat": {
+    "title": "Chat",
+    "onlineUsers": "En línea: {count}",
+    "placeholder": "Escribe un mensaje...",
+    "send": "Enviar",
+    "cooldown": "Espera {seconds}s antes de enviar de nuevo",
+    "maxLength": "Máximo {count} caracteres",
+    "noMessages": "Aún no hay mensajes"
+  },
+  "user": {
+    "guest": "Invitado",
+    "login": "Iniciar sesión",
+    "logout": "Cerrar sesión",
+    "loginWith": "Iniciar sesión con GitHub",
+    "stats": "Mis Estadísticas",
+    "totalPixels": "Total píxeles: {count}",
+    "joinedAt": "Se unió: {date}"
+  },
+  "pixelInfo": {
+    "author": "Autor: {name}",
+    "placedAt": "Colocado el: {time}",
+    "coordinates": "Coordenadas: ({x}, {y})"
+  },
+  "admin": {
+    "title": "Panel de Administración",
+    "password": "Contraseña de administrador",
+    "login": "Iniciar sesión",
+    "reset": "Restablecer lienzo",
+    "resetConfirm": "¿Restablecer lienzo? Esta acción no se puede deshacer.",
+    "rollback": "Deshacer",
+    "rollbackCount": "Cantidad a deshacer",
+    "onlineUsers": "Usuarios en línea",
+    "totalPixels": "Total píxeles",
+    "adCode": "Código de anuncios",
+    "saveAdCode": "Guardar código"
+  },
+  "language": {
+    "label": "Idioma",
+    "zh-CN": "中文简体",
+    "zh-TW": "中文繁體",
+    "en": "English",
+    "ja": "日本語",
+    "ko": "한국어",
+    "fr": "Français",
+    "de": "Deutsch",
+    "es": "Español",
+    "pt": "Português",
+    "ru": "Русский",
+    "ar": "العربية",
+    "hi": "हिन्दी"
+  }
+}

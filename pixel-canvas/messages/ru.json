@@ -1,0 +1,80 @@
+{
+  "common": {
+    "title": "Пиксельный Холст",
+    "subtitle": "Создаём вместе, пиксель за пикселем",
+    "loading": "Загрузка...",
+    "error": "Произошла ошибка",
+    "save": "Сохранить",
+    "cancel": "Отмена",
+    "confirm": "Подтвердить",
+    "close": "Закрыть"
+  },
+  "canvas": {
+    "zoomIn": "Увеличить",
+    "zoomOut": "Уменьшить",
+    "resetView": "Сбросить вид",
+    "placePixel": "Разместить пиксель",
+    "pixelPlaced": "Пиксель размещён!",
+    "noPoints": "Недостаточно очков, подождите",
+    "selectColor": "Выбрать цвет",
+    "customColor": "Пользовательский цвет"
+  },
+  "points": {
+    "title": "Мои Очки",
+    "current": "Очки: {count}",
+    "nextPoint": "Следующий: {time}",
+    "maxReached": "Максимум достигнут",
+    "cooldown": "Перезарядка"
+  },
+  "chat": {
+    "title": "Чат",
+    "onlineUsers": "Онлайн: {count}",
+    "placeholder": "Введите сообщение...",
+    "send": "Отправить",
+    "cooldown": "Подождите {seconds}с перед отправкой",
+    "maxLength": "Максимум {count} символов",
+    "noMessages": "Пока нет сообщений"
+  },
+  "user": {
+    "guest": "Гость",
+    "login": "Войти",
+    "logout": "Выйти",
+    "loginWith": "Войти через GitHub",
+    "stats": "Моя Статистика",
+    "totalPixels": "Всего пикселей: {count}",
+    "joinedAt": "Присоединился: {date}"
+  },
+  "pixelInfo": {
+    "author": "Автор: {name}",
+    "placedAt": "Размещено: {time}",
+    "coordinates": "Координаты: ({x}, {y})"
+  },
+  "admin": {
+    "title": "Панель администратора",
+    "password": "Пароль администратора",
+    "login": "Войти",
+    "reset": "Сбросить холст",
+    "resetConfirm": "Сбросить холст? Это действие необратимо.",
+    "rollback": "Откатить",
+    "rollbackCount": "Количество",
+    "onlineUsers": "Пользователи онлайн",
+    "totalPixels": "Всего пикселей",
+    "adCode": "Код рекламы",
+    "saveAdCode": "Сохранить код"
+  },
+  "language": {
+    "label": "Язык",
+    "zh-CN": "中文简体",
+    "zh-TW": "中文繁體",
+    "en": "English",
+    "ja": "日本語",
+    "ko": "한국어",
+    "fr": "Français",
+    "de": "Deutsch",
+    "es": "Español",
+    "pt": "Português",
+    "ru": "Русский",
+    "ar": "العربية",
+    "hi": "हिन्दी"
+  }
+}
