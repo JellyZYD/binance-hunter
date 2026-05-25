@@ -30,9 +30,15 @@ io.on('connection', (socket) => {
     io.emit('user:count', count);
   });
 
-  // Send current points
-  redis.get(`user:points:${userId}`).then((points) => {
-    socket.emit('points:update', parseInt(points || '0'));
+  // Send current points (give 1 point to new users)
+  redis.get(`user:points:${userId}`).then(async (points) => {
+    if (!points) {
+      await redis.set(`user:points:${userId}`, '1');
+      await redis.set(`user:last_grant:${userId}`, Date.now().toString());
+      socket.emit('points:update', 1);
+    } else {
+      socket.emit('points:update', parseInt(points));
+    }
   });
 
   // Start heartbeat check
