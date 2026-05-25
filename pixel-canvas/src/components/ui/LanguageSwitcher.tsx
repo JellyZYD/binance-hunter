@@ -39,10 +39,12 @@ export default function LanguageSwitcher() {
   }, []);
 
   function switchLocale(newLocale: Locale) {
-    const path = pathname.replace(`/${locale}`, `/${newLocale}`);
-    router.push(path);
-    setIsOpen(false);
+    // pathname from next/navigation includes locale prefix like /zh-CN
+    const pathWithoutLocale = pathname.replace(/^\/[^/]+/, '') || '/';
+    const path = `/${newLocale}${pathWithoutLocale === '/' ? '' : pathWithoutLocale}`;
     localStorage.setItem('locale', newLocale);
+    setIsOpen(false);
+    window.location.href = path;
   }
 
   return (

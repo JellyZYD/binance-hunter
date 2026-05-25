@@ -32,7 +32,7 @@ export interface CanvasStats {
 }
 
 export const CANVAS_SIZE = 2000;
-export const MAX_POINTS = 12;
+export const MAX_POINTS = 100;
 export const POINT_INTERVAL_MS = 5 * 60 * 1000;
 export const HEARTBEAT_INTERVAL_MS = 30 * 1000;
 export const CHAT_COOLDOWN_MS = 5 * 1000;

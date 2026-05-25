@@ -60,7 +60,16 @@
     "onlineUsers": "ऑनलाइन उपयोगकर्ता",
     "totalPixels": "कुल पिक्सेल",
     "adCode": "विज्ञापन कोड",
-    "saveAdCode": "कोड सहेजें"
+    "saveAdCode": "कोड सहेजें",
+    "pointsConfig": "अंक कॉन्फ़िगरेशन",
+    "initialPoints": "प्रारंभिक अंक",
+    "maxPoints": "अधिकतम अंक",
+    "pointInterval": "रिकवरी अंतराल (ms)",
+    "saveConfig": "कॉन्फ़िगरेशन सहेजें",
+    "chatManagement": "चैट प्रबंधन",
+    "totalMessages": "कुल संदेश",
+    "clearChat": "चैट साफ़ करें",
+    "delete": "हटाएं"
   },
   "language": {
     "label": "भाषा",
@@ -76,5 +85,18 @@
     "ru": "Русский",
     "ar": "العربية",
     "hi": "हिन्दी"
+  },
+  "auth": {
+    "register": "रजिस्टर",
+    "login": "लॉगिन",
+    "logout": "लॉगआउट",
+    "username": "उपयोगकर्ता नाम",
+    "email": "ईमेल",
+    "password": "पासवर्ड",
+    "confirmPassword": "पासवर्ड की पुष्टि करें",
+    "usernameExists": "उपयोगकर्ता नाम पहले से मौजूद है",
+    "emailExists": "ईमेल पहले से पंजीकृत है",
+    "invalidCredentials": "उपयोगकर्ता नाम या पासवर्ड गलत है",
+    "passwordMismatch": "पासवर्ड मेल नहीं खाते"
   }
 }

@@ -60,7 +60,16 @@
     "onlineUsers": "Online Users",
     "totalPixels": "Total Pixels",
     "adCode": "Ad Code",
-    "saveAdCode": "Save Ad Code"
+    "saveAdCode": "Save Ad Code",
+    "pointsConfig": "Points Configuration",
+    "initialPoints": "Initial Points",
+    "maxPoints": "Max Points",
+    "pointInterval": "Recovery Interval (ms)",
+    "saveConfig": "Save Config",
+    "chatManagement": "Chat Management",
+    "totalMessages": "Total Messages",
+    "clearChat": "Clear Chat",
+    "delete": "Delete"
   },
   "language": {
     "label": "Language",
@@ -76,5 +85,18 @@
     "ru": "Русский",
     "ar": "العربية",
     "hi": "हिन्दी"
+  },
+  "auth": {
+    "register": "Register",
+    "login": "Login",
+    "logout": "Logout",
+    "username": "Username",
+    "email": "Email",
+    "password": "Password",
+    "confirmPassword": "Confirm Password",
+    "usernameExists": "Username already exists",
+    "emailExists": "Email already registered",
+    "invalidCredentials": "Invalid username or password",
+    "passwordMismatch": "Passwords do not match"
   }
 }

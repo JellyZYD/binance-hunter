@@ -60,7 +60,16 @@
     "onlineUsers": "オンラインユーザー",
     "totalPixels": "合計ピクセル",
     "adCode": "広告コード",
-    "saveAdCode": "広告コードを保存"
+    "saveAdCode": "広告コードを保存",
+    "pointsConfig": "ポイント設定",
+    "initialPoints": "初期ポイント",
+    "maxPoints": "最大ポイント",
+    "pointInterval": "回復間隔(ms)",
+    "saveConfig": "設定を保存",
+    "chatManagement": "チャット管理",
+    "totalMessages": "総メッセージ数",
+    "clearChat": "チャットをクリア",
+    "delete": "削除"
   },
   "language": {
     "label": "言語",
@@ -76,5 +85,18 @@
     "ru": "Русский",
     "ar": "العربية",
     "hi": "हिन्दी"
+  },
+  "auth": {
+    "register": "登録",
+    "login": "ログイン",
+    "logout": "ログアウト",
+    "username": "ユーザー名",
+    "email": "メールアドレス",
+    "password": "パスワード",
+    "confirmPassword": "パスワード確認",
+    "usernameExists": "ユーザー名は既に存在します",
+    "emailExists": "メールアドレスは既に登録されています",
+    "invalidCredentials": "ユーザー名またはパスワードが正しくありません",
+    "passwordMismatch": "パスワードが一致しません"
   }
 }

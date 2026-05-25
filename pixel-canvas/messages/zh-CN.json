@@ -60,7 +60,16 @@
     "onlineUsers": "在线用户",
     "totalPixels": "总像素数",
     "adCode": "广告代码",
-    "saveAdCode": "保存广告代码"
+    "saveAdCode": "保存广告代码",
+    "pointsConfig": "点数配置",
+    "initialPoints": "初始点数",
+    "maxPoints": "最大点数",
+    "pointInterval": "恢复间隔(ms)",
+    "saveConfig": "保存配置",
+    "chatManagement": "聊天管理",
+    "totalMessages": "总消息数",
+    "clearChat": "清空聊天",
+    "delete": "删除"
   },
   "language": {
     "label": "语言",
@@ -76,5 +85,18 @@
     "ru": "Русский",
     "ar": "العربية",
     "hi": "हिन्दी"
+  },
+  "auth": {
+    "register": "注册",
+    "login": "登录",
+    "logout": "退出登录",
+    "username": "用户名",
+    "email": "邮箱",
+    "password": "密码",
+    "confirmPassword": "确认密码",
+    "usernameExists": "用户名已存在",
+    "emailExists": "邮箱已注册",
+    "invalidCredentials": "用户名或密码错误",
+    "passwordMismatch": "两次密码不一致"
   }
 }

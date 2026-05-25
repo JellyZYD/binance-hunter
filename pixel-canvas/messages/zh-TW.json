@@ -60,7 +60,16 @@
     "onlineUsers": "在線用戶",
     "totalPixels": "總像素數",
     "adCode": "廣告代碼",
-    "saveAdCode": "儲存廣告代碼"
+    "saveAdCode": "儲存廣告代碼",
+    "pointsConfig": "點數配置",
+    "initialPoints": "初始點數",
+    "maxPoints": "最大點數",
+    "pointInterval": "恢復間隔(ms)",
+    "saveConfig": "儲存配置",
+    "chatManagement": "聊天管理",
+    "totalMessages": "總訊息數",
+    "clearChat": "清空聊天",
+    "delete": "刪除"
   },
   "language": {
     "label": "語言",
@@ -76,5 +85,18 @@
     "ru": "Русский",
     "ar": "العربية",
     "hi": "हिन्दी"
+  },
+  "auth": {
+    "register": "註冊",
+    "login": "登入",
+    "logout": "登出",
+    "username": "用戶名",
+    "email": "電子郵件",
+    "password": "密碼",
+    "confirmPassword": "確認密碼",
+    "usernameExists": "用戶名已存在",
+    "emailExists": "電子郵件已註冊",
+    "invalidCredentials": "用戶名或密碼錯誤",
+    "passwordMismatch": "兩次密碼不一致"
   }
 }

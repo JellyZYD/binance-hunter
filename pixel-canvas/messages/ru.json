@@ -60,7 +60,16 @@
     "onlineUsers": "Пользователи онлайн",
     "totalPixels": "Всего пикселей",
     "adCode": "Код рекламы",
-    "saveAdCode": "Сохранить код"
+    "saveAdCode": "Сохранить код",
+    "pointsConfig": "Настройка очков",
+    "initialPoints": "Начальные очки",
+    "maxPoints": "Максимум очков",
+    "pointInterval": "Интервал восстановления (мс)",
+    "saveConfig": "Сохранить настройки",
+    "chatManagement": "Управление чатом",
+    "totalMessages": "Всего сообщений",
+    "clearChat": "Очистить чат",
+    "delete": "Удалить"
   },
   "language": {
     "label": "Язык",
@@ -76,5 +85,18 @@
     "ru": "Русский",
     "ar": "العربية",
     "hi": "हिन्दी"
+  },
+  "auth": {
+    "register": "Регистрация",
+    "login": "Войти",
+    "logout": "Выйти",
+    "username": "Имя пользователя",
+    "email": "Электронная почта",
+    "password": "Пароль",
+    "confirmPassword": "Подтвердите пароль",
+    "usernameExists": "Имя пользователя уже существует",
+    "emailExists": "Электронная почта уже зарегистрирована",
+    "invalidCredentials": "Неверное имя пользователя или пароль",
+    "passwordMismatch": "Пароли не совпадают"
   }
 }

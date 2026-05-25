@@ -4,6 +4,11 @@ import Redis from 'ioredis';
 const redis = new Redis(process.env.REDIS_URL || 'redis://localhost:6379');
 const PORT = parseInt(process.env.SOCKET_PORT || '3001');
 
+async function getConfig(key: string, fallback: string): Promise<string> {
+  const val = await redis.get(key);
+  return val || fallback;
+}
+
 const io = new Server(PORT, {
   cors: {
     origin: process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000',
@@ -30,14 +35,20 @@ io.on('connection', (socket) => {
     io.emit('user:count', count);
   });
 
-  // Send current points (give 1 point to new users)
+  // Send current points (give initial points to new users)
   redis.get(`user:points:${userId}`).then(async (points) => {
+    const initialPoints = parseInt(await getConfig('config:initial_points', '100'));
     if (!points) {
-      await redis.set(`user:points:${userId}`, '1');
-      await redis.set(`user:last_grant:${userId}`, Date.now().toString());
-      socket.emit('points:update', 1);
+      const now = Date.now();
+      await redis.set(`user:points:${userId}`, initialPoints.toString());
+      await redis.set(`user:last_grant:${userId}`, now.toString());
+      socket.emit('points:update', { points: initialPoints, lastGrant: now });
     } else {
-      socket.emit('points:update', parseInt(points));
+      const lastGrant = await redis.get(`user:last_grant:${userId}`);
+      socket.emit('points:update', {
+        points: parseInt(points),
+        lastGrant: lastGrant ? parseInt(lastGrant) : Date.now(),
+      });
     }
   });
 
@@ -49,6 +60,9 @@ io.on('connection', (socket) => {
     const lastHeartbeat = await redis.get(`user:heartbeat:${userId}`);
     const now = Date.now();
 
+    const maxPoints = parseInt(await getConfig('config:max_points', '100'));
+    const pointInterval = parseInt(await getConfig('config:point_interval_ms', '300000'));
+
     if (lastHeartbeat) {
       const elapsed = now - parseInt(lastHeartbeat);
       // If more than 30 seconds since last heartbeat, check for point grant
@@ -56,16 +70,16 @@ io.on('connection', (socket) => {
         const currentPoints = parseInt(
           (await redis.get(`user:points:${userId}`)) || '0'
         );
-        if (currentPoints < 12) {
-          // Check if 5 minutes have passed since last point grant
+        if (currentPoints < maxPoints) {
+          // Check if configured interval has passed since last point grant
           const lastGrant = await redis.get(`user:last_grant:${userId}`);
-          if (!lastGrant || now - parseInt(lastGrant) >= 300000) {
+          if (!lastGrant || now - parseInt(lastGrant) >= pointInterval) {
             await redis.incr(`user:points:${userId}`);
             await redis.set(`user:last_grant:${userId}`, now.toString());
             const newPoints = parseInt(
               (await redis.get(`user:points:${userId}`)) || '0'
             );
-            socket.emit('points:update', newPoints);
+            socket.emit('points:update', { points: newPoints, lastGrant: now });
           }
         }
       }

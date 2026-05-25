@@ -4,6 +4,7 @@ import { useTranslations } from 'next-intl';
 import dynamic from 'next/dynamic';
 import LanguageSwitcher from '@/components/ui/LanguageSwitcher';
 import AdBanner from '@/components/ui/AdBanner';
+import UserMenu from '@/components/auth/UserMenu';
 
 const PixelCanvas = dynamic(
   () => import('@/components/canvas/PixelCanvas'),
@@ -30,6 +31,7 @@ export default function HomePage() {
         </div>
         <div className="flex items-center gap-4">
           <PointsDisplay />
+          <UserMenu />
           <LanguageSwitcher />
         </div>
       </header>
@@ -42,20 +44,12 @@ export default function HomePage() {
       />
 
       {/* Main Content */}
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 relative overflow-hidden">
         {/* Canvas */}
         <PixelCanvas />
 
-        {/* Sidebar */}
-        <div className="flex flex-col">
-          <ChatPanel />
-          {/* Side Ad */}
-          <AdBanner
-            slot="side-rectangle"
-            format="rectangle"
-            className="p-2 bg-gray-800"
-          />
-        </div>
+        {/* Floating Chat */}
+        <ChatPanel />
       </div>
 
       {/* Footer */}

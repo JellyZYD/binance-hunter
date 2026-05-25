@@ -60,7 +60,16 @@
     "onlineUsers": "온라인 사용자",
     "totalPixels": "총 픽셀",
     "adCode": "광고 코드",
-    "saveAdCode": "광고 코드 저장"
+    "saveAdCode": "광고 코드 저장",
+    "pointsConfig": "포인트 설정",
+    "initialPoints": "초기 포인트",
+    "maxPoints": "최대 포인트",
+    "pointInterval": "회복 간격(ms)",
+    "saveConfig": "설정 저장",
+    "chatManagement": "채팅 관리",
+    "totalMessages": "총 메시지 수",
+    "clearChat": "채팅 삭제",
+    "delete": "삭제"
   },
   "language": {
     "label": "언어",
@@ -76,5 +85,18 @@
     "ru": "Русский",
     "ar": "العربية",
     "hi": "हिन्दी"
+  },
+  "auth": {
+    "register": "회원가입",
+    "login": "로그인",
+    "logout": "로그아웃",
+    "username": "사용자 이름",
+    "email": "이메일",
+    "password": "비밀번호",
+    "confirmPassword": "비밀번호 확인",
+    "usernameExists": "사용자 이름이 이미 존재합니다",
+    "emailExists": "이미 등록된 이메일입니다",
+    "invalidCredentials": "사용자 이름 또는 비밀번호가 잘못되었습니다",
+    "passwordMismatch": "비밀번호가 일치하지 않습니다"
   }
 }

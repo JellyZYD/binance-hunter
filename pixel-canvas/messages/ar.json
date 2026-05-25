@@ -60,7 +60,16 @@
     "onlineUsers": "المستخدمون المتصلون",
     "totalPixels": "إجمالي البكسلات",
     "adCode": "كود الإعلانات",
-    "saveAdCode": "حفظ الكود"
+    "saveAdCode": "حفظ الكود",
+    "pointsConfig": "تكوين النقاط",
+    "initialPoints": "النقاط الأولية",
+    "maxPoints": "الحد الأقصى للنقاط",
+    "pointInterval": "فترة الاسترداد (مللي ثانية)",
+    "saveConfig": "حفظ التكوين",
+    "chatManagement": "إدارة الدردشة",
+    "totalMessages": "إجمالي الرسائل",
+    "clearChat": "مسح الدردشة",
+    "delete": "حذف"
   },
   "language": {
     "label": "اللغة",
@@ -76,5 +85,18 @@
     "ru": "Русский",
     "ar": "العربية",
     "hi": "हिन्दी"
+  },
+  "auth": {
+    "register": "تسجيل",
+    "login": "تسجيل الدخول",
+    "logout": "تسجيل الخروج",
+    "username": "اسم المستخدم",
+    "email": "البريد الإلكتروني",
+    "password": "كلمة المرور",
+    "confirmPassword": "تأكيد كلمة المرور",
+    "usernameExists": "اسم المستخدم موجود بالفعل",
+    "emailExists": "البريد الإلكتروني مسجل بالفعل",
+    "invalidCredentials": "اسم المستخدم أو كلمة المرور غير صحيحة",
+    "passwordMismatch": "كلمتا المرور غير متطابقتين"
   }
 }

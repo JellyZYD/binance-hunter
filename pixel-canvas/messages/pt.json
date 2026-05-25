@@ -60,7 +60,16 @@
     "onlineUsers": "Usuários online",
     "totalPixels": "Total de pixels",
     "adCode": "Código de anúncios",
-    "saveAdCode": "Salvar código"
+    "saveAdCode": "Salvar código",
+    "pointsConfig": "Configuração de pontos",
+    "initialPoints": "Pontos iniciais",
+    "maxPoints": "Pontos máximos",
+    "pointInterval": "Intervalo de recuperação (ms)",
+    "saveConfig": "Salvar configuração",
+    "chatManagement": "Gerenciamento do chat",
+    "totalMessages": "Total de mensagens",
+    "clearChat": "Limpar chat",
+    "delete": "Excluir"
   },
   "language": {
     "label": "Idioma",
@@ -76,5 +85,18 @@
     "ru": "Русский",
     "ar": "العربية",
     "hi": "हिन्दी"
+  },
+  "auth": {
+    "register": "Registrar",
+    "login": "Entrar",
+    "logout": "Sair",
+    "username": "Nome de usuário",
+    "email": "E-mail",
+    "password": "Senha",
+    "confirmPassword": "Confirmar senha",
+    "usernameExists": "Nome de usuário já existe",
+    "emailExists": "E-mail já registrado",
+    "invalidCredentials": "Nome de usuário ou senha inválidos",
+    "passwordMismatch": "As senhas não coincidem"
   }
 }

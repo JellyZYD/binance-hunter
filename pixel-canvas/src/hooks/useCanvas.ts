@@ -20,8 +20,31 @@ export function useCanvas() {
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
+  const getFitView = useCallback(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return null;
+
+    const padding = 32;
+    const availableWidth = Math.max(1, canvas.width - padding * 2);
+    const availableHeight = Math.max(1, canvas.height - padding * 2);
+    const scale = Math.min(availableWidth, availableHeight) / CANVAS_SIZE;
+
+    return {
+      scale,
+      offsetX: (canvas.width - CANVAS_SIZE * scale) / 2,
+      offsetY: (canvas.height - CANVAS_SIZE * scale) / 2,
+    };
+  }, []);
+
   const zoom = useCallback(
     (delta: number, centerX: number, centerY: number) => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+
+      const rect = canvas.getBoundingClientRect();
+      const localCenterX = centerX - rect.left;
+      const localCenterY = centerY - rect.top;
+
       setState((prev) => {
         const factor = delta > 0 ? 0.9 : 1.1;
         const newScale = Math.max(0.1, Math.min(20, prev.scale * factor));
@@ -30,8 +53,10 @@ export function useCanvas() {
         return {
           ...prev,
           scale: newScale,
-          offsetX: centerX - (centerX - prev.offsetX) * scaleChange,
-          offsetY: centerY - (centerY - prev.offsetY) * scaleChange,
+          offsetX:
+            localCenterX - (localCenterX - prev.offsetX) * scaleChange,
+          offsetY:
+            localCenterY - (localCenterY - prev.offsetY) * scaleChange,
         };
       });
     },
@@ -72,16 +97,14 @@ export function useCanvas() {
   }, []);
 
   const resetView = useCallback(() => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
+    const view = getFitView();
+    if (!view) return;
 
     setState((prev) => ({
       ...prev,
-      scale: Math.min(canvas.width, canvas.height) / CANVAS_SIZE,
-      offsetX: 0,
-      offsetY: 0,
+      ...view,
     }));
-  }, []);
+  }, [getFitView]);
 
   return {
     ...state,

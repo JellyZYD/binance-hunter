@@ -13,12 +13,14 @@ export default function ChatMessage({ message }: Props) {
   });
 
   return (
-    <div className="py-1 px-2 hover:bg-gray-800 rounded">
-      <span className="text-xs text-gray-500 mr-2">{time}</span>
-      <span className="text-sm font-medium text-blue-400">
-        {message.nickname}
-      </span>
-      <span className="text-sm text-gray-300">: {message.content}</span>
+    <div className="py-1.5 px-3 bg-gray-700/50 rounded-xl">
+      <div className="flex items-baseline gap-2">
+        <span className="text-xs text-blue-400 font-medium">
+          {message.nickname}
+        </span>
+        <span className="text-xs text-gray-500">{time}</span>
+      </div>
+      <p className="text-sm text-gray-200 mt-0.5 break-words">{message.content}</p>
     </div>
   );
 }
