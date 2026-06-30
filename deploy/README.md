@@ -1,68 +1,113 @@
 # Deployment
 
-目标服务器：Ubuntu，2 核 2G 可运行。默认把 CPU/内存留给 Python 监控和代理/VPN，网页可以选择部署在服务器或 Vercel。
+目标服务器：Ubuntu，2 核 2G 可运行。可以选择整站部署在服务器，或后端在服务器、前端放 Vercel。
 
-## 一键部署
+服务名：
+
+- `binance-hunter-monitor.service`：REST discovery + WebSocket 监控。
+- `binance-hunter-api.service`：Python 只读 API，绑定 `127.0.0.1:8787`。
+- `binance-hunter-web.service`：Next dashboard，绑定 `127.0.0.1:3000`。
+- Nginx：传入 `DOMAIN` 时对外公开 `/`（网站）、`/hunter-api/`（API 代理）、`/health`。
+
+## 一键部署（HTTP）
 
 ```bash
 sudo DOMAIN=your.domain.com bash deploy/setup.sh
 ```
 
-默认安装并启动：
+脚本自动安装依赖（Node 20 + Python）、clone 仓库到 `/opt/binance-hunter`、启动三个服务并配置 Nginx。
 
-- `binance-hunter-monitor.service`：REST discovery + WebSocket 监控。
-- `binance-hunter-api.service`：Python 只读 API，绑定 `127.0.0.1:8787`。
-- `binance-hunter-web.service`：Next dashboard，绑定 `127.0.0.1:3000`。
-- Nginx：如果传入 `DOMAIN`，公开 `/` 和 `/hunter-api/`。
+## 整站部署 + 自带证书 HTTPS（推荐）
 
-## 只跑后端，前端放 Vercel
+把已有证书（`SSL_CERT` 用 fullchain，含中间证书）上传到服务器后：
+
+```bash
+# 先把证书放到服务器，例如 /etc/ssl/<domain>/
+sudo mkdir -p /etc/ssl/pixia
+sudo mv /root/www.pixia.cc.pem /root/www.pixia.cc.key /etc/ssl/pixia/
+sudo chmod 600 /etc/ssl/pixia/www.pixia.cc.key
+
+# 一行部署：443 + 80 自动跳转 443
+curl -fsSL https://raw.githubusercontent.com/JellyZYD/binance-hunter/main/deploy/setup.sh \
+  | sudo DOMAIN=pixia.cc SERVER_NAME="pixia.cc www.pixia.cc" \
+         SSL_CERT=/etc/ssl/pixia/www.pixia.cc.pem \
+         SSL_KEY=/etc/ssl/pixia/www.pixia.cc.key \
+         bash
+```
+
+相关参数：
+
+| 变量 | 说明 |
+| --- | --- |
+| `DOMAIN` | 主域名，用于提示信息和默认 server_name |
+| `SERVER_NAME` | Nginx `server_name`，多个域名空格分隔，默认取 `DOMAIN` |
+| `SSL_CERT` | fullchain 证书路径，提供后启用 HTTPS |
+| `SSL_KEY` | 私钥路径 |
+
+> 证书续期后，把新文件覆盖到同名路径再 `sudo systemctl reload nginx` 即可（若 443 改由 Xray 持有，见下方文档，改为 `restart xray`）。
+
+## 只跑后端，前端放 Vercel（可选）
 
 ```bash
 sudo INSTALL_FRONTEND=0 DOMAIN=api.your.domain.com bash deploy/setup.sh
 ```
 
-然后在 Vercel 设置：
+然后在 Vercel：Root Directory 设为 `frontend`，环境变量 `HUNTER_API_BASE_URL=https://api.your.domain.com/hunter-api`。
 
-```text
-HUNTER_API_BASE_URL=http://api.your.domain.com/hunter-api
-```
+## 服务器需要代理才能访问 Binance 时（可选）
 
-如果你给 Nginx 配了 HTTPS，就改成 `https://api.your.domain.com/hunter-api`。
-
-## 代理/梯子
-
-服务器需要走本机代理访问 Binance REST 时：
+新加坡/海外服务器一般可直连，无需此项。国内服务器需先在本机跑好代理：
 
 ```bash
 sudo HUNTER_NETWORK_PROXY=http://127.0.0.1:7890 DOMAIN=your.domain.com bash deploy/setup.sh
 ```
 
-脚本会写入 `/etc/binance-hunter.env`。后续修改代理：
+脚本会写入 `/etc/binance-hunter.env`。后续修改：
 
 ```bash
 sudo nano /etc/binance-hunter.env
 sudo systemctl restart binance-hunter-monitor.service binance-hunter-api.service
 ```
 
-## 更新
+## 更新代码
 
 ```bash
 sudo bash deploy/update.sh
 ```
 
+`update.sh` 只拉取代码 + 重装依赖 + 重启服务，**不改 Nginx 和证书**，所以手动改过的 Nginx（如 Xray 端口复用）不会被它覆盖。注意：`git reset --hard` 会覆盖服务器上对仓库内文件（如 `backend/config/settings.json`）的本地修改——调参请在本地仓库改后提交。
+
+## 扩大候选池 / 调参
+
+选币分三层（详见 `backend/pump_dump_hunter/discovery.py`）：
+
+1. **扫描池** `--broad-top`：按 24h 成交额取前 N 个币进入扫描。
+2. **监控池** `--top`：扫描后按 15m/30m 流动性排序取前 N 个，这些才会被 WebSocket 盯盘，也才有资格成为妖币。
+3. **妖币池** `backend/config/settings.json` 的 `params.*` 阈值：监控池中满足拉升幅度的进入活跃妖币池。
+
+改监控规模（`top`/`broad-top`）——编辑 systemd 后重启（survive 重启与 `update.sh`）：
+
+```bash
+sudo nano /etc/systemd/system/binance-hunter-monitor.service   # 改 ExecStart 的 --top / --broad-top
+sudo systemctl daemon-reload && sudo systemctl restart binance-hunter-monitor
+```
+
+放宽妖币门槛（`pump_*_pct`、`min_24h_quote_volume`、`exclude_symbols` 等）——改 `backend/config/settings.json`，**在本地仓库改后提交推送，再在服务器 `update.sh`**（直接改服务器会被 `update.sh` 覆盖）。
+
 ## 常用运维命令
 
 ```bash
-systemctl status binance-hunter-monitor.service
-systemctl status binance-hunter-api.service
-systemctl status binance-hunter-web.service
+systemctl status binance-hunter-monitor.service binance-hunter-api.service binance-hunter-web.service
 journalctl -u binance-hunter-monitor.service -f
-journalctl -u binance-hunter-api.service -f
 sqlite3 /opt/binance-hunter/backend/storage/hunter.db ".tables"
 ```
 
-## 资源建议
+## 资源建议（2 核 2G）
 
-- 2 核 2G：`HUNTER_TOP=120 HUNTER_BROAD_TOP=220 HUNTER_MAX_WORKERS=8`
-- 稳定后：`HUNTER_TOP=150` 或 `200`
-- 不建议一开始 `broad_top=400`，REST discovery 会占用更久网络和 CPU。
+- 起步：`HUNTER_TOP=120 HUNTER_BROAD_TOP=220 HUNTER_MAX_WORKERS=8`
+- 稳定后可提到 `HUNTER_TOP=200~250 HUNTER_BROAD_TOP=400 HUNTER_MAX_WORKERS=12`
+- 前端 `npm run build` 内存吃紧时先加 2G swap（见下方文档）。
+
+## 443 端口复用：网站 + 翻墙（Xray）共存
+
+如果想让同一台服务器、同一个 443 端口，既跑网站又当个人翻墙节点（Xray VLESS + Vision，浏览器流量回落给网站），见 [`https-xray.md`](./https-xray.md)。
