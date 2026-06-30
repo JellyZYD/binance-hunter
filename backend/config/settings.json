@@ -99,9 +99,20 @@
     "confirm_drop_from_high_pct": 8.0,
     "confirm_volume_ratio": 2.5,
     "confirm_min_remaining_pct": 25.0,
-    "new_high_reset_pct": 0.5
+    "new_high_reset_pct": 0.5,
+    "early_v2_vol_ratio": 2.0,
+    "early_v2_close_pos_max": 0.45,
+    "early_v2_near_high_pct": 3.0,
+    "early_v2_min_remaining_pct": 10.0,
+    "short_v2_break_pct": 7.0,
+    "short_v2_close_pos_max": 0.35,
+    "short_v2_vol_ratio": 1.2,
+    "short_v2_taker_min": 0.0,
+    "short_v2_min_remaining_pct": 5.0,
+    "fallback_drop_pct": 8.0
   },
   "signals": {
+    "mode": "legacy",
     "ema_fast": 8,
     "ema_confirm": 21,
     "early_interval": "15m",

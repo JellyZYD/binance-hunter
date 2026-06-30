@@ -16,6 +16,7 @@ class SignalEngine:
         self.signal_cfg = settings["signals"]
         self.early_interval = str(self.signal_cfg.get("early_interval", "5m"))
         self.confirm_interval = str(self.signal_cfg.get("confirm_interval", "15m"))
+        self.mode = str(self.signal_cfg.get("mode", "legacy"))
         self.events_by_symbol: dict[str, PumpEvent] = {}
         self.buffers: dict[tuple[str, str], deque[Candle]] = defaultdict(lambda: deque(maxlen=240))
         self.buffer_times: dict[tuple[str, str], set[int]] = defaultdict(set)
@@ -53,6 +54,7 @@ class SignalEngine:
                     existing.high_time = decision_time
                     existing.early_alerted_after_high_time = None
                     existing.short_alerted_after_high_time = None
+                    existing.fallback_alerted_after_high_time = None
                 existing.max_gain_pct = pct_change(existing.anchor_price, existing.high_price)
                 existing.evidence = sorted(set(existing.evidence + evidence))
                 changed.append(existing)
@@ -109,11 +111,33 @@ class SignalEngine:
             pump.high_time = candle.close_time
             pump.early_alerted_after_high_time = None
             pump.short_alerted_after_high_time = None
+            pump.fallback_alerted_after_high_time = None
             pump.expires_at = max(pump.expires_at, candle.close_time + int(self.active_hours * 3_600_000))
             changed.append(pump)
         pump.current_price = candle.close
         pump.last_seen = candle.close_time
         pump.max_gain_pct = pct_change(pump.anchor_price, pump.high_price)
+
+        if self.mode == "v2":
+            if candle.interval == self.early_interval:
+                alert = self._early_alert_v2(pump, candle)
+                if alert:
+                    pump.early_alerted_after_high_time = pump.high_time
+                    alerts.append(alert)
+                    changed.append(pump)
+            if candle.interval == self.confirm_interval:
+                alert = self._short_signal_v2(pump, candle)
+                if alert:
+                    pump.short_alerted_after_high_time = pump.high_time
+                    alerts.append(alert)
+                    changed.append(pump)
+                else:
+                    fb = self._fallback_v2(pump, candle)
+                    if fb:
+                        pump.fallback_alerted_after_high_time = pump.high_time
+                        alerts.append(fb)
+                        changed.append(pump)
+            return changed, alerts
 
         if candle.interval == self.early_interval:
             alert = self._early_alert(pump, candle)
@@ -194,6 +218,87 @@ class SignalEngine:
         ):
             return make_alert("short_signal", pump, candle, vol_ratio, remaining, [f"{self.confirm_interval} closed breakdown"])
         return None
+
+    # ---- v2 数据驱动信号 ----
+    def _early_alert_v2(self, pump: PumpEvent, candle: Candle) -> Alert | None:
+        """顶部预警:近妖币高点 + 放量 + 冲高回落(收盘在K线下半部)。多而贴顶,容忍逆向。"""
+        if pump.early_alerted_after_high_time == pump.high_time:
+            return None
+        candles = list(self.buffers[(pump.symbol, self.early_interval)])
+        if len(candles) < int(self.signal_cfg["volume_window"]) + 1:
+            return None
+        p = self.params
+        near_high = candle.high >= pump.high_price * (1.0 - p.early_v2_near_high_pct / 100.0)
+        vol_ratio = current_volume_ratio(candles, int(self.signal_cfg["volume_window"]))
+        cpos = close_position(candle)
+        remaining = remaining_downside_pct(pump.anchor_price, candle.close)
+        if (
+            near_high
+            and vol_ratio >= p.early_v2_vol_ratio
+            and cpos <= p.early_v2_close_pos_max
+            and remaining >= p.early_v2_min_remaining_pct
+        ):
+            return make_alert(
+                "early_alert", pump, candle, vol_ratio, remaining,
+                [f"{self.early_interval} climax rejection", "near_high", f"close_pos={cpos:.2f}", f"vol={vol_ratio:.2f}x"],
+            )
+        return None
+
+    def _short_signal_v2(self, pump: PumpEvent, candle: Candle) -> Alert | None:
+        """下跌启动:跌破高位区 + 弱收阴线(+可选主动卖盘)。低逆向、会一直跌。"""
+        if pump.short_alerted_after_high_time == pump.high_time:
+            return None
+        candles = list(self.buffers[(pump.symbol, self.confirm_interval)])
+        if len(candles) < int(self.signal_cfg["volume_window"]) + 1:
+            return None
+        p = self.params
+        broke = candle.close < pump.high_price * (1.0 - p.short_v2_break_pct / 100.0)
+        red = candle.close < candle.open
+        cpos = close_position(candle)
+        vol_ratio = current_volume_ratio(candles, int(self.signal_cfg["volume_window"]))
+        tsell = taker_sell_ratio(candle)
+        remaining = remaining_downside_pct(pump.anchor_price, candle.close)
+        if (
+            broke
+            and red
+            and cpos <= p.short_v2_close_pos_max
+            and vol_ratio >= p.short_v2_vol_ratio
+            and tsell >= p.short_v2_taker_min
+            and remaining >= p.short_v2_min_remaining_pct
+        ):
+            return make_alert(
+                "short_signal", pump, candle, vol_ratio, remaining,
+                [f"{self.confirm_interval} high-zone breakdown", f"close_pos={cpos:.2f}", f"taker_sell={tsell:.2f}",
+                 f"drop_from_high={pct_change(candle.close, pump.high_price):+.2f}%"],
+            )
+        return None
+
+    def _fallback_v2(self, pump: PumpEvent, candle: Candle) -> Alert | None:
+        """兜底:入池币距顶回落≥阈值,且本轮高点从未出过 early/short。宁晚勿漏。"""
+        if pump.fallback_alerted_after_high_time == pump.high_time:
+            return None
+        if (
+            pump.early_alerted_after_high_time == pump.high_time
+            or pump.short_alerted_after_high_time == pump.high_time
+        ):
+            return None
+        if candle.close > pump.high_price * (1.0 - self.params.fallback_drop_pct / 100.0):
+            return None
+        vol_ratio = current_volume_ratio(list(self.buffers[(pump.symbol, self.confirm_interval)]), int(self.signal_cfg["volume_window"]))
+        remaining = remaining_downside_pct(pump.anchor_price, candle.close)
+        return make_alert(
+            "fallback_alert", pump, candle, vol_ratio, remaining,
+            ["fallback breakdown", "no_clean_signal", f"drop_from_high={pct_change(candle.close, pump.high_price):+.2f}%"],
+        )
+
+
+def close_position(candle: Candle) -> float:
+    rng = candle.high - candle.low
+    return (candle.close - candle.low) / rng if rng > 0 else 0.5
+
+
+def taker_sell_ratio(candle: Candle) -> float:
+    return 1.0 - candle.taker_buy_quote / candle.quote_volume if candle.quote_volume > 0 else 0.0
 
 
 def infer_anchor_price(record: LiquidityRecord) -> float:

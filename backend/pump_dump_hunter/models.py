@@ -150,6 +150,17 @@ class SignalParams:
     confirm_volume_ratio: float = 2.5
     confirm_min_remaining_pct: float = 25.0
     new_high_reset_pct: float = 0.5
+    # --- v2 信号(数据驱动): early=放量冲高回落, short=高位横盘破位, fallback=回落兜底 ---
+    early_v2_vol_ratio: float = 2.0
+    early_v2_close_pos_max: float = 0.45
+    early_v2_near_high_pct: float = 3.0
+    early_v2_min_remaining_pct: float = 10.0
+    short_v2_break_pct: float = 7.0
+    short_v2_close_pos_max: float = 0.35
+    short_v2_vol_ratio: float = 1.2
+    short_v2_taker_min: float = 0.0
+    short_v2_min_remaining_pct: float = 5.0
+    fallback_drop_pct: float = 8.0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SignalParams":
@@ -179,6 +190,7 @@ class PumpEvent:
     evidence: list[str] = field(default_factory=list)
     early_alerted_after_high_time: int | None = None
     short_alerted_after_high_time: int | None = None
+    fallback_alerted_after_high_time: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()

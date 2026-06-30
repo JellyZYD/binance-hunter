@@ -142,6 +142,11 @@ class Store:
                     "quote_volume_1d": "REAL NOT NULL DEFAULT 0",
                 },
             )
+            ensure_columns(
+                conn,
+                "pump_events",
+                {"fallback_alerted_after_high_time": "INTEGER"},
+            )
             conn.commit()
         finally:
             conn.close()
@@ -278,8 +283,9 @@ class Store:
                 """INSERT OR REPLACE INTO pump_events(
                     event_id, symbol, first_seen, last_seen, expires_at, trigger_window,
                     anchor_price, high_price, high_time, current_price, max_gain_pct,
-                    status, evidence_json, early_alerted_after_high_time, short_alerted_after_high_time
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    status, evidence_json, early_alerted_after_high_time, short_alerted_after_high_time,
+                    fallback_alerted_after_high_time
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         e.event_id,
@@ -297,6 +303,7 @@ class Store:
                         json.dumps(e.evidence, ensure_ascii=False),
                         e.early_alerted_after_high_time,
                         e.short_alerted_after_high_time,
+                        e.fallback_alerted_after_high_time,
                     )
                     for e in events
                 ],
@@ -531,4 +538,12 @@ def row_to_event(row: sqlite3.Row) -> PumpEvent:
         evidence=json.loads(row["evidence_json"]),
         early_alerted_after_high_time=row["early_alerted_after_high_time"],
         short_alerted_after_high_time=row["short_alerted_after_high_time"],
+        fallback_alerted_after_high_time=row_get(row, "fallback_alerted_after_high_time"),
     )
+
+
+def row_get(row: sqlite3.Row, key: str) -> Any:
+    try:
+        return row[key]
+    except (IndexError, KeyError):
+        return None
