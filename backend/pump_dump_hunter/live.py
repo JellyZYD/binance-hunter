@@ -28,6 +28,7 @@ async def monitor(
     sink = AlertSink(dirs["alerts"])
     engine = SignalEngine(settings)
     engine.load_events(store.active_pump_events(utc_ms()))
+    print(f"signal mode={engine.mode} new_high_reset={engine.params.new_high_reset_pct}%", flush=True)
     discover_seconds = parse_duration_seconds(discover_every)
     processed = 0
 
