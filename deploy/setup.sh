@@ -5,6 +5,10 @@ set -euo pipefail
 # Usage:
 #   sudo DOMAIN=example.com bash deploy/setup.sh
 #   sudo INSTALL_FRONTEND=0 bash deploy/setup.sh
+#   # 自带证书启用 HTTPS（SSL_CERT 用 fullchain）：
+#   sudo DOMAIN=pixia.cc SERVER_NAME="pixia.cc www.pixia.cc" \
+#        SSL_CERT=/etc/ssl/pixia/fullchain.pem SSL_KEY=/etc/ssl/pixia/privkey.key \
+#        bash deploy/setup.sh
 
 REPO_URL="${REPO_URL:-https://github.com/JellyZYD/binance-hunter.git}"
 CLONE_DIR="${CLONE_DIR:-/opt/binance-hunter}"
@@ -21,6 +25,11 @@ HUNTER_API_PORT="${HUNTER_API_PORT:-8787}"
 NEXT_PORT="${NEXT_PORT:-3000}"
 HUNTER_NETWORK_PROXY="${HUNTER_NETWORK_PROXY:-}"
 WECOM_WEBHOOK_URL="${WECOM_WEBHOOK_URL:-}"
+# Nginx server_name，默认用 DOMAIN；多个域名用空格分隔，如 "pixia.cc www.pixia.cc"。
+SERVER_NAME="${SERVER_NAME:-$DOMAIN}"
+# 提供已有证书即可启用 HTTPS（SSL_CERT 应为 fullchain，含中间证书）。
+SSL_CERT="${SSL_CERT:-}"
+SSL_KEY="${SSL_KEY:-}"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Run as root: sudo bash deploy/setup.sh" >&2
@@ -141,14 +150,14 @@ fi
 
 echo "[6/7] Configure nginx"
 if [ -n "$DOMAIN" ]; then
-  cat >/etc/nginx/sites-available/binance-hunter <<EOF
-server {
-    listen 80;
-    server_name ${DOMAIN};
+  NGINX_CONF=/etc/nginx/sites-available/binance-hunter
 
+  # 生成公共 location（API + 健康检查 + 可选前端），HTTP / HTTPS 复用。
+  gen_locations() {
+    cat <<EOF
     location /hunter-api/ {
-        # 前端 route.ts 会拼成 ${HUNTER_API_BASE_URL}/api/<端点>，
-        # 这里转发到后端根路径，使 /hunter-api/api/summary -> 后端 /api/summary。
+        # 前端 route.ts 拼成 \${HUNTER_API_BASE_URL}/api/<端点>，
+        # 转发到后端根路径，使 /hunter-api/api/summary -> 后端 /api/summary。
         proxy_pass http://127.0.0.1:${HUNTER_API_PORT}/;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
@@ -161,8 +170,8 @@ server {
         proxy_pass http://127.0.0.1:${HUNTER_API_PORT}/health;
     }
 EOF
-  if [ "$INSTALL_FRONTEND" = "1" ]; then
-    cat >>/etc/nginx/sites-available/binance-hunter <<EOF
+    if [ "$INSTALL_FRONTEND" = "1" ]; then
+      cat <<EOF
 
     location / {
         proxy_pass http://127.0.0.1:${NEXT_PORT};
@@ -175,11 +184,47 @@ EOF
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 EOF
-  fi
-  cat >>/etc/nginx/sites-available/binance-hunter <<'EOF'
+    fi
+  }
+
+  if [ -n "$SSL_CERT" ] && [ -n "$SSL_KEY" ]; then
+    echo "  -> HTTPS：使用证书 ${SSL_CERT}"
+    {
+      cat <<EOF
+server {
+    listen 80;
+    server_name ${SERVER_NAME};
+    return 301 https://\$host\$request_uri;
 }
+
+server {
+    listen 443 ssl;
+    server_name ${SERVER_NAME};
+
+    ssl_certificate ${SSL_CERT};
+    ssl_certificate_key ${SSL_KEY};
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
 EOF
-  ln -sf /etc/nginx/sites-available/binance-hunter /etc/nginx/sites-enabled/binance-hunter
+      gen_locations
+      echo "}"
+    } >"$NGINX_CONF"
+  else
+    echo "  -> 仅 HTTP（未提供 SSL_CERT/SSL_KEY）"
+    {
+      cat <<EOF
+server {
+    listen 80;
+    server_name ${SERVER_NAME};
+
+EOF
+      gen_locations
+      echo "}"
+    } >"$NGINX_CONF"
+  fi
+
+  ln -sf "$NGINX_CONF" /etc/nginx/sites-enabled/binance-hunter
   rm -f /etc/nginx/sites-enabled/default
   nginx -t
   systemctl reload nginx
@@ -201,10 +246,11 @@ if [ "$INSTALL_FRONTEND" = "1" ]; then
 fi
 
 echo "Deploy complete"
-echo "Backend API: http://127.0.0.1:${HUNTER_API_PORT}"
+echo "Backend API (local): http://127.0.0.1:${HUNTER_API_PORT}"
 if [ -n "$DOMAIN" ]; then
-  echo "Public API for Vercel: http://${DOMAIN}/hunter-api"
+  if [ -n "$SSL_CERT" ] && [ -n "$SSL_KEY" ]; then PUBLIC_SCHEME=https; else PUBLIC_SCHEME=http; fi
+  echo "Public API: ${PUBLIC_SCHEME}://${DOMAIN}/hunter-api"
   if [ "$INSTALL_FRONTEND" = "1" ]; then
-    echo "Dashboard: http://${DOMAIN}/"
+    echo "Dashboard: ${PUBLIC_SCHEME}://${DOMAIN}/"
   fi
 fi
