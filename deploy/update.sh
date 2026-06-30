@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Update an existing server deployment.
+# Usage:
+#   sudo bash deploy/update.sh
+
+CLONE_DIR="${CLONE_DIR:-/opt/binance-hunter}"
+APP_DIR="${APP_DIR:-${CLONE_DIR}/frontend}"
+BACKEND_DIR="${BACKEND_DIR:-${CLONE_DIR}/backend}"
+INSTALL_FRONTEND="${INSTALL_FRONTEND:-1}"
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Run as root: sudo bash deploy/update.sh" >&2
+  exit 1
+fi
+
+echo "[1/4] Pull latest code"
+git -C "$CLONE_DIR" fetch origin
+git -C "$CLONE_DIR" reset --hard origin/main
+
+echo "[2/4] Update backend"
+cd "$BACKEND_DIR"
+if [ ! -d .venv ]; then
+  python3 -m venv .venv
+fi
+. .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+echo "[3/4] Update frontend"
+if [ "$INSTALL_FRONTEND" = "1" ]; then
+  cd "$APP_DIR"
+  npm ci
+  npm run build
+fi
+
+echo "[4/4] Restart services"
+systemctl daemon-reload
+systemctl restart binance-hunter-api.service
+systemctl restart binance-hunter-monitor.service
+if [ "$INSTALL_FRONTEND" = "1" ] && systemctl list-unit-files binance-hunter-web.service >/dev/null 2>&1; then
+  systemctl restart binance-hunter-web.service
+fi
+
+systemctl --no-pager --failed || true
+echo "Update complete"

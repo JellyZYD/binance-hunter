@@ -1,0 +1,17 @@
+[Unit]
+Description=Binance pump-dump hunter read-only API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/binance-hunter/backend
+EnvironmentFile=/etc/binance-hunter.env
+ExecStart=/opt/binance-hunter/backend/.venv/bin/python run.py web --config config/settings.json --host 127.0.0.1 --port 8787
+Restart=always
+RestartSec=5
+User=root
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
