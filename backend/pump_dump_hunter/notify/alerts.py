@@ -85,13 +85,13 @@ def render_wecom_markdown(alert: Alert) -> str:
     cat = f" [{alert.category}]" if alert.category else ""
     hint = next((e.replace("经验", "") for e in alert.evidence if e.startswith("经验见底")), "")
     url = f"https://www.binance.com/zh-CN/futures/{alert.symbol}"
-    metrics = f"现价 {alert.price} ｜ 距锚点 {alert.remaining_downside_pct:.1f}% ｜ 量比 {alert.volume_ratio:.1f}x"
+    metrics = f"现价 {alert.price} · 距锚点 {alert.remaining_downside_pct:.1f}% · 量比 {alert.volume_ratio:.1f}x"
     if hint:
-        metrics += f" ｜ {hint}"
+        metrics += f" · {hint}"
     return "\n".join([
         f"**{name} · {alert.symbol}{cat}**",
         f"> {metrics}",
-        f"[📊 打开币安合约]({url})",
+        f"币安合约: {url}",
     ])
 
 
