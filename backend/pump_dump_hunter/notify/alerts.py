@@ -62,9 +62,10 @@ def render_console_alert(alert: Alert) -> str:
 def render_markdown_alert(alert: Alert) -> str:
     evidence = "; ".join(alert.evidence)
     risks = "; ".join(alert.risks) or "-"
+    cat = f" [{alert.category}]" if alert.category else ""
     return "\n".join(
         [
-            f"### {alert.level} {alert.symbol} {iso_from_ms(alert.decision_time)}",
+            f"### {alert.level} {alert.symbol}{cat} {iso_from_ms(alert.decision_time)}",
             f"- price: {alert.price}",
             f"- invalidation: {alert.invalidation_price}",
             f"- high/anchor: {alert.high_price} / {alert.anchor_price}",
@@ -77,14 +78,19 @@ def render_markdown_alert(alert: Alert) -> str:
 
 
 def render_wecom_markdown(alert: Alert) -> str:
-    return (
-        f"**{alert.level} {alert.symbol}**\n"
-        f"> time: {iso_from_ms(alert.decision_time)}\n"
-        f"> price: {alert.price}\n"
-        f"> invalidation: {alert.invalidation_price}\n"
-        f"> remaining: {alert.remaining_downside_pct:.2f}%\n"
-        f"> vol: {alert.volume_ratio:.2f}x"
-    )
+    cat = f" [{alert.category}]" if alert.category else ""
+    hint = next((e for e in alert.evidence if e.startswith("经验见底")), "")
+    lines = [f"**{alert.level} {alert.symbol}{cat}**"]
+    if hint:
+        lines.append(f"> {hint}")
+    lines += [
+        f"> time: {iso_from_ms(alert.decision_time)}",
+        f"> price: {alert.price}",
+        f"> invalidation: {alert.invalidation_price}",
+        f"> remaining: {alert.remaining_downside_pct:.2f}%",
+        f"> vol: {alert.volume_ratio:.2f}x",
+    ]
+    return "\n".join(lines)
 
 
 def export_day(alerts_dir: str | Path, day: str) -> Path:

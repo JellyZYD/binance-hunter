@@ -213,6 +213,7 @@ class Alert:
     volume_ratio: float
     evidence: list[str]
     risks: list[str]
+    category: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()

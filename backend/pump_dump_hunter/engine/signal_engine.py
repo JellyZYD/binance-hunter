@@ -439,6 +439,9 @@ def make_alert(level: str, pump: PumpEvent, candle: Candle, vol_ratio: float, re
     buffer_pct = 1.0 + float(0.01 * 0.35)
     invalidation = max(pump.high_price, candle.high) * buffer_pct
     alert_id = f"{pump.event_id}-{level}-{candle.close_time}"
+    pump_gain = (pump.high_price / pump.anchor_price - 1) * 100 if pump.anchor_price > 0 else 0.0
+    category = "妖币" if pump_gain >= 50.0 else "普通"
+    bottom = BOTTOM_HINT_HOURS.get(level, "18-21")
     return Alert(
         alert_id=alert_id,
         event_id=pump.event_id,
@@ -453,10 +456,15 @@ def make_alert(level: str, pump: PumpEvent, candle: Candle, vol_ratio: float, re
         high_price=pump.high_price,
         remaining_downside_pct=round(remaining, 4),
         volume_ratio=round(vol_ratio, 4),
-        evidence=evidence + [
+        evidence=[f"类型={category}(涨幅{pump_gain:.0f}%)", f"经验见底≈{bottom}h"] + evidence + [
             f"drop_from_high={pct_change(candle.close, pump.high_price):+.2f}%",
             f"volume_ratio={vol_ratio:.2f}x",
             f"remaining_to_anchor={remaining:.2f}%",
         ],
         risks=[],
+        category=category,
     )
+
+
+# 经验见底用时(小时,来自90天复盘): early/short ~18-21h, fallback ~15h
+BOTTOM_HINT_HOURS = {"early_alert": "18-21", "short_signal": "18-21", "fallback_alert": "15"}
