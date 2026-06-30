@@ -6,8 +6,7 @@ set -euo pipefail
 #   sudo DOMAIN=example.com bash deploy/setup.sh
 #   sudo INSTALL_FRONTEND=0 bash deploy/setup.sh
 
-# REPO_URL 仍指向当前 GitHub 仓库；如果之后把仓库改名，记得同步更新这里。
-REPO_URL="${REPO_URL:-https://github.com/JellyZYD/pixel-canvas.git}"
+REPO_URL="${REPO_URL:-https://github.com/JellyZYD/binance-hunter.git}"
 CLONE_DIR="${CLONE_DIR:-/opt/binance-hunter}"
 APP_DIR="${APP_DIR:-${CLONE_DIR}/frontend}"
 BACKEND_DIR="${BACKEND_DIR:-${CLONE_DIR}/backend}"
