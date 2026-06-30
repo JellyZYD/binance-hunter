@@ -77,20 +77,22 @@ def render_markdown_alert(alert: Alert) -> str:
     )
 
 
+LEVEL_CN = {"early_alert": "顶部预警", "short_signal": "下跌启动", "fallback_alert": "回落兜底"}
+
+
 def render_wecom_markdown(alert: Alert) -> str:
+    name = LEVEL_CN.get(alert.level, alert.level)
     cat = f" [{alert.category}]" if alert.category else ""
-    hint = next((e for e in alert.evidence if e.startswith("经验见底")), "")
-    lines = [f"**{alert.level} {alert.symbol}{cat}**"]
+    hint = next((e.replace("经验", "") for e in alert.evidence if e.startswith("经验见底")), "")
+    url = f"https://www.binance.com/zh-CN/futures/{alert.symbol}"
+    metrics = f"现价 {alert.price} ｜ 距锚点 {alert.remaining_downside_pct:.1f}% ｜ 量比 {alert.volume_ratio:.1f}x"
     if hint:
-        lines.append(f"> {hint}")
-    lines += [
-        f"> time: {iso_from_ms(alert.decision_time)}",
-        f"> price: {alert.price}",
-        f"> invalidation: {alert.invalidation_price}",
-        f"> remaining: {alert.remaining_downside_pct:.2f}%",
-        f"> vol: {alert.volume_ratio:.2f}x",
-    ]
-    return "\n".join(lines)
+        metrics += f" ｜ {hint}"
+    return "\n".join([
+        f"**{name} · {alert.symbol}{cat}**",
+        f"> {metrics}",
+        f"[📊 打开币安合约]({url})",
+    ])
 
 
 def export_day(alerts_dir: str | Path, day: str) -> Path:
