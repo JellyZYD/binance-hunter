@@ -147,7 +147,9 @@ server {
     server_name ${DOMAIN};
 
     location /hunter-api/ {
-        proxy_pass http://127.0.0.1:${HUNTER_API_PORT}/api/;
+        # 前端 route.ts 会拼成 ${HUNTER_API_BASE_URL}/api/<端点>，
+        # 这里转发到后端根路径，使 /hunter-api/api/summary -> 后端 /api/summary。
+        proxy_pass http://127.0.0.1:${HUNTER_API_PORT}/;
         proxy_http_version 1.1;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
