@@ -1,0 +1,17 @@
+[Unit]
+Description=Binance pump-dump hunter monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/pixel-canvas/pixel-canvas/backend/hunter
+EnvironmentFile=/etc/binance-hunter.env
+ExecStart=/opt/pixel-canvas/pixel-canvas/backend/hunter/.venv/bin/python run.py monitor --config config/settings.json --top 120 --broad-top 220 --discover-every 15m --max-workers 8
+Restart=always
+RestartSec=5
+User=root
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

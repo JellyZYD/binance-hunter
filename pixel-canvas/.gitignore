@@ -2,6 +2,8 @@
 
 # dependencies
 /node_modules
+/.npm-cache
+/.pnpm-store
 /.pnp
 .pnp.*
 .yarn/*
@@ -36,6 +38,19 @@ yarn-error.log*
 
 # vercel
 .vercel
+
+# hunter runtime data
+/backend/hunter/.venv/
+/backend/hunter/storage/*
+!/backend/hunter/storage/.gitkeep
+/backend/hunter/alerts/*
+!/backend/hunter/alerts/.gitkeep
+/backend/hunter/data/cache/*
+!/backend/hunter/data/cache/.gitkeep
+/backend/hunter/reports/*
+!/backend/hunter/reports/.gitkeep
+/backend/hunter/**/__pycache__/
+/backend/hunter/**/*.py[cod]
 
 # typescript
 *.tsbuildinfo

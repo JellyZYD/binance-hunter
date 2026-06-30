@@ -1,0 +1,12 @@
+{
+  "pump_15m_pct": [3.5],
+  "pump_30m_pct": [5.0],
+  "volume_ratio_15m": [2.0],
+  "volume_ratio_30m": [2.0],
+  "gain_rank_top": [20],
+  "ranked_min_15m_pct": [1.5],
+  "ranked_min_30m_pct": [3.0],
+  "confirm_drop_from_high_pct": [4.0, 5.0],
+  "confirm_volume_ratio": [2.0, 2.5],
+  "confirm_min_remaining_pct": [25.0]
+}

@@ -1,198 +1,208 @@
-#!/bin/bash
-# Pixel Canvas 一键部署脚本 (Ubuntu)
-# 用法: sudo bash deploy/setup.sh
-# 域名: pixia.cc
+#!/usr/bin/env bash
+set -euo pipefail
 
-set -e
+# Ubuntu one-shot deploy.
+# Usage:
+#   sudo DOMAIN=example.com bash deploy/setup.sh
+#   sudo INSTALL_FRONTEND=0 bash deploy/setup.sh
 
-DOMAIN="pixia.cc"
-ADMIN_PASSWORD="123456"
-DB_PASSWORD="pixelcanvas_$(openssl rand -hex 8)"
-JWT_SECRET="$(openssl rand -hex 32)"
+REPO_URL="${REPO_URL:-https://github.com/JellyZYD/pixel-canvas.git}"
+CLONE_DIR="${CLONE_DIR:-/opt/pixel-canvas}"
+APP_DIR="${APP_DIR:-${CLONE_DIR}/pixel-canvas}"
+BACKEND_DIR="${BACKEND_DIR:-${APP_DIR}/backend/hunter}"
+DOMAIN="${DOMAIN:-}"
+INSTALL_FRONTEND="${INSTALL_FRONTEND:-1}"
+NODE_MAJOR="${NODE_MAJOR:-20}"
+HUNTER_TOP="${HUNTER_TOP:-120}"
+HUNTER_BROAD_TOP="${HUNTER_BROAD_TOP:-220}"
+HUNTER_MAX_WORKERS="${HUNTER_MAX_WORKERS:-8}"
+HUNTER_DISCOVER_EVERY="${HUNTER_DISCOVER_EVERY:-15m}"
+HUNTER_API_PORT="${HUNTER_API_PORT:-8787}"
+NEXT_PORT="${NEXT_PORT:-3000}"
+HUNTER_NETWORK_PROXY="${HUNTER_NETWORK_PROXY:-}"
+WECOM_WEBHOOK_URL="${WECOM_WEBHOOK_URL:-}"
 
-# Git 仓库克隆后的实际项目目录
-CLONE_DIR="/opt/pixel-canvas"
-APP_DIR="/opt/pixel-canvas/pixel-canvas"
-
-echo "============================================"
-echo "  Pixel Canvas 一键部署"
-echo "  域名: $DOMAIN"
-echo "============================================"
-
-# 1. 安装系统依赖
-echo ""
-echo "[1/8] 安装系统依赖..."
-apt update && apt upgrade -y
-apt install -y curl git nginx openssl
-
-# 2. 安装 Node.js 20
-echo ""
-echo "[2/8] 安装 Node.js 20..."
-if ! command -v node &> /dev/null; then
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
-  apt install -y nodejs
-fi
-echo "Node.js $(node -v), npm $(npm -v)"
-
-# 3. 安装 PostgreSQL
-echo ""
-echo "[3/8] 安装 PostgreSQL..."
-if ! command -v psql &> /dev/null; then
-  apt install -y postgresql postgresql-contrib
-  systemctl enable postgresql
-  systemctl start postgresql
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Run as root: sudo bash deploy/setup.sh" >&2
+  exit 1
 fi
 
-# 创建数据库和用户
-sudo -u postgres psql -c "DROP DATABASE IF EXISTS pixel_canvas;" 2>/dev/null || true
-sudo -u postgres psql -c "DROP USER IF EXISTS pixelcanvas;" 2>/dev/null || true
-sudo -u postgres psql -c "CREATE USER pixelcanvas WITH PASSWORD '$DB_PASSWORD';"
-sudo -u postgres psql -c "CREATE DATABASE pixel_canvas OWNER pixelcanvas;"
-sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE pixel_canvas TO pixelcanvas;"
-echo "数据库创建完成"
+echo "[1/7] Install system packages"
+apt-get update
+apt-get install -y ca-certificates curl git nginx python3 python3-venv python3-pip sqlite3
 
-# 4. 安装 Redis
-echo ""
-echo "[4/8] 安装 Redis..."
-if ! command -v redis-server &> /dev/null; then
-  apt install -y redis-server
-  systemctl enable redis-server
-  systemctl start redis-server
-fi
-echo "Redis 已启动"
-
-# 5. 克隆代码
-echo ""
-echo "[5/8] 克隆代码..."
-if [ -d "$APP_DIR" ]; then
-  cd $APP_DIR && git pull origin main
+if [ "$INSTALL_FRONTEND" = "1" ] && ! command -v node >/dev/null 2>&1; then
+  echo "[2/7] Install Node.js ${NODE_MAJOR}"
+  curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -
+  apt-get install -y nodejs
 else
-  git clone https://github.com/JellyZYD/pixel-canvas.git $CLONE_DIR
-  cd $APP_DIR
+  echo "[2/7] Node.js install skipped"
 fi
 
-# 6. 生成配置文件
-echo ""
-echo "[6/8] 生成配置文件..."
-cat > $APP_DIR/.env << EOF
-DATABASE_URL="postgresql://pixelcanvas:${DB_PASSWORD}@localhost:5432/pixel_canvas"
-REDIS_URL="redis://localhost:6379"
-ADMIN_PASSWORD="${ADMIN_PASSWORD}"
-NEXT_PUBLIC_ADMIN_PASSWORD="${ADMIN_PASSWORD}"
-JWT_SECRET="${JWT_SECRET}"
-SOCKET_PORT=3001
-NEXT_PUBLIC_SOCKET_URL="https://${DOMAIN}"
-NEXT_PUBLIC_APP_URL="https://${DOMAIN}"
+echo "[3/7] Clone or update repo"
+if [ -d "${CLONE_DIR}/.git" ]; then
+  git -C "$CLONE_DIR" fetch origin
+  git -C "$CLONE_DIR" reset --hard origin/main
+else
+  rm -rf "$CLONE_DIR"
+  git clone "$REPO_URL" "$CLONE_DIR"
+fi
+
+echo "[4/7] Configure backend"
+cd "$BACKEND_DIR"
+python3 -m venv .venv
+. .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+mkdir -p storage alerts data/cache reports
+
+cat >/etc/binance-hunter.env <<EOF
+HUNTER_NETWORK_PROXY=${HUNTER_NETWORK_PROXY}
+HUNTER_DB_PATH=${BACKEND_DIR}/storage/hunter.db
+HUNTER_ALERTS_DIR=${BACKEND_DIR}/alerts
+WECOM_WEBHOOK_URL=${WECOM_WEBHOOK_URL}
+EOF
+chmod 600 /etc/binance-hunter.env
+
+cat >/etc/systemd/system/binance-hunter-monitor.service <<EOF
+[Unit]
+Description=Binance pump-dump hunter monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${BACKEND_DIR}
+EnvironmentFile=/etc/binance-hunter.env
+ExecStart=${BACKEND_DIR}/.venv/bin/python run.py monitor --config config/settings.json --top ${HUNTER_TOP} --broad-top ${HUNTER_BROAD_TOP} --discover-every ${HUNTER_DISCOVER_EVERY} --max-workers ${HUNTER_MAX_WORKERS}
+Restart=always
+RestartSec=5
+User=root
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
 EOF
 
-# 7. 安装依赖并构建
-echo ""
-echo "[7/8] 安装依赖并构建..."
-cd $APP_DIR
-npm install
-npm install ts-node
-npx prisma generate
-npx prisma db push --accept-data-loss
-npm run build
+cat >/etc/systemd/system/binance-hunter-api.service <<EOF
+[Unit]
+Description=Binance pump-dump hunter read-only API
+After=network-online.target
+Wants=network-online.target
 
-# 8. 配置 PM2 和 Nginx
-echo ""
-echo "[8/8] 配置 PM2 和 Nginx..."
+[Service]
+Type=simple
+WorkingDirectory=${BACKEND_DIR}
+EnvironmentFile=/etc/binance-hunter.env
+ExecStart=${BACKEND_DIR}/.venv/bin/python run.py web --config config/settings.json --host 127.0.0.1 --port ${HUNTER_API_PORT}
+Restart=always
+RestartSec=5
+User=root
+NoNewPrivileges=true
 
-# 安装 PM2
-npm install -g pm2
+[Install]
+WantedBy=multi-user.target
+EOF
 
-# PM2 配置
-cat > $APP_DIR/ecosystem.config.js << 'PMEOF'
-module.exports = {
-  apps: [
-    {
-      name: 'pixel-canvas',
-      script: 'node_modules/.bin/next',
-      args: 'start',
-      cwd: '/opt/pixel-canvas/pixel-canvas',
-      env: { NODE_ENV: 'production', PORT: 3000 },
-      max_memory_restart: '300M',
-    },
-    {
-      name: 'pixel-socket',
-      script: 'node_modules/.bin/ts-node',
-      args: '--project tsconfig.server.json server/socket.ts',
-      cwd: '/opt/pixel-canvas/pixel-canvas',
-      env: { NODE_ENV: 'production' },
-      max_memory_restart: '100M',
-    },
-  ],
-};
-PMEOF
+echo "[5/7] Configure frontend"
+if [ "$INSTALL_FRONTEND" = "1" ]; then
+  cd "$APP_DIR"
+  cat >.env <<EOF
+HUNTER_API_BASE_URL=http://127.0.0.1:${HUNTER_API_PORT}
+NEXT_PUBLIC_APP_URL=${DOMAIN:+https://${DOMAIN}}
+EOF
+  npm ci
+  npm run build
 
-cd $APP_DIR
-pm2 start ecosystem.config.js
-pm2 save
-pm2 startup
+  cat >/etc/systemd/system/binance-hunter-web.service <<EOF
+[Unit]
+Description=Binance pump-dump hunter web dashboard
+After=network-online.target binance-hunter-api.service
+Wants=network-online.target
 
-# Nginx SSL 配置
-mkdir -p /etc/nginx/ssl
+[Service]
+Type=simple
+WorkingDirectory=${APP_DIR}
+Environment=NODE_ENV=production
+Environment=PORT=${NEXT_PORT}
+Environment=HUNTER_API_BASE_URL=http://127.0.0.1:${HUNTER_API_PORT}
+ExecStart=/usr/bin/npm run start
+Restart=always
+RestartSec=5
+User=root
+NoNewPrivileges=true
 
-cat > /etc/nginx/sites-available/pixel-canvas << 'NGEOF'
+[Install]
+WantedBy=multi-user.target
+EOF
+else
+  rm -f /etc/systemd/system/binance-hunter-web.service
+fi
+
+echo "[6/7] Configure nginx"
+if [ -n "$DOMAIN" ]; then
+  cat >/etc/nginx/sites-available/binance-hunter <<EOF
 server {
     listen 80;
-    server_name pixia.cc www.pixia.cc;
-    return 301 https://$host$request_uri;
-}
+    server_name ${DOMAIN};
 
-server {
-    listen 443 ssl;
-    server_name pixia.cc www.pixia.cc;
+    location /hunter-api/ {
+        proxy_pass http://127.0.0.1:${HUNTER_API_PORT}/api/;
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
 
-    ssl_certificate /etc/nginx/ssl/www.pixia.cc.pem;
-    ssl_certificate_key /etc/nginx/ssl/www.pixia.cc.key;
+    location /health {
+        proxy_pass http://127.0.0.1:${HUNTER_API_PORT}/health;
+    }
+EOF
+  if [ "$INSTALL_FRONTEND" = "1" ]; then
+    cat >>/etc/nginx/sites-available/binance-hunter <<EOF
 
     location / {
-        proxy_pass http://127.0.0.1:3000;
+        proxy_pass http://127.0.0.1:${NEXT_PORT};
         proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
-
-    location /socket.io/ {
-        proxy_pass http://127.0.0.1:3001;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
+EOF
+  fi
+  cat >>/etc/nginx/sites-available/binance-hunter <<'EOF'
 }
-NGEOF
+EOF
+  ln -sf /etc/nginx/sites-available/binance-hunter /etc/nginx/sites-enabled/binance-hunter
+  rm -f /etc/nginx/sites-enabled/default
+  nginx -t
+  systemctl reload nginx
+else
+  echo "DOMAIN is empty; nginx public site config skipped"
+fi
 
-ln -sf /etc/nginx/sites-available/pixel-canvas /etc/nginx/sites-enabled/
-rm -f /etc/nginx/sites-enabled/default
-nginx -t && systemctl reload nginx
+echo "[7/7] Start services"
+systemctl daemon-reload
+systemctl enable --now binance-hunter-api.service binance-hunter-monitor.service
+if [ "$INSTALL_FRONTEND" = "1" ]; then
+  systemctl enable --now binance-hunter-web.service
+fi
 
-echo ""
-echo "============================================"
-echo "  部署完成！"
-echo "============================================"
-echo ""
-echo "  网站地址: https://${DOMAIN}"
-echo "  管理后台: https://${DOMAIN}/zh-CN/admin"
-echo "  管理密码: ${ADMIN_PASSWORD}"
-echo ""
-echo "  数据库密码: ${DB_PASSWORD}"
-echo "  JWT密钥: ${JWT_SECRET}"
-echo "  (以上密码请妥善保管)"
-echo ""
-echo "  SSL 证书需要放到以下位置:"
-echo "    /etc/nginx/ssl/www.${DOMAIN}.pem"
-echo "    /etc/nginx/ssl/www.${DOMAIN}.key"
-echo ""
-echo "  常用命令:"
-echo "    pm2 status          # 查看服务状态"
-echo "    pm2 logs            # 查看日志"
-echo "    pm2 restart all     # 重启服务"
-echo ""
+systemctl --no-pager status binance-hunter-api.service || true
+systemctl --no-pager status binance-hunter-monitor.service || true
+if [ "$INSTALL_FRONTEND" = "1" ]; then
+  systemctl --no-pager status binance-hunter-web.service || true
+fi
+
+echo "Deploy complete"
+echo "Backend API: http://127.0.0.1:${HUNTER_API_PORT}"
+if [ -n "$DOMAIN" ]; then
+  echo "Public API for Vercel: http://${DOMAIN}/hunter-api"
+  if [ "$INSTALL_FRONTEND" = "1" ]; then
+    echo "Dashboard: http://${DOMAIN}/zh-CN"
+  fi
+fi

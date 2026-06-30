@@ -1,170 +1,84 @@
-# Pixel Canvas
+# Binance Pump-Dump Hunter
 
-协作像素画布 — 一个类似 Reddit r/place 的多人在线像素绘画平台。
+这个仓库已经从 Pixel Canvas 改造成 Binance USD-M 合约“妖币冲高回落做空猎手”项目。当前第一阶段只做选币、监控、报警和可视化，不自动下单。
 
-## 功能
+## 目录
 
-- **多人协作** — 实时同步的像素画布，所有用户在同一张画布上创作
-- **注册/登录** — 用户名+邮箱+密码注册，支持用户名或邮箱登录
-- **点数系统** — 每位用户拥有点数，放置像素消耗点数，随时间自动恢复
-- **实时聊天** — 内置浮动聊天面板，在线用户可实时交流
-- **管理后台** — 用户管理、聊天管理、画布重置/回滚、点数配置
-- **多语言** — 支持 12 种语言（中/英/日/韩/法/德/西/葡/俄/阿/印/繁中）
+| 路径 | 作用 |
+| --- | --- |
+| `backend/hunter` | Python 策略后端：REST discovery、WebSocket 监控、SQLite、回测、报警 API |
+| `src` | Next.js 轻量面板：实时查看流动性榜、活跃监控币、报警、回测记录 |
+| `src/app/api/hunter` | Next API 代理：把网页请求转发到 Python 只读 API |
+| `database` | SQLite schema 和数据库说明 |
+| `deploy` | Ubuntu 服务器一键部署、systemd、Nginx、Vercel 说明 |
+| `docs` | 策略和前端改造说明 |
 
-## 技术栈
+`proxy.ts` 保留在仓库根目录，继续作为 Next locale 中间件入口。后端的 Binance REST 代理/梯子通过 `HUNTER_NETWORK_PROXY` 环境变量配置，不提交真实代理地址。
 
-- **前端**: Next.js 16, React 19, Tailwind CSS 4
-- **后端**: Next.js App Router API Routes, Socket.io
-- **数据库**: PostgreSQL (Prisma ORM)
-- **缓存**: Redis
-- **认证**: JWT (jose) + bcryptjs
-- **国际化**: next-intl
+## 本地启动
 
-## 项目结构
-
-```
-pixel-canvas/
-├── prisma/              # 数据库 Schema
-├── server/              # Socket.io 服务端
-├── src/
-│   ├── app/
-│   │   ├── [locale]/    # 多语言路由
-│   │   └── api/         # API 路由
-│   │       ├── auth/    # 认证 API (注册/登录/登出/用户信息)
-│   │       ├── admin/   # 管理 API (配置/聊天/用户/重置/回滚)
-│   │       ├── pixel/   # 像素 API
-│   │       ├── canvas/  # 画布分块 API
-│   │       ├── points/  # 点数 API
-│   │       └── stats/   # 统计 API
-│   ├── components/
-│   │   ├── auth/        # 注册/登录组件
-│   │   ├── canvas/      # 画布组件
-│   │   ├── chat/        # 聊天组件
-│   │   ├── points/      # 点数显示
-│   │   ├── admin/       # 管理后台
-│   │   └── ui/          # 通用 UI 组件
-│   ├── hooks/           # 自定义 Hooks
-│   └── lib/             # 工具函数
-├── messages/            # 12 语言翻译文件
-└── deploy/              # 部署脚本
-```
-
-## 本地开发
-
-### 环境要求
-
-- Node.js 20+
-- PostgreSQL
-- Redis
-
-### 安装
+先启动 Python 后端 API：
 
 ```bash
-# 克隆仓库
-git clone https://github.com/JellyZYD/pixel-canvas.git
-cd pixel-canvas
+cd backend/hunter
+python -m venv .venv
+. .venv/Scripts/activate  # Windows PowerShell 可用 .venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+python run.py web --host 127.0.0.1 --port 8787
+```
 
-# 安装依赖
+另开终端启动网页：
+
+```bash
 npm install
-
-# 配置环境变量
 cp .env.example .env
-# 编辑 .env 填入数据库和 Redis 连接信息
-
-# 初始化数据库
-npx prisma db push
-npx prisma generate
+npm run dev
 ```
 
-### 运行
+访问 `http://localhost:3000/zh-CN`。
+
+## 实盘监控
 
 ```bash
-# 启动 Next.js 开发服务器
-npm run dev
-
-# 启动 Socket.io 服务器（另开一个终端）
-npm run dev:socket
+cd backend/hunter
+python run.py monitor --top 120 --broad-top 220 --discover-every 15m --max-workers 8
 ```
 
-访问 http://localhost:3000
+2 核 2G 服务器先用 `top=120 broad-top=220 max-workers=8`，稳定后再提高到 150/200。监控只处理 Binance kline `x=true` 的已收线 K 线，回测和实盘共用同一个 `SignalEngine`。
 
-### 环境变量
+## 配置
 
-| 变量 | 说明 | 默认值 |
-|------|------|--------|
-| `DATABASE_URL` | PostgreSQL 连接字符串 | - |
-| `REDIS_URL` | Redis 连接字符串 | `redis://localhost:6379` |
-| `ADMIN_PASSWORD` | 管理后台密码 | `admin123` |
-| `NEXT_PUBLIC_ADMIN_PASSWORD` | 管理后台密码（客户端） | `admin123` |
-| `JWT_SECRET` | JWT 签名密钥 | - |
-| `SOCKET_PORT` | Socket.io 端口 | `3001` |
-| `NEXT_PUBLIC_SOCKET_URL` | Socket.io 地址 | `http://localhost:3001` |
-| `NEXT_PUBLIC_APP_URL` | 应用地址 | `http://localhost:3000` |
+| 环境变量 | 说明 |
+| --- | --- |
+| `HUNTER_API_BASE_URL` | 前端访问 Python API 的地址，默认 `http://127.0.0.1:8787` |
+| `HUNTER_NETWORK_PROXY` | Binance REST 代理/梯子，例如 `http://127.0.0.1:7890` |
+| `HUNTER_DB_PATH` | SQLite 路径，默认 `backend/hunter/storage/hunter.db` |
+| `WECOM_WEBHOOK_URL` | 企业微信报警 webhook，可选 |
+| `NEXT_PUBLIC_APP_URL` | 网页公开地址，可选 |
+
+## 验证
+
+```bash
+cd backend/hunter
+python -m unittest discover -s tests
+python -m compileall pump_dump_hunter
+
+cd ../..
+npm run build
+```
 
 ## 部署
 
-### Ubuntu 服务器（推荐）
+服务器直接执行：
 
 ```bash
-# 上传代码到服务器后执行
-sudo bash deploy/setup.sh
+sudo DOMAIN=your.domain.com bash deploy/setup.sh
 ```
 
-脚本自动安装 Node.js、PostgreSQL、Redis、PM2、Nginx 并完成部署。
-
-### 部署后操作
+只更新代码：
 
 ```bash
-# 修改配置
-nano /opt/pixel-canvas/.env
-
-# 重启服务
-pm2 restart all
-
-# 查看日志
-pm2 logs
-
-# 启用 HTTPS
-sudo certbot --nginx -d your-domain.com
+sudo bash deploy/update.sh
 ```
 
-### 更新代码
-
-```bash
-cd /opt/pixel-canvas
-git pull origin main
-bash deploy/update.sh
-```
-
-## API 文档
-
-### 认证
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| POST | `/api/auth/register` | 注册 |
-| POST | `/api/auth/login` | 登录 |
-| POST | `/api/auth/logout` | 登出 |
-| GET | `/api/auth/me` | 获取当前用户 |
-
-### 像素
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET | `/api/canvas?cx=&cy=` | 获取画布分块 |
-| GET | `/api/pixel/:x/:y` | 获取像素详情 |
-| POST | `/api/pixel` | 放置像素 |
-
-### 管理
-
-| 方法 | 路径 | 说明 |
-|------|------|------|
-| GET/POST | `/api/admin/config` | 获取/修改配置 |
-| GET/DELETE | `/api/admin/chat` | 聊天管理 |
-| GET/DELETE | `/api/admin/users` | 用户管理 |
-| POST | `/api/admin/reset` | 重置画布 |
-| POST | `/api/admin/rollback` | 回滚操作 |
-
-## License
-
-MIT
+如果前端部署到 Vercel，服务器只跑 `binance-hunter-monitor` 和 `binance-hunter-api`，然后把 Vercel 的 `HUNTER_API_BASE_URL` 指到服务器公开 API 地址。详见 `deploy/README.md`。
