@@ -45,6 +45,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.write_json({"rows": self.store.latest_liquidity(limit=int_param(query, "limit", 100))})
             elif parsed.path == "/api/pumps":
                 self.write_json({"rows": decode_pumps(self.store.active_pump_rows(utc_ms(), limit=int_param(query, "limit", 100)))})
+            elif parsed.path == "/api/long":
+                self.write_json({"rows": self.store.active_long_rows(utc_ms(), limit=int_param(query, "limit", 100))})
             elif parsed.path == "/api/alerts":
                 self.write_json({"rows": decode_alerts(self.store.recent_alerts(limit=int_param(query, "limit", 100)))})
             elif parsed.path == "/api/backtests":

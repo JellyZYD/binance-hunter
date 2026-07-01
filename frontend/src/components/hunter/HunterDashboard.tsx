@@ -74,6 +74,16 @@ type DashboardData = {
   backtests: BacktestRow[];
 };
 
+type LongRow = {
+  symbol: string;
+  entry_price: number;
+  high_price: number;
+  current_price: number;
+  long_signal_seq: number;
+  expires_at: number;
+  last_seen: number;
+};
+
 type ModelMeta = {
   ready?: boolean;
   error?: string;
@@ -182,6 +192,7 @@ export default function HunterDashboard() {
   const [error, setError] = useState<string>('');
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [model, setModel] = useState<ModelMeta | null>(null);
+  const [longRows, setLongRows] = useState<LongRow[]>([]);
 
   async function refresh() {
     try {
@@ -197,6 +208,11 @@ export default function HunterDashboard() {
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+    try {
+      setLongRows((await api<{ rows: LongRow[] }>('/api/hunter/long?limit=60')).rows);
+    } catch {
+      /* 做多接口可选,忽略 */
     }
     try {
       setModel(await api<ModelMeta>('/api/hunter/model'));
@@ -312,6 +328,8 @@ export default function HunterDashboard() {
         </div>
       </section>
 
+      <LongWatchPanel rows={longRows} />
+
       <section className="split-grid">
         <DataSection title="近期流动性 TopN">
           <table>
@@ -417,6 +435,43 @@ function ModelBar({ model }: { model: ModelMeta | null }) {
       <span className="mb-item">下跌启动 AUC {model.dump?.val_auc ?? '-'} · 见顶 AUC {model.top?.val_auc ?? '-'}</span>
       {stale ? <span className="mb-stale">⚠️ 模型数据已过期 {staleDays} 天,建议本地重训后 push 更新</span> : null}
     </div>
+  );
+}
+
+function LongWatchPanel({ rows }: { rows: LongRow[] }) {
+  return (
+    <section className="monitor-section">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">LONG WATCH</p>
+          <h2>做多监管池</h2>
+        </div>
+        <span className="section-count">{rows.length} symbols</span>
+      </div>
+      {rows.length ? (
+        <table className="long-table">
+          <thead>
+            <tr><th>Symbol</th><th>入场</th><th>现价</th><th>距入场</th><th>最高</th><th>做多信号</th><th></th></tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const chg = r.entry_price > 0 ? (r.current_price / r.entry_price - 1) * 100 : 0;
+              return (
+                <tr key={r.symbol}>
+                  <td><b>{r.symbol}</b></td>
+                  <td>{fmt(r.entry_price, 6)}</td>
+                  <td>{fmt(r.current_price, 6)}</td>
+                  <td style={{ color: chg >= 0 ? '#34d399' : '#ff4f70' }}>{chg >= 0 ? '+' : ''}{fmt(chg)}%</td>
+                  <td>{fmt(r.high_price, 6)}</td>
+                  <td>{r.long_signal_seq > 0 ? `已发${r.long_signal_seq}次` : '待触发'}</td>
+                  <td><a href={`https://www.binance.com/zh-CN/futures/${r.symbol}`} target="_blank" rel="noreferrer">合约↗</a></td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      ) : <div className="empty-state">暂无做多监管币</div>}
+    </section>
   );
 }
 

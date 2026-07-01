@@ -297,6 +297,11 @@ h2 { margin: 0; font-size: 18px; line-height: 1.25; }
 }
 .signal-long .signal-topline span,
 .signal-long .signal-price b { color: #34d399; }
+.long-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.long-table th, .long-table td { padding: 6px 10px; text-align: right; border-bottom: 1px solid rgba(148,163,184,.12); }
+.long-table th:first-child, .long-table td:first-child { text-align: left; }
+.long-table th { color: #94a3b8; font-weight: 500; }
+.long-table a { color: #34d399; text-decoration: none; }
 .signal-idle .signal-topline span { color: var(--cyan); }
 
 .split-grid {

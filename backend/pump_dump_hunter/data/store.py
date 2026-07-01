@@ -5,7 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from ..models import Alert, Candle, LiquidityRecord, PumpEvent
+from ..models import Alert, Candle, LiquidityRecord, LongEvent, PumpEvent
 
 
 class Store:
@@ -95,6 +95,21 @@ class Store:
                     high_time INTEGER NOT NULL,
                     expires_at INTEGER NOT NULL,
                     last_update_time INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS long_events(
+                    event_id TEXT PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    first_seen INTEGER NOT NULL,
+                    last_seen INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    entry_price REAL NOT NULL,
+                    high_price REAL NOT NULL,
+                    current_price REAL NOT NULL,
+                    long_signal_seq INTEGER NOT NULL DEFAULT 0,
+                    status TEXT NOT NULL,
+                    exit_reason TEXT NOT NULL DEFAULT '',
+                    evidence_json TEXT NOT NULL DEFAULT '[]'
                 );
 
                 CREATE TABLE IF NOT EXISTS alerts(
@@ -338,6 +353,54 @@ class Store:
         finally:
             conn.close()
 
+    def upsert_long_events(self, events: list[LongEvent]) -> None:
+        if not events:
+            return
+        conn = self.connect()
+        try:
+            conn.executemany(
+                """INSERT OR REPLACE INTO long_events(
+                    event_id, symbol, first_seen, last_seen, expires_at, entry_price,
+                    high_price, current_price, long_signal_seq, status, exit_reason, evidence_json
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                [
+                    (
+                        e.event_id, e.symbol, e.first_seen, e.last_seen, e.expires_at, e.entry_price,
+                        e.high_price, e.current_price, e.long_signal_seq, e.status, e.exit_reason,
+                        json.dumps(e.evidence, ensure_ascii=False),
+                    )
+                    for e in events
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def active_long_events(self, now_ms: int) -> list[LongEvent]:
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM long_events WHERE status='active' AND expires_at>=? ORDER BY symbol", (now_ms,)
+            ).fetchall()
+            dedup: dict[str, LongEvent] = {}
+            for row in rows:
+                e = row_to_long_event(row)
+                dedup[e.symbol] = e
+            return list(dedup.values())
+        finally:
+            conn.close()
+
+    def active_long_rows(self, now_ms: int, limit: int = 100) -> list[dict[str, Any]]:
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM long_events WHERE status='active' AND expires_at>=? ORDER BY last_seen DESC LIMIT ?",
+                (now_ms, int(limit)),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
     def active_pump_events(self, now_ms: int) -> list[PumpEvent]:
         conn = self.connect()
         try:
@@ -561,6 +624,23 @@ def row_to_event(row: sqlite3.Row) -> PumpEvent:
         early_alert_seq=row_get(row, "early_alert_seq") or 0,
         short_signal_seq=row_get(row, "short_signal_seq") or 0,
         fallback_alert_seq=row_get(row, "fallback_alert_seq") or 0,
+    )
+
+
+def row_to_long_event(row: sqlite3.Row) -> LongEvent:
+    return LongEvent(
+        event_id=str(row["event_id"]),
+        symbol=str(row["symbol"]),
+        first_seen=int(row["first_seen"]),
+        last_seen=int(row["last_seen"]),
+        expires_at=int(row["expires_at"]),
+        entry_price=float(row["entry_price"]),
+        high_price=float(row["high_price"]),
+        current_price=float(row["current_price"]),
+        long_signal_seq=int(row_get(row, "long_signal_seq") or 0),
+        status=str(row["status"]),
+        exit_reason=str(row_get(row, "exit_reason") or ""),
+        evidence=json.loads(row_get(row, "evidence_json") or "[]"),
     )
 
 

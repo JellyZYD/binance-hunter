@@ -40,6 +40,10 @@ class SignalEngine:
         for event in events:
             self.events_by_symbol[event.symbol] = event
 
+    def load_long_events(self, events: list[LongEvent]) -> None:
+        for event in events:
+            self.long_events_by_symbol[event.symbol] = event
+
     def on_discovery(self, records: list[LiquidityRecord], decision_time: int) -> list[PumpEvent]:
         changed = []
         active_ms = int(self.active_hours * 3_600_000)

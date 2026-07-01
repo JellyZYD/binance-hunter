@@ -29,6 +29,8 @@ async def monitor(
     sink = AlertSink(dirs["alerts"])
     engine = SignalEngine(settings)
     engine.load_events(store.active_pump_events(utc_ms()))
+    if engine.long_enabled:
+        engine.load_long_events(store.active_long_events(utc_ms()))
     print(f"signal mode={engine.mode} new_high_reset={engine.params.new_high_reset_pct}%", flush=True)
     discover_seconds = parse_duration_seconds(discover_every)
     processed = 0
@@ -61,6 +63,10 @@ async def monitor(
             store.save_candles([event.candle])
             changed, alerts = engine.on_kline(event)
             store.upsert_pump_events(changed)
+            if engine.long_enabled:
+                le = engine.long_events_by_symbol.get(event.symbol)
+                if le is not None:
+                    store.upsert_long_events([le])
             emit_alerts(store, sink, alerts)
             if processed % int(settings["websocket"].get("heartbeat_events", 250)) == 0:
                 print(
@@ -103,6 +109,7 @@ def run_discovery_cycle(
             refresh_long_flow(client, engine, max_workers)
         except Exception as exc:
             print(f"[{local_stamp()}] long flow refresh failed: {type(exc).__name__}: {exc}", flush=True)
+        store.upsert_long_events(list(engine.long_events_by_symbol.values()))
     selected = [r.symbol for r in records if r.selected]
     long_cands = sum(1 for r in records if r.long_candidate)
     print(
