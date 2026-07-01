@@ -459,6 +459,17 @@ td { color: #dce9e7; }
 }
 .model-bar .mb-stale { color: #fca5a5; font-weight: 600; }
 
+.badge-hi {
+  margin-left: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(52, 211, 153, 0.18);
+  color: #6ee7b7;
+}
+.ml-score { margin-left: 6px; font-size: 11px; color: #94a3b8; }
+.signal-topline .cat-tag.hi { color: #6ee7b7; opacity: 1; }
+
 /* 一张卡展开 K 线时不再把同排另一张卡拉长 */
 .monitor-board { align-items: start; }
 .monitor-row { align-items: start; }

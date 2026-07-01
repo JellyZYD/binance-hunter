@@ -145,6 +145,13 @@ function seqText(occurrence?: number) {
   return occurrence && occurrence > 0 ? `第${occurrence}次` : '';
 }
 
+function mlInfo(evidence?: string[]) {
+  const ev = evidence || [];
+  const tier = ev.find((e) => e.startsWith('置信='))?.split('=')[1] || '';
+  const score = ev.find((e) => e.startsWith('ML') && e.includes('分='))?.split('=')[1] || '';
+  return { tier, score };
+}
+
 function signalClass(level?: string) {
   if (level === 'short_signal') return 'signal-short';
   if (level === 'early_alert') return 'signal-early';
@@ -341,6 +348,8 @@ export default function HunterDashboard() {
                 <td>
                   <span className={`badge ${signalClass(r.level)}`}>{[signalLabel(r.level), seqText(r.occurrence)].filter(Boolean).join(' ')}</span>
                   {r.category ? <span className="badge badge-cat">{r.category}</span> : null}
+                  {mlInfo(r.evidence).tier === '高置信' ? <span className="badge badge-hi">高置信</span> : null}
+                  {mlInfo(r.evidence).score ? <span className="ml-score">分{mlInfo(r.evidence).score}</span> : null}
                 </td>
                 <td><b>{r.symbol}</b></td>
                 <td>{fmt(r.price)}</td>
@@ -409,6 +418,7 @@ function ModelBar({ model }: { model: ModelMeta | null }) {
 
 function MonitorContract({ row }: { row: MonitorRow }) {
   const alert = row.latestAlert;
+  const ml = mlInfo(alert?.evidence);
   const [open, setOpen] = useState(false);
   const [candles, setCandles] = useState<Candle[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -456,6 +466,8 @@ function MonitorContract({ row }: { row: MonitorRow }) {
           <span>
             {[signalLabel(alert?.level), seqText(alert?.occurrence)].filter(Boolean).join(' ')}
             {alert?.category ? <em className="cat-tag">{alert.category}</em> : null}
+            {ml.tier === '高置信' ? <em className="cat-tag hi">高置信</em> : null}
+            {ml.score ? <em className="cat-tag">分{ml.score}</em> : null}
           </span>
         </div>
         <div className={`signal-time-big ${alert ? '' : 'muted'}`}>{alert ? date(alert.decision_time) : '待触发'}</div>
