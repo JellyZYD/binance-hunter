@@ -391,3 +391,50 @@ td { color: #dce9e7; }
   font-size: 11px;
   opacity: 0.8;
 }
+
+.contract-actions {
+  margin-left: auto;
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+.link-btn {
+  background: rgba(56, 189, 248, 0.14);
+  color: #7dd3fc;
+  border: none;
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.link-btn:hover { background: rgba(56, 189, 248, 0.24); }
+.trade-link {
+  background: rgba(248, 113, 113, 0.16);
+  color: #fca5a5;
+  border-radius: 6px;
+  padding: 3px 10px;
+  font-size: 12px;
+  text-decoration: none;
+}
+.trade-link:hover { background: rgba(248, 113, 113, 0.28); }
+.kline-panel { grid-column: 1 / -1; margin-top: 10px; }
+.kline-wrap {
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  padding: 8px;
+}
+.kline-svg { width: 100%; height: 150px; display: block; }
+.kline-svg .k-up line, .kline-svg .k-up rect { stroke: #34d399; fill: #34d399; }
+.kline-svg .k-down line, .kline-svg .k-down rect { stroke: #f87171; fill: #f87171; }
+.kline-ref { stroke-dasharray: 4 4; }
+.kline-ref.anchor { stroke: rgba(148, 163, 184, 0.7); }
+.kline-ref.high { stroke: rgba(251, 191, 36, 0.75); }
+.kline-legend {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 4px;
+}
+.kline-empty { padding: 16px; text-align: center; color: #94a3b8; font-size: 12px; }

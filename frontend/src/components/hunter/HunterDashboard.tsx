@@ -33,6 +33,16 @@ type PumpRow = {
   max_gain_pct: number;
   expires_at: number;
   evidence?: string[];
+  first_seen?: number;
+  anchor_price?: number;
+};
+
+type Candle = {
+  open_time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
 };
 
 type AlertRow = {
@@ -342,12 +352,39 @@ export default function HunterDashboard() {
 
 function MonitorContract({ row }: { row: MonitorRow }) {
   const alert = row.latestAlert;
+  const [open, setOpen] = useState(false);
+  const [candles, setCandles] = useState<Candle[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const tradeUrl = `https://www.binance.com/zh-CN/futures/${row.symbol}`;
+
+  async function toggleChart() {
+    const next = !open;
+    setOpen(next);
+    if (next && candles === null) {
+      setLoading(true);
+      try {
+        const q = new URLSearchParams({ symbol: row.symbol, interval: '15m', limit: '160' });
+        if (row.first_seen) q.set('start_time', String(row.first_seen));
+        const res = await api<{ rows: Candle[] }>(`/api/hunter/candles?${q.toString()}`);
+        setCandles(res.rows || []);
+      } catch {
+        setCandles([]);
+      } finally {
+        setLoading(false);
+      }
+    }
+  }
+
   return (
     <article className={`monitor-row ${alert ? 'has-signal' : ''}`}>
       <div className="contract-main">
         <div className="symbol-line">
           <strong>{row.symbol}</strong>
           <span>{row.trigger_window}</span>
+          <span className="contract-actions">
+            <button type="button" className="link-btn" onClick={toggleChart}>{open ? '收起K线' : '15m K线'}</button>
+            <a className="trade-link" href={tradeUrl} target="_blank" rel="noreferrer">交易 ↗</a>
+          </span>
         </div>
         <div className="contract-stats">
           <Metric label="最大涨幅" value={pctText(row.max_gain_pct)} tone="up" />
@@ -383,7 +420,56 @@ function MonitorContract({ row }: { row: MonitorRow }) {
           </>
         )}
       </div>
+
+      {open ? (
+        <div className="kline-panel">
+          {loading ? (
+            <div className="kline-empty">加载中…</div>
+          ) : candles && candles.length ? (
+            <MiniKline candles={candles} anchor={row.anchor_price} high={row.high_price} />
+          ) : (
+            <div className="kline-empty">暂无 15m K 线(该合约刚入池或尚未落库)</div>
+          )}
+        </div>
+      ) : null}
     </article>
+  );
+}
+
+function MiniKline({ candles, anchor, high }: { candles: Candle[]; anchor?: number; high?: number }) {
+  const W = Math.max(candles.length * 7, 160);
+  const H = 150;
+  const pad = 8;
+  const refs = [anchor, high].filter((v): v is number => typeof v === 'number' && v > 0);
+  const lo = Math.min(...candles.map((c) => c.low), ...refs);
+  const hi = Math.max(...candles.map((c) => c.high), ...refs);
+  const span = hi - lo || 1;
+  const y = (p: number) => pad + (1 - (p - lo) / span) * (H - 2 * pad);
+  const cw = (W - 2 * pad) / candles.length;
+  return (
+    <div className="kline-wrap">
+      <svg className="kline-svg" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
+        {typeof anchor === 'number' && anchor > 0 ? <line className="kline-ref anchor" x1={0} x2={W} y1={y(anchor)} y2={y(anchor)} /> : null}
+        {typeof high === 'number' && high > 0 ? <line className="kline-ref high" x1={0} x2={W} y1={y(high)} y2={y(high)} /> : null}
+        {candles.map((c, i) => {
+          const x = pad + i * cw + cw / 2;
+          const up = c.close >= c.open;
+          const top = y(Math.max(c.open, c.close));
+          const bot = y(Math.min(c.open, c.close));
+          const bw = Math.max(cw * 0.62, 1.2);
+          return (
+            <g key={c.open_time} className={up ? 'k-up' : 'k-down'}>
+              <line x1={x} x2={x} y1={y(c.high)} y2={y(c.low)} />
+              <rect x={x - bw / 2} width={bw} y={top} height={Math.max(bot - top, 1)} />
+            </g>
+          );
+        })}
+      </svg>
+      <div className="kline-legend">
+        <span>起涨 {date(candles[0]?.open_time)}</span>
+        <span>{candles.length} 根 15m · 虚线灰=起涨锚点 黄=高点</span>
+      </div>
+    </div>
   );
 }
 

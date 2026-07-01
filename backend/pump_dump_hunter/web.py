@@ -49,6 +49,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.write_json({"rows": decode_alerts(self.store.recent_alerts(limit=int_param(query, "limit", 100)))})
             elif parsed.path == "/api/backtests":
                 self.write_json({"rows": decode_backtests(self.store.backtest_runs(limit=int_param(query, "limit", 20)))})
+            elif parsed.path == "/api/candles":
+                symbol = (query.get("symbol", [""])[0] or "").upper()
+                interval = query.get("interval", ["15m"])[0]
+                limit = int_param(query, "limit", 160)
+                start_raw = query.get("start_time", [""])[0]
+                start_time = int(start_raw) if start_raw.isdigit() else None
+                candles = self.store.load_candles(symbol, interval, start_time=start_time) if symbol else []
+                self.write_json({"symbol": symbol, "interval": interval, "rows": [c.to_dict() for c in candles[-limit:]]})
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "not found")
         except Exception as exc:
