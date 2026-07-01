@@ -83,15 +83,24 @@ LEVEL_CN = {"early_alert": "顶部预警", "short_signal": "下跌启动", "fall
 
 def render_wecom_markdown(alert: Alert) -> str:
     name = LEVEL_CN.get(alert.level, alert.level)
-    cat = f" [{alert.category}]" if alert.category else ""
+    tier = next((e.split("=", 1)[1] for e in alert.evidence if e.startswith("置信=")), "")
+    score = next((e.split("=", 1)[1] for e in alert.evidence if e.startswith("ML") and "分=" in e), "")
     hint = next((e.replace("经验", "") for e in alert.evidence if e.startswith("经验见底")), "")
+    tags = []
+    if alert.category:
+        tags.append(alert.category)
+    if tier and tier != "普通":  # 只在高置信时标出, 普通档为默认不标
+        tags.append(tier)
+    tag = f" [{'·'.join(tags)}]" if tags else ""
     url = f"https://www.binance.com/zh-CN/futures/{alert.symbol}"
     metrics = f"现价 {alert.price} · 距锚点 {alert.remaining_downside_pct:.1f}% · 量比 {alert.volume_ratio:.1f}x"
     if hint:
         metrics += f" · {hint}"
+    if score:
+        metrics += f" · ML分{score}"
     seq = f" 第{alert.occurrence}次" if alert.occurrence else ""
     return "\n".join([
-        f"**{name}{seq} · {alert.symbol}{cat}**",
+        f"**{name}{seq} · {alert.symbol}{tag}**",
         f"> {metrics}",
         f"币安合约: {url}",
     ])
