@@ -32,6 +32,7 @@ class SignalEngine:
         self.long_watch_hours = float(self.signal_cfg.get("long_watch_hours", 36.0))
         self.long_trend_break_pct = float(self.signal_cfg.get("long_trend_break_pct", 8.0))
         self.long_events_by_symbol: dict[str, LongEvent] = {}
+        self.flow_cache: dict[str, Any] = {}  # symbol -> 资金流 DataFrame(ts,oi,oival,lsg,lstp,tkr), 每15m刷新
         self.buffers: dict[tuple[str, str], deque[Candle]] = defaultdict(lambda: deque(maxlen=240))
         self.buffer_times: dict[tuple[str, str], set[int]] = defaultdict(set)
 
@@ -114,6 +115,10 @@ class SignalEngine:
     def active_long_symbols(self) -> list[str]:
         return [s for s, le in self.long_events_by_symbol.items() if le.status == "active"]
 
+    def set_flow(self, symbol: str, flow_df: Any) -> None:
+        """由 live 层每 15m 用实时 OI/多空/taker 刷新资金流缓存。"""
+        self.flow_cache[symbol] = flow_df
+
     def _process_long(self, candle: Candle) -> list[Alert]:
         """做多监管: 更新窗口, 判退出(超时/趋势破坏), 出做多信号(long_setup + ML)。"""
         le = self.long_events_by_symbol.get(candle.symbol)
@@ -134,7 +139,7 @@ class SignalEngine:
         if candle.interval != self.confirm_interval or self.ml is None or not self.ml.ready:
             return []
         from ..ml import features as mlf
-        candles = list(self.buffers[(le.symbol, self.confirm_interval)])
+        candles = sorted(self.buffers[(le.symbol, self.confirm_interval)], key=lambda c: c.open_time)
         if len(candles) < mlf.LOOKBACK + 2:
             return []
         df = mlf.candles_to_frame(candles)
@@ -144,7 +149,13 @@ class SignalEngine:
         row = f.iloc[-1]
         if row[mlf.feature_columns()].isna().any():  # base 特征需齐全(资金流缺省 NaN, LGB 处理)
             return []
-        sc = self.ml.score(row, "long")
+        # 资金流特征(实时缓存对齐; 无则 NaN, LGB 原生处理)
+        flow_in = mlf.align_flow([c.open_time for c in candles], [c.close for c in candles], self.flow_cache.get(le.symbol))
+        flow_row = mlf.compute_flow_features(flow_in).iloc[-1]
+        full = row.copy()
+        for col in mlf.flow_columns():
+            full[col] = flow_row[col]
+        sc = self.ml.score(full, "long")
         thr = self.ml.threshold("long")
         if sc is None or thr is None or sc < thr:
             return []

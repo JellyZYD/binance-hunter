@@ -82,6 +82,7 @@ sudo bash deploy/update.sh
 - 默认信号走 ML 两段式打分,模型文件随仓库分发(`backend/pump_dump_hunter/ml/models/`),`update.sh` 会一并拉取。
 - 服务器只做**推理**,`requirements.txt` 已含 `numpy/pandas/lightgbm`(update.sh 自动装)。**训练只在本地**(2核2G 不训),重训后 push 模型文件即可,详见 [`../docs/ml.md`](../docs/ml.md)。
 - 更新后 `journalctl -u binance-hunter-monitor` 应出现 `ML scorer ready=True`;若 `ready=False`(依赖装失败/模型缺失),会不发信号,可临时把 `signals.mode` 改回 `v2` 重启。
+- **做多线**(`signals.long_enabled=true`):除信号外,discovery 每 15m 会为做多监管币多拉 4 个 `/futures/data/` 接口(OI/多空/taker),日志 `long flow refreshed M/N`;想关掉做多线把 `long_enabled` 设 `false` 重启即可。
 - 若 `pip install lightgbm` 在 2核2G 上因内存失败,先加 swap(见下方)再 `update.sh`。
 
 ## 扩大候选池 / 调参

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from .config import ensure_dirs
@@ -97,6 +98,11 @@ def run_discovery_cycle(
     store.save_liquidity_snapshot(run_id, now, records)
     changed = engine.on_discovery(records, meta["data_cutoff_time"])
     store.upsert_pump_events(changed)
+    if engine.long_enabled:
+        try:
+            refresh_long_flow(client, engine, max_workers)
+        except Exception as exc:
+            print(f"[{local_stamp()}] long flow refresh failed: {type(exc).__name__}: {exc}", flush=True)
     selected = [r.symbol for r in records if r.selected]
     long_cands = sum(1 for r in records if r.long_candidate)
     print(
@@ -162,6 +168,41 @@ def prewarm_active_events(client: BinanceRestClient, store: Store, engine: Signa
     )
     if errors:
         print(f"[{local_stamp()}] prewarm error preview: {'; '.join(errors[:5])}", flush=True)
+
+
+def refresh_long_flow(client: BinanceRestClient, engine: SignalEngine, max_workers: int = 8) -> None:
+    """每 15m 为做多监管币拉取 OI/多空/taker, 刷新引擎资金流缓存(供 long 模型完整 94 特征打分)。"""
+    symbols = engine.active_long_symbols()
+    if not symbols:
+        return
+    import pandas as pd
+
+    def fetch(sym: str):
+        oi = client.open_interest_hist(sym, "15m", 200)
+        lsg = client.global_long_short_ratio(sym, "15m", 200)
+        lstp = client.top_position_ratio(sym, "15m", 200)
+        tkr = client.taker_long_short_ratio(sym, "15m", 200)
+        df = pd.DataFrame(oi, columns=["ts", "oi", "oival"])
+        for rows, col in ((lsg, "lsg"), (lstp, "lstp"), (tkr, "tkr")):
+            d = pd.DataFrame(rows, columns=["ts", col])
+            df = pd.merge_asof(df.sort_values("ts"), d.sort_values("ts"), on="ts", direction="backward")
+        return sym, df
+
+    ok = 0
+    errors: list[str] = []
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futs = {pool.submit(fetch, s): s for s in symbols}
+        for fut in as_completed(futs):
+            sym = futs[fut]
+            try:
+                s, df = fut.result()
+                engine.set_flow(s, df)
+                ok += 1
+            except Exception as exc:
+                errors.append(f"{sym}={type(exc).__name__}: {exc}"[:120])
+    print(f"[{local_stamp()}] long flow refreshed {ok}/{len(symbols)} errors={len(errors)}", flush=True)
+    if errors:
+        print(f"[{local_stamp()}] long flow error preview: {'; '.join(errors[:5])}", flush=True)
 
 
 def emit_alerts(store: Store, sink: AlertSink, alerts: list[Alert]) -> None:

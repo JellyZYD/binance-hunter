@@ -76,3 +76,20 @@ class BinanceRestClient:
             params["endTime"] = end_time
         rows = self._request("/fapi/v1/klines", params)
         return [Candle.from_binance_rest(symbol, interval, row) for row in rows]
+
+    # ---- 做多资金流(/futures/data/, 同域名) ----
+    def open_interest_hist(self, symbol: str, period: str = "15m", limit: int = 200) -> list[tuple[int, float, float]]:
+        rows = self._request("/futures/data/openInterestHist", {"symbol": symbol.upper(), "period": period, "limit": limit})
+        return [(int(r["timestamp"]), float(r["sumOpenInterest"]), float(r["sumOpenInterestValue"])) for r in rows]
+
+    def global_long_short_ratio(self, symbol: str, period: str = "15m", limit: int = 200) -> list[tuple[int, float]]:
+        rows = self._request("/futures/data/globalLongShortAccountRatio", {"symbol": symbol.upper(), "period": period, "limit": limit})
+        return [(int(r["timestamp"]), float(r["longShortRatio"])) for r in rows]
+
+    def top_position_ratio(self, symbol: str, period: str = "15m", limit: int = 200) -> list[tuple[int, float]]:
+        rows = self._request("/futures/data/topLongShortPositionRatio", {"symbol": symbol.upper(), "period": period, "limit": limit})
+        return [(int(r["timestamp"]), float(r["longShortRatio"])) for r in rows]
+
+    def taker_long_short_ratio(self, symbol: str, period: str = "15m", limit: int = 200) -> list[tuple[int, float]]:
+        rows = self._request("/futures/data/takerlongshortRatio", {"symbol": symbol.upper(), "period": period, "limit": limit})
+        return [(int(r["timestamp"]), float(r["buySellRatio"])) for r in rows]

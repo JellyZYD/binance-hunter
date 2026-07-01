@@ -121,6 +121,18 @@ def flow_columns() -> list[str]:
     return ["oi_chg16", "oi_chg96", "oi_div16", "oival_chg16", "ls_global", "ls_global_z", "ls_top_pos", "tk_ratio", "tk_ma8"]
 
 
+def align_flow(times: list[int], closes: list[float], flow_df: "pd.DataFrame | None") -> "pd.DataFrame":
+    """把资金流(ts,oi,oival,lsg,lstp,tkr)按 15m 缓冲的 open_time as-of 对齐, 供 compute_flow_features。"""
+    base = pd.DataFrame({"b": list(times), "close": list(closes)})
+    cols = ["oi", "oival", "lsg", "lstp", "tkr"]
+    if flow_df is None or len(flow_df) == 0:
+        for c in cols:
+            base[c] = np.nan
+        return base[["close"] + cols]
+    m = pd.merge_asof(base, flow_df.sort_values("ts"), left_on="b", right_on="ts", direction="backward")
+    return m[["close"] + cols]
+
+
 def long_feature_columns() -> list[str]:
     return feature_columns() + flow_columns()
 
