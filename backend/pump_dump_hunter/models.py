@@ -191,6 +191,9 @@ class PumpEvent:
     early_alerted_after_high_time: int | None = None
     short_alerted_after_high_time: int | None = None
     fallback_alerted_after_high_time: int | None = None
+    early_alert_seq: int = 0
+    short_signal_seq: int = 0
+    fallback_alert_seq: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -214,6 +217,7 @@ class Alert:
     evidence: list[str]
     risks: list[str]
     category: str = ""
+    occurrence: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()

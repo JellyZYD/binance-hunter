@@ -45,6 +45,8 @@ type AlertRow = {
   remaining_downside_pct: number;
   volume_ratio: number;
   evidence?: string[];
+  occurrence?: number;
+  category?: string;
 };
 
 type BacktestRow = {
@@ -114,6 +116,10 @@ function signalLabel(level?: string) {
   if (level === 'short_signal') return '下跌启动';
   if (level === 'fallback_alert') return '回落兜底';
   return level || '等待信号';
+}
+
+function seqText(occurrence?: number) {
+  return occurrence && occurrence > 0 ? `第${occurrence}次` : '';
 }
 
 function signalClass(level?: string) {
@@ -292,7 +298,10 @@ export default function HunterDashboard() {
             <tbody>{(data?.alerts || []).map((r) => (
               <tr key={r.alert_id}>
                 <td>{date(r.decision_time)}</td>
-                <td><span className={`badge ${signalClass(r.level)}`}>{signalLabel(r.level)}</span></td>
+                <td>
+                  <span className={`badge ${signalClass(r.level)}`}>{[signalLabel(r.level), seqText(r.occurrence)].filter(Boolean).join(' ')}</span>
+                  {r.category ? <span className="badge badge-cat">{r.category}</span> : null}
+                </td>
                 <td><b>{r.symbol}</b></td>
                 <td>{fmt(r.price)}</td>
                 <td>{fmt(r.invalidation_price)}</td>
@@ -350,7 +359,10 @@ function MonitorContract({ row }: { row: MonitorRow }) {
 
       <div className={`inline-signal ${signalClass(alert?.level)}`}>
         <div className="signal-topline">
-          <span>{signalLabel(alert?.level)}</span>
+          <span>
+            {[signalLabel(alert?.level), seqText(alert?.occurrence)].filter(Boolean).join(' ')}
+            {alert?.category ? <em className="cat-tag">{alert.category}</em> : null}
+          </span>
           <strong>{alert ? timeOnly(alert.decision_time) : 'ARMED'}</strong>
         </div>
         {alert ? (

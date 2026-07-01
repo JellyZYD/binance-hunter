@@ -376,3 +376,18 @@ td { color: #dce9e7; }
     flex-direction: column;
   }
 }
+
+.badge-cat {
+  margin-left: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(148, 163, 184, 0.16);
+  color: #cbd5e1;
+}
+.signal-topline .cat-tag {
+  margin-left: 6px;
+  font-style: normal;
+  font-size: 11px;
+  opacity: 0.8;
+}

@@ -145,7 +145,20 @@ class Store:
             ensure_columns(
                 conn,
                 "pump_events",
-                {"fallback_alerted_after_high_time": "INTEGER"},
+                {
+                    "fallback_alerted_after_high_time": "INTEGER",
+                    "early_alert_seq": "INTEGER NOT NULL DEFAULT 0",
+                    "short_signal_seq": "INTEGER NOT NULL DEFAULT 0",
+                    "fallback_alert_seq": "INTEGER NOT NULL DEFAULT 0",
+                },
+            )
+            ensure_columns(
+                conn,
+                "alerts",
+                {
+                    "occurrence": "INTEGER NOT NULL DEFAULT 0",
+                    "category": "TEXT NOT NULL DEFAULT ''",
+                },
             )
             conn.commit()
         finally:
@@ -284,8 +297,8 @@ class Store:
                     event_id, symbol, first_seen, last_seen, expires_at, trigger_window,
                     anchor_price, high_price, high_time, current_price, max_gain_pct,
                     status, evidence_json, early_alerted_after_high_time, short_alerted_after_high_time,
-                    fallback_alerted_after_high_time
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    fallback_alerted_after_high_time, early_alert_seq, short_signal_seq, fallback_alert_seq
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         e.event_id,
@@ -304,6 +317,9 @@ class Store:
                         e.early_alerted_after_high_time,
                         e.short_alerted_after_high_time,
                         e.fallback_alerted_after_high_time,
+                        e.early_alert_seq,
+                        e.short_signal_seq,
+                        e.fallback_alert_seq,
                     )
                     for e in events
                 ],
@@ -352,8 +368,9 @@ class Store:
                 """INSERT OR IGNORE INTO alerts(
                     alert_id, event_id, symbol, level, decision_time, source_candle_close_time,
                     data_cutoff_time, price, invalidation_price, anchor_price, high_price,
-                    remaining_downside_pct, volume_ratio, evidence_json, risks_json, pushed, push_error
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    remaining_downside_pct, volume_ratio, evidence_json, risks_json, pushed, push_error,
+                    occurrence, category
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     alert.alert_id,
                     alert.event_id,
@@ -372,6 +389,8 @@ class Store:
                     json.dumps(alert.risks, ensure_ascii=False),
                     1 if pushed else 0,
                     push_error,
+                    alert.occurrence,
+                    alert.category,
                 ),
             )
             conn.commit()
@@ -539,6 +558,9 @@ def row_to_event(row: sqlite3.Row) -> PumpEvent:
         early_alerted_after_high_time=row["early_alerted_after_high_time"],
         short_alerted_after_high_time=row["short_alerted_after_high_time"],
         fallback_alerted_after_high_time=row_get(row, "fallback_alerted_after_high_time"),
+        early_alert_seq=row_get(row, "early_alert_seq") or 0,
+        short_signal_seq=row_get(row, "short_signal_seq") or 0,
+        fallback_alert_seq=row_get(row, "fallback_alert_seq") or 0,
     )
 
 

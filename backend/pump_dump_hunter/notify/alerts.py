@@ -63,9 +63,10 @@ def render_markdown_alert(alert: Alert) -> str:
     evidence = "; ".join(alert.evidence)
     risks = "; ".join(alert.risks) or "-"
     cat = f" [{alert.category}]" if alert.category else ""
+    seq = f" 第{alert.occurrence}次" if alert.occurrence else ""
     return "\n".join(
         [
-            f"### {alert.level} {alert.symbol}{cat} {iso_from_ms(alert.decision_time)}",
+            f"### {alert.level}{seq} {alert.symbol}{cat} {iso_from_ms(alert.decision_time)}",
             f"- price: {alert.price}",
             f"- invalidation: {alert.invalidation_price}",
             f"- high/anchor: {alert.high_price} / {alert.anchor_price}",
@@ -88,8 +89,9 @@ def render_wecom_markdown(alert: Alert) -> str:
     metrics = f"现价 {alert.price} · 距锚点 {alert.remaining_downside_pct:.1f}% · 量比 {alert.volume_ratio:.1f}x"
     if hint:
         metrics += f" · {hint}"
+    seq = f" 第{alert.occurrence}次" if alert.occurrence else ""
     return "\n".join([
-        f"**{name} · {alert.symbol}{cat}**",
+        f"**{name}{seq} · {alert.symbol}{cat}**",
         f"> {metrics}",
         f"币安合约: {url}",
     ])

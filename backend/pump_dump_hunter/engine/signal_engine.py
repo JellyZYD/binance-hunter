@@ -442,6 +442,7 @@ def make_alert(level: str, pump: PumpEvent, candle: Candle, vol_ratio: float, re
     pump_gain = (pump.high_price / pump.anchor_price - 1) * 100 if pump.anchor_price > 0 else 0.0
     category = "妖币" if pump_gain >= 50.0 else "普通"
     bottom = BOTTOM_HINT_HOURS.get(level, "18-21")
+    occ = _bump_pump_seq(pump, level)
     return Alert(
         alert_id=alert_id,
         event_id=pump.event_id,
@@ -463,8 +464,23 @@ def make_alert(level: str, pump: PumpEvent, candle: Candle, vol_ratio: float, re
         ],
         risks=[],
         category=category,
+        occurrence=occ,
     )
 
 
 # 经验见底用时(小时,来自90天复盘): early/short ~18-21h, fallback ~15h
 BOTTOM_HINT_HOURS = {"early_alert": "18-21", "short_signal": "18-21", "fallback_alert": "15"}
+
+
+def _bump_pump_seq(pump: PumpEvent, level: str) -> int:
+    """本次监测周期(同一事件)内该类信号出现第几次。"""
+    if level == "early_alert":
+        pump.early_alert_seq += 1
+        return pump.early_alert_seq
+    if level == "short_signal":
+        pump.short_signal_seq += 1
+        return pump.short_signal_seq
+    if level == "fallback_alert":
+        pump.fallback_alert_seq += 1
+        return pump.fallback_alert_seq
+    return 0
