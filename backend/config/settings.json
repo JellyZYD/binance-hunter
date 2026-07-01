@@ -68,7 +68,7 @@
   "websocket": {
     "intervals": ["15m"],
     "max_streams_per_connection": 180,
-    "prewarm_limit": 80,
+    "prewarm_limit": 120,
     "heartbeat_events": 250,
     "reconnect_initial_seconds": 1,
     "reconnect_max_seconds": 30
