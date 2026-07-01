@@ -15,16 +15,16 @@
 | 文件 | 作用 |
 | --- | --- |
 | `features.py` | 85 个特征 + setup 候选判定。**训练与实盘共用同一份**(否则模型失效) |
-| `train.py` | 本地训练管线:读 parquet → 候选/事件级标签 → 训两个 LGB → 存模型+元数据 |
+| `train.py` | 本地训练管线:读 parquet → 候选/事件级标签 → 训三个 LGB(dump/top/long) → 存模型+元数据 |
 | `model.py` | 推理封装(`MLScorer`):加载模型打分,缺模型/依赖时优雅降级 |
 | `models/` | 提交进仓库的产物:`dump.txt`、`top.txt`、`long.txt`、`meta.json`(特征列表、阈值、训练时间、数据起止、AUC) |
 
-信号引擎 `signals.mode="ml"` 时:每根 15m 收线,在候选上算特征→模型打分→分数≥阈值发信号(`top5%` 阈值触发、`top2%` 标"高置信")。见顶→顶部预警,破位→下跌启动。**已删除回落兜底。**
+信号引擎 `signals.mode="ml"` 时:每根 15m 收线,在候选上算特征→模型打分→分数≥阈值发信号。见顶/下跌启动使用 `top5%` 阈值触发、`top2%` 标"高置信";做多使用 `top10%` 触发、`top2%` 标"高置信",普通触发在 UI/推送标为"普通观察"。见顶→顶部预警,破位→下跌启动。**已删除回落兜底。**
 
 ### 做多模型(`long.txt`,`signals.long_enabled`)
 
 - 特征 = base85 + **资金流 9**(OI 变化/OI-价背离、全局多空比+z、大户持仓多空、taker 买卖比),共 94。标签 = "48h 内涨成妖币"(换 6 种标签验证此最优)。
-- 走查 AUC~0.71、top5% 精度 72%、做多收益 18.3%>回撤 12%。天花板 ~0.72(预测"要涨"本质比"已在跌"难)。
+- 走查 AUC~0.71,建议 `top10%` 作为普通做多观察、`top2%` 作为高置信。天花板 ~0.72(预测"要涨"本质比"已在跌"难)。
 - **实盘资金流**:`live.refresh_long_flow` 每 15m 用 `/futures/data/`(openInterestHist / globalLongShortAccountRatio / topLongShortPositionRatio / takerlongshortRatio)拉取做多监管币的资金流,`period=15m` 对齐喂入;拉不到 → NaN,LGB 原生处理(退化到 base~0.71)。
 - 训练需 parquet 的 `market_state_hist/`(oi/global_acct_ratio/top_pos_ratio/taker_ratio)。生命周期见 [strategy.md](./strategy.md#做多线)。
 
@@ -51,7 +51,7 @@ git push
 
 ## 更新提醒
 
-- 网页顶部显示模型**数据起止 + 训练时间 + 两个 AUC**。
+- 网页顶部显示模型**数据起止 + 训练时间 + 三个 AUC**。
 - 模型数据**超过 30 天**会变黄条提醒"建议本地重训后 push 更新"。
 - 建议**每月**本地重训一次推送。
 

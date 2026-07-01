@@ -211,7 +211,7 @@ class PumpEvent:
 @dataclass
 class LongEvent:
     """做多监管事件: 入选后保持 W 小时窗口, 期间可多次触发做多信号(第N次=信号增强)。
-    与妖币(PumpEvent)可重叠;退出=见顶(平多)/趋势破坏-8%/W超时。"""
+    与妖币(PumpEvent)可重叠;退出=见顶(平多)/下跌启动(平多或转空)/趋势破坏-8%/W超时。"""
     event_id: str
     symbol: str
     first_seen: int
@@ -222,7 +222,7 @@ class LongEvent:
     current_price: float
     long_signal_seq: int = 0
     status: str = "active"
-    exit_reason: str = ""    # "" 活跃 / "见顶" / "趋势破坏" / "超时"
+    exit_reason: str = ""    # "" 活跃 / "见顶" / "下跌启动" / "趋势破坏" / "超时"
     evidence: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:

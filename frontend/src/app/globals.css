@@ -297,6 +297,18 @@ h2 { margin: 0; font-size: 18px; line-height: 1.25; }
 }
 .signal-long .signal-topline span,
 .signal-long .signal-price b { color: #34d399; }
+.signal-long-invalid {
+  border-color: rgba(255,79,112,.6);
+  background: linear-gradient(135deg, rgba(255,79,112,.16), rgba(7,12,16,.86) 52%);
+}
+.signal-long-invalid .signal-topline span,
+.signal-long-invalid .signal-price b { color: var(--red); }
+.signal-long-timeout {
+  border-color: rgba(148,163,184,.48);
+  background: linear-gradient(135deg, rgba(148,163,184,.12), rgba(7,12,16,.86) 52%);
+}
+.signal-long-timeout .signal-topline span,
+.signal-long-timeout .signal-price b { color: #cbd5e1; }
 .long-table { width: 100%; border-collapse: collapse; font-size: 12px; }
 .long-table th, .long-table td { padding: 6px 10px; text-align: right; border-bottom: 1px solid rgba(148,163,184,.12); }
 .long-table th:first-child, .long-table td:first-child { text-align: left; }
@@ -478,8 +490,17 @@ td { color: #dce9e7; }
   background: rgba(52, 211, 153, 0.18);
   color: #6ee7b7;
 }
+.badge-watch {
+  margin-left: 6px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(56, 189, 248, 0.14);
+  color: #7dd3fc;
+}
 .ml-score { margin-left: 6px; font-size: 11px; color: #94a3b8; }
 .signal-topline .cat-tag.hi { color: #6ee7b7; opacity: 1; }
+.signal-topline .cat-tag.watch { color: #7dd3fc; opacity: 1; }
 
 /* 一张卡展开 K 线时不再把同排另一张卡拉长 */
 .monitor-board { align-items: start; }

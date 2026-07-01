@@ -78,7 +78,14 @@ def render_markdown_alert(alert: Alert) -> str:
     )
 
 
-LEVEL_CN = {"early_alert": "顶部预警", "short_signal": "下跌启动", "fallback_alert": "回落兜底", "long_signal": "做多"}
+LEVEL_CN = {
+    "early_alert": "顶部预警",
+    "short_signal": "下跌启动",
+    "fallback_alert": "回落兜底",
+    "long_signal": "做多观察",
+    "long_invalid": "做多失效",
+    "long_timeout": "做多超时",
+}
 
 
 def render_wecom_markdown(alert: Alert) -> str:
@@ -89,11 +96,11 @@ def render_wecom_markdown(alert: Alert) -> str:
     tags = []
     if alert.category and alert.category != "做多":
         tags.append(alert.category)
-    if tier and tier != "普通":  # 只在高置信时标出, 普通档为默认不标
+    if tier and tier != "普通":  # 做多普通观察也需要显式标出
         tags.append(tier)
     tag = f" [{'·'.join(tags)}]" if tags else ""
     url = f"https://www.binance.com/zh-CN/futures/{alert.symbol}"
-    if alert.level == "long_signal":
+    if alert.level.startswith("long_"):
         from_entry = next((e.split("=", 1)[1] for e in alert.evidence if e.startswith("距入场=")), "")
         metrics = f"现价 {alert.price}" + (f" · 距入场 {from_entry}" if from_entry else "") + f" · 止损 {alert.invalidation_price}"
     else:

@@ -130,14 +130,45 @@ class SignalEngine:
             return []
         if candle.close_time > le.expires_at:
             le.status = "closed"; le.exit_reason = "超时"
-            return []
+            return [make_long_status_alert("long_timeout", le, candle, "监管超时", [f"watch_hours={self.long_watch_hours:.0f}"])]
         le.current_price = candle.close
         le.high_price = max(le.high_price, candle.high)
         le.last_seen = candle.close_time
         if candle.close <= le.entry_price * (1.0 - self.long_trend_break_pct / 100.0):
             le.status = "closed"; le.exit_reason = "趋势破坏"
-            return []
+            return [make_long_status_alert("long_invalid", le, candle, "趋势破坏", [f"drop_from_entry={pct_change(candle.close, le.entry_price):+.2f}%"])]
+        exit_alerts = self._long_exit_signals(le, candle)
+        if exit_alerts:
+            return exit_alerts
         return self._long_signals(le, candle)
+
+    def _long_exit_signals(self, le: LongEvent, candle: Candle) -> list[Alert]:
+        if candle.interval != self.confirm_interval or self.ml is None or not self.ml.ready:
+            return []
+        from ..ml import features as mlf
+        candles = sorted(self.buffers[(le.symbol, self.confirm_interval)], key=lambda c: c.open_time)
+        if len(candles) < mlf.LOOKBACK + 2:
+            return []
+        row = mlf.compute_features(mlf.candles_to_frame(candles)).iloc[-1]
+        if row[self.ml.cols].isna().any():
+            return []
+        for task, level, setup_fn, tag, reason in (
+            ("dump", "short_signal", mlf.dump_setup_flags, "ML破位分", "下跌启动"),
+            ("top", "early_alert", mlf.top_setup_flags, "ML见顶分", "见顶"),
+        ):
+            if not bool(setup_fn(row)):
+                continue
+            sc = self.ml.score(row, task)
+            thr = self.ml.threshold(task)
+            if sc is None or thr is None or sc < thr:
+                continue
+            hi = self.ml.threshold_high(task) or 2.0
+            tier = "高置信" if sc >= hi else "普通"
+            le.status = "closed"
+            le.exit_reason = reason
+            category = "平多/做空" if level == "short_signal" else "平多"
+            return [make_long_exit_alert(level, le, candle, category, [f"{tag}={sc:.2f}", f"置信={tier}", f"long_exit={reason}"])]
+        return []
 
     def _long_signals(self, le: LongEvent, candle: Candle) -> list[Alert]:
         if candle.interval != self.confirm_interval or self.ml is None or not self.ml.ready:
@@ -164,7 +195,7 @@ class SignalEngine:
         if sc is None or thr is None or sc < thr:
             return []
         hi = self.ml.threshold_high("long") or 2.0
-        tier = "高置信" if sc >= hi else "普通"
+        tier = "高置信" if sc >= hi else "普通观察"
         return [make_long_alert(le, candle, self.long_trend_break_pct, [f"ML做多分={sc:.2f}", f"置信={tier}"])]
 
     def prime_candles(self, candles: list[Candle]) -> list[PumpEvent]:
@@ -192,10 +223,10 @@ class SignalEngine:
             return [], []
         changed: list[PumpEvent] = []
         alerts: list[Alert] = []
-        if self.long_enabled:
-            alerts.extend(self._process_long(candle))
         pump = self.events_by_symbol.get(candle.symbol)
         if not pump or pump.status != "active" or pump.expires_at < candle.close_time:
+            if self.long_enabled:
+                alerts.extend(self._process_long(candle))
             return changed, alerts
 
         if candle.high > pump.high_price * (1.0 + self.params.new_high_reset_pct / 100.0):
@@ -211,45 +242,63 @@ class SignalEngine:
         pump.max_gain_pct = pct_change(pump.anchor_price, pump.high_price)
 
         if self.mode == "ml":
+            long_exit_triggered = False
             for alert in self._ml_signals(pump, candle):
                 if alert.level == "early_alert":
                     pump.early_alerted_after_high_time = pump.high_time
                     le = self.long_events_by_symbol.get(candle.symbol)
                     if le and le.status == "active":  # 见顶 = 平多, 结束做多监管
                         le.status = "closed"; le.exit_reason = "见顶"
+                        long_exit_triggered = True
                 elif alert.level == "short_signal":
                     pump.short_alerted_after_high_time = pump.high_time
+                    le = self.long_events_by_symbol.get(candle.symbol)
+                    if le and le.status == "active":  # 下跌启动 = 平多/做空, 结束做多监管
+                        le.status = "closed"; le.exit_reason = "下跌启动"
+                        long_exit_triggered = True
                 alerts.append(alert)
                 changed.append(pump)
+            if self.long_enabled and not long_exit_triggered:
+                alerts.extend(self._process_long(candle))
             return changed, alerts
 
         if self.mode == "v2":
+            long_exit_triggered = False
             if candle.interval == self.early_interval:
                 alert = self._early_alert_v2(pump, candle)
                 if alert:
                     pump.early_alerted_after_high_time = pump.high_time
                     alerts.append(alert)
                     changed.append(pump)
+                    long_exit_triggered = True
             if candle.interval == self.confirm_interval:
                 alert = self._short_signal_v2(pump, candle)
                 if alert:
                     pump.short_alerted_after_high_time = pump.high_time
                     alerts.append(alert)
                     changed.append(pump)
+                    long_exit_triggered = True
+            if self.long_enabled and not long_exit_triggered:
+                alerts.extend(self._process_long(candle))
             return changed, alerts
 
+        long_exit_triggered = False
         if candle.interval == self.early_interval:
             alert = self._early_alert(pump, candle)
             if alert:
                 pump.early_alerted_after_high_time = pump.high_time
                 alerts.append(alert)
                 changed.append(pump)
+                long_exit_triggered = True
         if candle.interval == self.confirm_interval:
             alert = self._short_signal(pump, candle)
             if alert:
                 pump.short_alerted_after_high_time = pump.high_time
                 alerts.append(alert)
                 changed.append(pump)
+                long_exit_triggered = True
+        if self.long_enabled and not long_exit_triggered:
+            alerts.extend(self._process_long(candle))
         return changed, alerts
 
     def _append_candle(self, candle: Candle) -> bool:
@@ -599,6 +648,54 @@ def make_long_alert(le: LongEvent, candle: Candle, trend_break_pct: float, evide
         volume_ratio=0.0,
         evidence=[f"入场≈{le.entry_price:.6g}", f"距入场={from_entry:+.2f}%"] + evidence
         + [f"止损位(趋势破坏-{trend_break_pct:.0f}%)={le.entry_price * (1.0 - trend_break_pct / 100.0):.6g}"],
+        risks=[],
+        category="做多",
+        occurrence=le.long_signal_seq,
+    )
+
+
+def make_long_exit_alert(level: str, le: LongEvent, candle: Candle, category: str, evidence: list[str]) -> Alert:
+    """做多持仓遇到顶部/下跌启动时的退出提示。"""
+    from_entry = pct_change(le.entry_price, candle.close)
+    return Alert(
+        alert_id=f"{le.event_id}-{level}-{candle.close_time}",
+        event_id=le.event_id,
+        symbol=le.symbol,
+        level=level,
+        decision_time=candle.close_time,
+        source_candle_close_time=candle.close_time,
+        data_cutoff_time=candle.close_time,
+        price=candle.close,
+        invalidation_price=round(max(le.high_price, candle.high) * 1.0035, 8),
+        anchor_price=le.entry_price,
+        high_price=le.high_price,
+        remaining_downside_pct=0.0,
+        volume_ratio=0.0,
+        evidence=[f"做多退出={category}", f"入场≈{le.entry_price:.6g}", f"距入场={from_entry:+.2f}%"] + evidence,
+        risks=[],
+        category=category,
+        occurrence=le.long_signal_seq,
+    )
+
+
+def make_long_status_alert(level: str, le: LongEvent, candle: Candle, reason: str, evidence: list[str]) -> Alert:
+    """做多监管结束但不是顶部/做空信号时的状态提示。"""
+    from_entry = pct_change(le.entry_price, candle.close)
+    return Alert(
+        alert_id=f"{le.event_id}-{level}-{candle.close_time}",
+        event_id=le.event_id,
+        symbol=le.symbol,
+        level=level,
+        decision_time=candle.close_time,
+        source_candle_close_time=candle.close_time,
+        data_cutoff_time=candle.close_time,
+        price=candle.close,
+        invalidation_price=round(le.entry_price, 8),
+        anchor_price=le.entry_price,
+        high_price=le.high_price,
+        remaining_downside_pct=0.0,
+        volume_ratio=0.0,
+        evidence=[f"做多状态={reason}", f"入场≈{le.entry_price:.6g}", f"距入场={from_entry:+.2f}%"] + evidence,
         risks=[],
         category="做多",
         occurrence=le.long_signal_seq,

@@ -131,7 +131,7 @@ def build_rows(source, days):
     return pd.concat(rows, ignore_index=True), start, end
 
 
-def fit_model(d, ycol, feats=None):
+def fit_model(d, ycol, feats=None, thr_quantile: float = 0.95, thr_high_quantile: float = 0.98):
     feats = feats or FEATS
     ts = d.ts.values
     cut = np.quantile(ts, 0.80)
@@ -149,8 +149,8 @@ def fit_model(d, ycol, feats=None):
     params["scale_pos_weight"] = max(1.0, neg / max(pos, 1))
     final = lgb.LGBMClassifier(**params); final.fit(d[feats], d[ycol])
     scores = final.predict_proba(d[feats])[:, 1]
-    thr = float(np.quantile(scores, 0.95))       # top5% 作为触发阈值
-    thr_high = float(np.quantile(scores, 0.98))   # top2% 作为高置信
+    thr = float(np.quantile(scores, thr_quantile))
+    thr_high = float(np.quantile(scores, thr_high_quantile))
     return final.booster_, va_auc, thr, thr_high, int(pos)
 
 
@@ -275,7 +275,7 @@ def main(argv=None):
     LFEATS = long_feature_columns()
     dfl, _, _ = build_long_rows(args.source, args.days)
     dl = dfl.reset_index(drop=True)
-    booster, auc, thr, thr_high, npos = fit_model(dl, "y_long", feats=LFEATS)
+    booster, auc, thr, thr_high, npos = fit_model(dl, "y_long", feats=LFEATS, thr_quantile=0.90, thr_high_quantile=0.98)
     booster.save_model(str(MODELS_DIR / "long.txt"))
     meta["long_feature_cols"] = LFEATS
     meta["long"] = {"val_auc": round(auc, 3), "n_pos": npos, "n_cand": int(len(dl)), "thr": round(thr, 4), "thr_high": round(thr_high, 4)}

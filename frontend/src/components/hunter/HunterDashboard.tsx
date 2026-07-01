@@ -94,6 +94,7 @@ type ModelMeta = {
   n_symbols?: number;
   dump?: { val_auc?: number };
   top?: { val_auc?: number };
+  long?: { val_auc?: number };
 };
 
 type MonitorRow = PumpRow & {
@@ -147,7 +148,9 @@ function drawdown(high: number, current: number) {
 function signalLabel(level?: string) {
   if (level === 'early_alert') return '顶部预警';
   if (level === 'short_signal') return '下跌启动';
-  if (level === 'long_signal') return '做多';
+  if (level === 'long_signal') return '做多观察';
+  if (level === 'long_invalid') return '做多失效';
+  if (level === 'long_timeout') return '做多超时';
   if (level === 'fallback_alert') return '回落兜底';
   return level || '等待信号';
 }
@@ -167,6 +170,8 @@ function signalClass(level?: string) {
   if (level === 'short_signal') return 'signal-short';
   if (level === 'early_alert') return 'signal-early';
   if (level === 'long_signal') return 'signal-long';
+  if (level === 'long_invalid') return 'signal-long-invalid';
+  if (level === 'long_timeout') return 'signal-long-timeout';
   if (level === 'fallback_alert') return 'signal-fallback';
   return 'signal-idle';
 }
@@ -175,6 +180,8 @@ function sigShort(level?: string) {
   if (level === 'early_alert') return '顶';
   if (level === 'short_signal') return '空';
   if (level === 'long_signal') return '多';
+  if (level === 'long_invalid') return '失';
+  if (level === 'long_timeout') return '超';
   if (level === 'fallback_alert') return '兜';
   return '?';
 }
@@ -183,6 +190,8 @@ function sigColor(level?: string) {
   if (level === 'short_signal') return '#ff4f70';
   if (level === 'early_alert') return '#ffbf4a';
   if (level === 'long_signal') return '#34d399';
+  if (level === 'long_invalid') return '#ff4f70';
+  if (level === 'long_timeout') return '#94a3b8';
   if (level === 'fallback_alert') return '#d86cff';
   return '#7dd3fc';
 }
@@ -371,6 +380,7 @@ export default function HunterDashboard() {
                   <span className={`badge ${signalClass(r.level)}`}>{[signalLabel(r.level), seqText(r.occurrence)].filter(Boolean).join(' ')}</span>
                   {r.category ? <span className="badge badge-cat">{r.category}</span> : null}
                   {mlInfo(r.evidence).tier === '高置信' ? <span className="badge badge-hi">高置信</span> : null}
+                  {mlInfo(r.evidence).tier === '普通观察' ? <span className="badge badge-watch">普通观察</span> : null}
                   {mlInfo(r.evidence).score ? <span className="ml-score">分{mlInfo(r.evidence).score}</span> : null}
                 </td>
                 <td><b>{r.symbol}</b></td>
@@ -432,7 +442,7 @@ function ModelBar({ model }: { model: ModelMeta | null }) {
   return (
     <div className={`model-bar ${stale ? 'warn' : ''}`}>
       <span className="mb-item">ML 模型 · 数据 {dayStr(model.data_start)} ~ {dayStr(model.data_end)} · 训练于 {dayStr(model.trained_at)}</span>
-      <span className="mb-item">下跌启动 AUC {model.dump?.val_auc ?? '-'} · 见顶 AUC {model.top?.val_auc ?? '-'}</span>
+      <span className="mb-item">下跌启动 AUC {model.dump?.val_auc ?? '-'} · 见顶 AUC {model.top?.val_auc ?? '-'} · 做多 AUC {model.long?.val_auc ?? '-'}</span>
       {stale ? <span className="mb-stale">⚠️ 模型数据已过期 {staleDays} 天,建议本地重训后 push 更新</span> : null}
     </div>
   );
@@ -526,6 +536,7 @@ function MonitorContract({ row }: { row: MonitorRow }) {
             {[signalLabel(alert?.level), seqText(alert?.occurrence)].filter(Boolean).join(' ')}
             {alert?.category ? <em className="cat-tag">{alert.category}</em> : null}
             {ml.tier === '高置信' ? <em className="cat-tag hi">高置信</em> : null}
+            {ml.tier === '普通观察' ? <em className="cat-tag watch">普通观察</em> : null}
             {ml.score ? <em className="cat-tag">分{ml.score}</em> : null}
           </span>
         </div>
