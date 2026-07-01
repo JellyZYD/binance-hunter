@@ -77,6 +77,13 @@ sudo bash deploy/update.sh
 
 `update.sh` 只拉取代码 + 重装依赖 + 重启服务，**不改 Nginx 和证书**，所以手动改过的 Nginx（如 Xray 端口复用）不会被它覆盖。注意：`git reset --hard` 会覆盖服务器上对仓库内文件（如 `backend/config/settings.json`）的本地修改——调参请在本地仓库改后提交。
 
+## ML 模型（`signals.mode="ml"`）
+
+- 默认信号走 ML 两段式打分,模型文件随仓库分发(`backend/pump_dump_hunter/ml/models/`),`update.sh` 会一并拉取。
+- 服务器只做**推理**,`requirements.txt` 已含 `numpy/pandas/lightgbm`(update.sh 自动装)。**训练只在本地**(2核2G 不训),重训后 push 模型文件即可,详见 [`../docs/ml.md`](../docs/ml.md)。
+- 更新后 `journalctl -u binance-hunter-monitor` 应出现 `ML scorer ready=True`;若 `ready=False`(依赖装失败/模型缺失),会不发信号,可临时把 `signals.mode` 改回 `v2` 重启。
+- 若 `pip install lightgbm` 在 2核2G 上因内存失败,先加 swap(见下方)再 `update.sh`。
+
 ## 扩大候选池 / 调参
 
 选币分三层（详见 `backend/pump_dump_hunter/discovery.py`）：

@@ -17,6 +17,15 @@ class SignalEngine:
         self.early_interval = str(self.signal_cfg.get("early_interval", "5m"))
         self.confirm_interval = str(self.signal_cfg.get("confirm_interval", "15m"))
         self.mode = str(self.signal_cfg.get("mode", "legacy"))
+        self.ml = None
+        if self.mode == "ml":
+            try:
+                from ..ml.model import MLScorer
+                self.ml = MLScorer()
+                print(f"ML scorer ready={self.ml.ready} info={self.ml.info().get('trained_at', self.ml.error)}", flush=True)
+            except Exception as exc:
+                print(f"ML scorer load failed: {exc}", flush=True)
+                self.ml = None
         self.events_by_symbol: dict[str, PumpEvent] = {}
         self.buffers: dict[tuple[str, str], deque[Candle]] = defaultdict(lambda: deque(maxlen=240))
         self.buffer_times: dict[tuple[str, str], set[int]] = defaultdict(set)
@@ -118,6 +127,16 @@ class SignalEngine:
         pump.last_seen = candle.close_time
         pump.max_gain_pct = pct_change(pump.anchor_price, pump.high_price)
 
+        if self.mode == "ml":
+            for alert in self._ml_signals(pump, candle):
+                if alert.level == "early_alert":
+                    pump.early_alerted_after_high_time = pump.high_time
+                elif alert.level == "short_signal":
+                    pump.short_alerted_after_high_time = pump.high_time
+                alerts.append(alert)
+                changed.append(pump)
+            return changed, alerts
+
         if self.mode == "v2":
             if candle.interval == self.early_interval:
                 alert = self._early_alert_v2(pump, candle)
@@ -131,12 +150,6 @@ class SignalEngine:
                     pump.short_alerted_after_high_time = pump.high_time
                     alerts.append(alert)
                     changed.append(pump)
-                else:
-                    fb = self._fallback_v2(pump, candle)
-                    if fb:
-                        pump.fallback_alerted_after_high_time = pump.high_time
-                        alerts.append(fb)
-                        changed.append(pump)
             return changed, alerts
 
         if candle.interval == self.early_interval:
@@ -273,23 +286,35 @@ class SignalEngine:
             )
         return None
 
-    def _fallback_v2(self, pump: PumpEvent, candle: Candle) -> Alert | None:
-        """兜底:入池币距顶回落≥阈值,且本轮高点从未出过 early/short。宁晚勿漏。"""
-        if pump.fallback_alerted_after_high_time == pump.high_time:
-            return None
-        if (
-            pump.early_alerted_after_high_time == pump.high_time
-            or pump.short_alerted_after_high_time == pump.high_time
-        ):
-            return None
-        if candle.close > pump.high_price * (1.0 - self.params.fallback_drop_pct / 100.0):
-            return None
-        vol_ratio = current_volume_ratio(list(self.buffers[(pump.symbol, self.confirm_interval)]), int(self.signal_cfg["volume_window"]))
+    def _ml_signals(self, pump: PumpEvent, candle: Candle) -> list[Alert]:
+        """ML 模式: 在 setup 候选上用模型打分, 超阈值才发。见顶->early, 破位->short。"""
+        if candle.interval != self.confirm_interval or self.ml is None or not self.ml.ready:
+            return []
+        from ..ml import features as mlf
+        candles = list(self.buffers[(pump.symbol, self.confirm_interval)])
+        if len(candles) < mlf.LOOKBACK + 2:
+            return []
+        row = mlf.compute_features(mlf.candles_to_frame(candles)).iloc[-1]
+        if row[self.ml.cols].isna().any():
+            return []
+        out: list[Alert] = []
+        vol_ratio = current_volume_ratio(candles, int(self.signal_cfg["volume_window"]))
         remaining = remaining_downside_pct(pump.anchor_price, candle.close)
-        return make_alert(
-            "fallback_alert", pump, candle, vol_ratio, remaining,
-            ["fallback breakdown", "no_clean_signal", f"drop_from_high={pct_change(candle.close, pump.high_price):+.2f}%"],
-        )
+        for task, level, setup_fn, tag in (
+            ("top", "early_alert", mlf.top_setup_flags, "ML见顶分"),
+            ("dump", "short_signal", mlf.dump_setup_flags, "ML破位分"),
+        ):
+            already = pump.early_alerted_after_high_time if level == "early_alert" else pump.short_alerted_after_high_time
+            if already == pump.high_time or not bool(setup_fn(row)):
+                continue
+            sc = self.ml.score(row, task)
+            thr = self.ml.threshold(task)
+            if sc is None or thr is None or sc < thr:
+                continue
+            hi = self.ml.threshold_high(task) or 2.0
+            tier = "高置信" if sc >= hi else "普通"
+            out.append(make_alert(level, pump, candle, vol_ratio, remaining, [f"{tag}={sc:.2f}", f"置信={tier}"]))
+        return out
 
 
 def close_position(candle: Candle) -> float:

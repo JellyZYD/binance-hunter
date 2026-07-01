@@ -74,6 +74,18 @@ type DashboardData = {
   backtests: BacktestRow[];
 };
 
+type ModelMeta = {
+  ready?: boolean;
+  error?: string;
+  trained_at?: string;
+  data_start?: string;
+  data_end?: string;
+  days?: number;
+  n_symbols?: number;
+  dump?: { val_auc?: number };
+  top?: { val_auc?: number };
+};
+
 type MonitorRow = PumpRow & {
   latestAlert?: AlertRow;
   history: AlertRow[];
@@ -158,6 +170,7 @@ export default function HunterDashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string>('');
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const [model, setModel] = useState<ModelMeta | null>(null);
 
   async function refresh() {
     try {
@@ -173,6 +186,11 @@ export default function HunterDashboard() {
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+    try {
+      setModel(await api<ModelMeta>('/api/hunter/model'));
+    } catch {
+      /* 模型接口可选,忽略 */
     }
   }
 
@@ -249,6 +267,8 @@ export default function HunterDashboard() {
           <span>{updatedAt ? `更新 ${updatedAt.toLocaleTimeString()}` : '等待数据'}</span>
         </div>
       </header>
+
+      <ModelBar model={model} />
 
       {error ? (
         <div className="error-box">
@@ -357,6 +377,33 @@ export default function HunterDashboard() {
         </table>
       </DataSection>
     </main>
+  );
+}
+
+function dayStr(iso?: string) {
+  if (!iso) return '-';
+  const d = new Date(iso);
+  return Number.isNaN(d.getTime()) ? '-' : d.toISOString().slice(0, 10);
+}
+
+function ModelBar({ model }: { model: ModelMeta | null }) {
+  if (!model) return null;
+  if (!model.ready) {
+    return (
+      <div className="model-bar warn">
+        ⚠️ ML 模型未加载{model.error ? `(${model.error})` : ''} —— 当前无 ML 信号,需本地训练并推送模型文件
+      </div>
+    );
+  }
+  const end = model.data_end ? new Date(model.data_end) : null;
+  const staleDays = end && !Number.isNaN(end.getTime()) ? Math.floor((Date.now() - end.getTime()) / 86400000) : null;
+  const stale = staleDays != null && staleDays > 30;
+  return (
+    <div className={`model-bar ${stale ? 'warn' : ''}`}>
+      <span className="mb-item">ML 模型 · 数据 {dayStr(model.data_start)} ~ {dayStr(model.data_end)} · 训练于 {dayStr(model.trained_at)}</span>
+      <span className="mb-item">下跌启动 AUC {model.dump?.val_auc ?? '-'} · 见顶 AUC {model.top?.val_auc ?? '-'}</span>
+      {stale ? <span className="mb-stale">⚠️ 模型数据已过期 {staleDays} 天,建议本地重训后 push 更新</span> : null}
+    </div>
   );
 }
 

@@ -49,6 +49,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.write_json({"rows": decode_alerts(self.store.recent_alerts(limit=int_param(query, "limit", 100)))})
             elif parsed.path == "/api/backtests":
                 self.write_json({"rows": decode_backtests(self.store.backtest_runs(limit=int_param(query, "limit", 20)))})
+            elif parsed.path == "/api/model":
+                self.write_json(read_model_meta())
             elif parsed.path == "/api/candles":
                 symbol = (query.get("symbol", [""])[0] or "").upper()
                 interval = query.get("interval", ["15m"])[0]
@@ -79,6 +81,20 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+
+def read_model_meta() -> dict[str, Any]:
+    from pathlib import Path
+    p = Path(__file__).resolve().parent / "ml" / "models" / "meta.json"
+    if not p.exists():
+        return {"ready": False}
+    try:
+        m = json.loads(p.read_text(encoding="utf-8"))
+        m.pop("feature_cols", None)  # 前端不需要, 省流量
+        m["ready"] = True
+        return m
+    except Exception as exc:
+        return {"ready": False, "error": f"{type(exc).__name__}: {exc}"}
 
 
 def int_param(query: dict[str, list[str]], key: str, default: int) -> int:

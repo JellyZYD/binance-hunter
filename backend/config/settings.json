@@ -112,7 +112,7 @@
     "fallback_drop_pct": 8.0
   },
   "signals": {
-    "mode": "v2",
+    "mode": "ml",
     "ema_fast": 8,
     "ema_confirm": 21,
     "early_interval": "15m",

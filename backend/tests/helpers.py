@@ -16,6 +16,7 @@ def temp_settings():
     settings["paths"]["cache_dir"] = str(root / "cache")
     settings["paths"]["reports_dir"] = str(root / "reports")
     settings["backtest"]["min_signals"] = 1
+    settings["signals"]["mode"] = "legacy"  # 这些用例针对 legacy 信号行为, 与生产默认(ml)解耦
     settings["_tmp_root"] = str(root)
     return settings
 
