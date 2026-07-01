@@ -438,3 +438,37 @@ td { color: #dce9e7; }
   margin-top: 4px;
 }
 .kline-empty { padding: 16px; text-align: center; color: #94a3b8; font-size: 12px; }
+
+/* 一张卡展开 K 线时不再把同排另一张卡拉长 */
+.monitor-board { align-items: start; }
+.monitor-row { align-items: start; }
+
+.signal-time-big {
+  margin-top: 6px;
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: #e6f1ff;
+}
+.signal-time-big.muted { font-size: 15px; color: var(--muted); }
+
+.signal-history {
+  display: flex;
+  gap: 6px;
+  margin-top: 10px;
+  overflow-x: auto;
+  padding-bottom: 3px;
+  scrollbar-width: thin;
+}
+.signal-history::-webkit-scrollbar { height: 5px; }
+.signal-history::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.35); border-radius: 3px; }
+.hist-chip {
+  flex: 0 0 auto;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(148, 163, 184, 0.1);
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 6px;
+  padding: 2px 8px;
+  white-space: nowrap;
+}

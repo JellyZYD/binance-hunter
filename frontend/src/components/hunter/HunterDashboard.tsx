@@ -76,6 +76,7 @@ type DashboardData = {
 
 type MonitorRow = PumpRow & {
   latestAlert?: AlertRow;
+  history: AlertRow[];
   drawdownPct: number;
   alertAgeMs?: number;
 };
@@ -139,11 +140,18 @@ function signalClass(level?: string) {
   return 'signal-idle';
 }
 
-function levelPriority(level?: string) {
-  if (level === 'short_signal') return 4;
-  if (level === 'early_alert') return 3;
-  if (level === 'fallback_alert') return 2;
-  return 0;
+function sigShort(level?: string) {
+  if (level === 'early_alert') return '顶';
+  if (level === 'short_signal') return '空';
+  if (level === 'fallback_alert') return '兜';
+  return '?';
+}
+
+function sigColor(level?: string) {
+  if (level === 'short_signal') return '#ff4f70';
+  if (level === 'early_alert') return '#ffbf4a';
+  if (level === 'fallback_alert') return '#d86cff';
+  return '#7dd3fc';
 }
 
 export default function HunterDashboard() {
@@ -178,37 +186,39 @@ export default function HunterDashboard() {
     };
   }, []);
 
-  const alertBySymbol = useMemo(() => {
-    const map = new Map<string, AlertRow>();
+  const alertsBySymbol = useMemo(() => {
+    const map = new Map<string, AlertRow[]>();
     for (const alert of data?.alerts || []) {
-      const current = map.get(alert.symbol);
-      if (!current || Number(alert.decision_time) > Number(current.decision_time)) {
-        map.set(alert.symbol, alert);
-      }
+      const arr = map.get(alert.symbol) || [];
+      arr.push(alert);
+      map.set(alert.symbol, arr);
     }
+    for (const arr of map.values()) arr.sort((a, b) => Number(b.decision_time) - Number(a.decision_time));
     return map;
   }, [data?.alerts]);
 
   const monitorRows = useMemo<MonitorRow[]>(() => {
     const rows = (data?.pumps || []).map((pump) => {
-      const latestAlert = alertBySymbol.get(pump.symbol);
+      const history = alertsBySymbol.get(pump.symbol) || [];
+      const latestAlert = history[0];
       return {
         ...pump,
         latestAlert,
+        history,
         drawdownPct: drawdown(pump.high_price, pump.current_price),
         alertAgeMs: latestAlert ? Date.now() - Number(latestAlert.decision_time) : undefined,
       };
     });
 
+    // 按最新信号触发时间倒序：最新信号永远在最上；无信号的排到最后
     rows.sort((a, b) => {
-      const signalDiff = levelPriority(b.latestAlert?.level) - levelPriority(a.latestAlert?.level);
-      if (signalDiff) return signalDiff;
-      const alertTimeDiff = Number(b.latestAlert?.decision_time || 0) - Number(a.latestAlert?.decision_time || 0);
-      if (alertTimeDiff) return alertTimeDiff;
+      const at = Number(a.latestAlert?.decision_time || 0);
+      const bt = Number(b.latestAlert?.decision_time || 0);
+      if (at !== bt) return bt - at;
       return b.drawdownPct - a.drawdownPct;
     });
     return rows;
-  }, [alertBySymbol, data?.pumps]);
+  }, [alertsBySymbol, data?.pumps]);
 
   const stats = useMemo(() => {
     const summary = data?.summary || {};
@@ -400,24 +410,30 @@ function MonitorContract({ row }: { row: MonitorRow }) {
             {[signalLabel(alert?.level), seqText(alert?.occurrence)].filter(Boolean).join(' ')}
             {alert?.category ? <em className="cat-tag">{alert.category}</em> : null}
           </span>
-          <strong>{alert ? timeOnly(alert.decision_time) : 'ARMED'}</strong>
         </div>
+        <div className={`signal-time-big ${alert ? '' : 'muted'}`}>{alert ? date(alert.decision_time) : '待触发'}</div>
         {alert ? (
           <>
             <div className="signal-price">
               <b>{fmt(alert.price, 6)}</b>
               <span>空间 {fmt(alert.remaining_downside_pct)}% · 量比 {fmt(alert.volume_ratio)}x</span>
             </div>
-            <p>{(alert.evidence || []).slice(0, 2).join(' / ')}</p>
+            {row.history.length > 1 ? (
+              <div className="signal-history">
+                {row.history.map((h) => (
+                  <span className="hist-chip" key={h.alert_id} style={{ color: sigColor(h.level) }}>
+                    {sigShort(h.level)}{h.occurrence || ''} · {timeOnly(h.decision_time)} · {fmt(h.price, 4)}
+                  </span>
+                ))}
+              </div>
+            ) : (
+              <p>{(alert.evidence || []).slice(0, 2).join(' / ')}</p>
+            )}
           </>
         ) : (
-          <>
-            <div className="signal-price">
-              <b>待触发</b>
-              <span>失效 {date(row.expires_at)}</span>
-            </div>
-            <p>{(row.evidence || []).slice(0, 2).join(' / ') || 'watching'}</p>
-          </>
+          <div className="signal-price">
+            <span>失效 {date(row.expires_at)}</span>
+          </div>
         )}
       </div>
 
@@ -426,7 +442,7 @@ function MonitorContract({ row }: { row: MonitorRow }) {
           {loading ? (
             <div className="kline-empty">加载中…</div>
           ) : candles && candles.length ? (
-            <MiniKline candles={candles} anchor={row.anchor_price} high={row.high_price} />
+            <MiniKline candles={candles} anchor={row.anchor_price} high={row.high_price} signals={row.history} />
           ) : (
             <div className="kline-empty">暂无 15m K 线(该合约刚入池或尚未落库)</div>
           )}
@@ -436,7 +452,7 @@ function MonitorContract({ row }: { row: MonitorRow }) {
   );
 }
 
-function MiniKline({ candles, anchor, high }: { candles: Candle[]; anchor?: number; high?: number }) {
+function MiniKline({ candles, anchor, high, signals }: { candles: Candle[]; anchor?: number; high?: number; signals?: AlertRow[] }) {
   const W = Math.max(candles.length * 7, 160);
   const H = 150;
   const pad = 8;
@@ -446,13 +462,14 @@ function MiniKline({ candles, anchor, high }: { candles: Candle[]; anchor?: numb
   const span = hi - lo || 1;
   const y = (p: number) => pad + (1 - (p - lo) / span) * (H - 2 * pad);
   const cw = (W - 2 * pad) / candles.length;
+  const xAt = (i: number) => pad + i * cw + cw / 2;
   return (
     <div className="kline-wrap">
       <svg className="kline-svg" viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none">
         {typeof anchor === 'number' && anchor > 0 ? <line className="kline-ref anchor" x1={0} x2={W} y1={y(anchor)} y2={y(anchor)} /> : null}
         {typeof high === 'number' && high > 0 ? <line className="kline-ref high" x1={0} x2={W} y1={y(high)} y2={y(high)} /> : null}
         {candles.map((c, i) => {
-          const x = pad + i * cw + cw / 2;
+          const x = xAt(i);
           const up = c.close >= c.open;
           const top = y(Math.max(c.open, c.close));
           const bot = y(Math.min(c.open, c.close));
@@ -464,10 +481,23 @@ function MiniKline({ candles, anchor, high }: { candles: Candle[]; anchor?: numb
             </g>
           );
         })}
+        {(signals || []).map((s) => {
+          const dt = Number(s.decision_time);
+          const idx = candles.findIndex((c) => c.open_time <= dt && dt < c.open_time + 900000);
+          if (idx < 0) return null;
+          const x = xAt(idx);
+          const color = sigColor(s.level);
+          return (
+            <g key={s.alert_id}>
+              <line x1={x} x2={x} y1={pad} y2={H - pad} stroke={color} strokeOpacity={0.5} strokeWidth={1} />
+              <rect x={x - 3} y={2} width={6} height={6} fill={color} />
+            </g>
+          );
+        })}
       </svg>
       <div className="kline-legend">
         <span>起涨 {date(candles[0]?.open_time)}</span>
-        <span>{candles.length} 根 15m · 虚线灰=起涨锚点 黄=高点</span>
+        <span>{candles.length}根15m · 竖标=信号(红空/黄顶/紫兜) · 虚线灰=锚点 黄=高点</span>
       </div>
     </div>
   );
