@@ -117,6 +117,8 @@ class LiquidityRecord:
     quote_volume_4h: float = 0.0
     quote_volume_12h: float = 0.0
     quote_volume_1d: float = 0.0
+    qvol30_rank: int = 0          # 横截面 30m 成交额排名(做多候选用)
+    long_candidate: bool = False  # 做多候选(动量+热度+排名粗筛, 结构+ML在引擎判)
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -161,6 +163,13 @@ class SignalParams:
     short_v2_taker_min: float = 0.0
     short_v2_min_remaining_pct: float = 5.0
     fallback_drop_pct: float = 8.0
+    # --- 做多线(候选粗筛门槛, 与研究一致) ---
+    long_ret_30m_pct: float = 4.5
+    long_vol_ratio_30m: float = 2.0
+    long_heat_24h_pct: float = 25.0
+    long_heat_4h_pct: float = 18.0
+    long_heat_12h_pct: float = 28.0
+    long_qvol_rank_top: int = 150
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SignalParams":
@@ -194,6 +203,27 @@ class PumpEvent:
     early_alert_seq: int = 0
     short_signal_seq: int = 0
     fallback_alert_seq: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return self.__dict__.copy()
+
+
+@dataclass
+class LongEvent:
+    """做多监管事件: 入选后保持 W 小时窗口, 期间可多次触发做多信号(第N次=信号增强)。
+    与妖币(PumpEvent)可重叠;退出=见顶(平多)/趋势破坏-8%/W超时。"""
+    event_id: str
+    symbol: str
+    first_seen: int
+    last_seen: int
+    expires_at: int          # first_seen + W(long_watch_hours)
+    entry_price: float       # 首次入做多监管价(趋势破坏 -X% 基准)
+    high_price: float        # 入选后最高价(展示/趋势破坏参照)
+    current_price: float
+    long_signal_seq: int = 0
+    status: str = "active"
+    exit_reason: str = ""    # "" 活跃 / "见顶" / "趋势破坏" / "超时"
+    evidence: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()

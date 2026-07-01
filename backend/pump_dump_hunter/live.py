@@ -98,8 +98,10 @@ def run_discovery_cycle(
     changed = engine.on_discovery(records, meta["data_cutoff_time"])
     store.upsert_pump_events(changed)
     selected = [r.symbol for r in records if r.selected]
+    long_cands = sum(1 for r in records if r.long_candidate)
     print(
         f"[{local_stamp()}] discovery selected={len(selected)} pump={meta['pump_count']} "
+        f"long_cand={long_cands} long_watch={len(engine.active_long_symbols())} "
         f"errors={len(meta['errors'])} cutoff={meta['data_cutoff_time']}",
         flush=True,
     )
@@ -129,11 +131,11 @@ def active_event_symbols(engine: SignalEngine) -> list[str]:
 
 
 def build_watch_symbols(engine: SignalEngine, selected: list[str]) -> list[str]:
-    return sorted(set(selected) | set(active_event_symbols(engine)))
+    return sorted(set(selected) | set(active_event_symbols(engine)) | set(engine.active_long_symbols()))
 
 
 def prewarm_active_events(client: BinanceRestClient, store: Store, engine: SignalEngine, settings: dict[str, Any]) -> None:
-    symbols = active_event_symbols(engine)
+    symbols = sorted(set(active_event_symbols(engine)) | set(engine.active_long_symbols()))
     if not symbols:
         return
     intervals = list(settings["websocket"]["intervals"])

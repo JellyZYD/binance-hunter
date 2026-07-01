@@ -137,6 +137,7 @@ function drawdown(high: number, current: number) {
 function signalLabel(level?: string) {
   if (level === 'early_alert') return '顶部预警';
   if (level === 'short_signal') return '下跌启动';
+  if (level === 'long_signal') return '做多';
   if (level === 'fallback_alert') return '回落兜底';
   return level || '等待信号';
 }
@@ -155,6 +156,7 @@ function mlInfo(evidence?: string[]) {
 function signalClass(level?: string) {
   if (level === 'short_signal') return 'signal-short';
   if (level === 'early_alert') return 'signal-early';
+  if (level === 'long_signal') return 'signal-long';
   if (level === 'fallback_alert') return 'signal-fallback';
   return 'signal-idle';
 }
@@ -162,6 +164,7 @@ function signalClass(level?: string) {
 function sigShort(level?: string) {
   if (level === 'early_alert') return '顶';
   if (level === 'short_signal') return '空';
+  if (level === 'long_signal') return '多';
   if (level === 'fallback_alert') return '兜';
   return '?';
 }
@@ -169,6 +172,7 @@ function sigShort(level?: string) {
 function sigColor(level?: string) {
   if (level === 'short_signal') return '#ff4f70';
   if (level === 'early_alert') return '#ffbf4a';
+  if (level === 'long_signal') return '#34d399';
   if (level === 'fallback_alert') return '#d86cff';
   return '#7dd3fc';
 }

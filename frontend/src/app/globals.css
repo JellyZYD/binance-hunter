@@ -291,6 +291,12 @@ h2 { margin: 0; font-size: 18px; line-height: 1.25; }
 }
 .signal-fallback .signal-topline span,
 .signal-fallback .signal-price b { color: var(--magenta); }
+.signal-long {
+  border-color: rgba(52,211,153,.6);
+  background: linear-gradient(135deg, rgba(52,211,153,.15), rgba(7,12,16,.86) 52%);
+}
+.signal-long .signal-topline span,
+.signal-long .signal-price b { color: #34d399; }
 .signal-idle .signal-topline span { color: var(--cyan); }
 
 .split-grid {

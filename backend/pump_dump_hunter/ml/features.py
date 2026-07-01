@@ -137,6 +137,27 @@ LONG_DIST_EMA21_MAX = 0.12
 PUMP_4H, PUMP_12H, PUMP_1D = 0.20, 0.30, 0.40  # 妖币(空监管)态阈值
 
 
+def long_setup_flags(df: "pd.DataFrame", f: "pd.DataFrame"):
+    """做多候选结构判定(与训练一致), 唯一不含的横截面成交额排名由 discovery 提供。
+    df: 15m K 线(open/high/low/close/qv/tbq); f: compute_features(df) 的结果。"""
+    c, o, qv = df["close"], df["open"], df["qv"]
+    ret2 = c / c.shift(2) - 1
+    ret16 = c / c.shift(16) - 1
+    ret48 = c / c.shift(48) - 1
+    ret96 = c / c.shift(96) - 1
+    qv30 = qv.rolling(2).sum()
+    volr30 = qv30 / qv30.rolling(20).mean()
+    breakout = c > np.maximum(o, c).rolling(8).max().shift(1)
+    inpump = (ret16 >= PUMP_4H) | (ret48 >= PUMP_12H) | (ret96 >= PUMP_1D)
+    return (
+        (ret2 >= LONG_RET2_MIN) & (volr30 >= LONG_VOLR30_MIN) & breakout
+        & (ret96 <= LONG_HEAT_24H) & (ret16 <= LONG_HEAT_4H) & (ret48 <= LONG_HEAT_12H)
+        & (f["close_pos"] >= LONG_CPOS_MIN) & (f["uwick"] <= LONG_UWICK_MAX)
+        & (f["dist_ema21"] > 0) & (f["dist_ema21"] <= LONG_DIST_EMA21_MAX)
+        & (f["ema_spread"] > 0) & (~inpump)
+    )
+
+
 def candles_to_frame(candles: list[Any]) -> "pd.DataFrame":
     """把引擎缓冲里的 Candle 列表转成特征所需的 15m DataFrame(按时间升序)。"""
     rows = [

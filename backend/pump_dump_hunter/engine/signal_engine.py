@@ -4,7 +4,7 @@ from collections import defaultdict, deque
 from typing import Any
 
 from ..indicators import ema, mean, pct_change, safe_div
-from ..models import Alert, Candle, KlineClosed, LiquidityRecord, PumpEvent, SignalParams
+from ..models import Alert, Candle, KlineClosed, LiquidityRecord, LongEvent, PumpEvent, SignalParams
 from ..timeutils import interval_to_ms
 
 
@@ -27,6 +27,11 @@ class SignalEngine:
                 print(f"ML scorer load failed: {exc}", flush=True)
                 self.ml = None
         self.events_by_symbol: dict[str, PumpEvent] = {}
+        # 做多线(纯提示; 需 mode="ml" + long_enabled)
+        self.long_enabled = bool(self.signal_cfg.get("long_enabled", False))
+        self.long_watch_hours = float(self.signal_cfg.get("long_watch_hours", 36.0))
+        self.long_trend_break_pct = float(self.signal_cfg.get("long_trend_break_pct", 8.0))
+        self.long_events_by_symbol: dict[str, LongEvent] = {}
         self.buffers: dict[tuple[str, str], deque[Candle]] = defaultdict(lambda: deque(maxlen=240))
         self.buffer_times: dict[tuple[str, str], set[int]] = defaultdict(set)
 
@@ -38,6 +43,8 @@ class SignalEngine:
         changed = []
         active_ms = int(self.active_hours * 3_600_000)
         for record in records:
+            if self.long_enabled and record.long_candidate:
+                self._upsert_long_event(record, decision_time)
             if not record.pump_qualified:
                 continue
             existing = self.events_by_symbol.get(record.symbol)
@@ -86,6 +93,65 @@ class SignalEngine:
                 changed.append(event)
         return changed
 
+    def _upsert_long_event(self, record: LiquidityRecord, decision_time: int) -> None:
+        """入选做多监管; 持续满足则滚动刷新窗口(entry_price 固定为首次入场)。"""
+        watch_ms = int(self.long_watch_hours * 3_600_000)
+        le = self.long_events_by_symbol.get(record.symbol)
+        if le and le.status == "active":
+            le.last_seen = decision_time
+            le.current_price = record.last_price
+            le.high_price = max(le.high_price, record.last_price)
+            le.expires_at = decision_time + watch_ms
+        else:
+            self.long_events_by_symbol[record.symbol] = LongEvent(
+                event_id=f"{record.symbol}-L-{decision_time}",
+                symbol=record.symbol, first_seen=decision_time, last_seen=decision_time,
+                expires_at=decision_time + watch_ms, entry_price=record.last_price,
+                high_price=record.last_price, current_price=record.last_price,
+                evidence=[f"入选做多: 30m={record.pct_30m:+.2f}% 量比={record.volume_ratio_30m:.1f}x 4h={record.pct_4h:+.2f}%"],
+            )
+
+    def active_long_symbols(self) -> list[str]:
+        return [s for s, le in self.long_events_by_symbol.items() if le.status == "active"]
+
+    def _process_long(self, candle: Candle) -> list[Alert]:
+        """做多监管: 更新窗口, 判退出(超时/趋势破坏), 出做多信号(long_setup + ML)。"""
+        le = self.long_events_by_symbol.get(candle.symbol)
+        if le is None or le.status != "active":
+            return []
+        if candle.close_time > le.expires_at:
+            le.status = "closed"; le.exit_reason = "超时"
+            return []
+        le.current_price = candle.close
+        le.high_price = max(le.high_price, candle.high)
+        le.last_seen = candle.close_time
+        if candle.close <= le.entry_price * (1.0 - self.long_trend_break_pct / 100.0):
+            le.status = "closed"; le.exit_reason = "趋势破坏"
+            return []
+        return self._long_signals(le, candle)
+
+    def _long_signals(self, le: LongEvent, candle: Candle) -> list[Alert]:
+        if candle.interval != self.confirm_interval or self.ml is None or not self.ml.ready:
+            return []
+        from ..ml import features as mlf
+        candles = list(self.buffers[(le.symbol, self.confirm_interval)])
+        if len(candles) < mlf.LOOKBACK + 2:
+            return []
+        df = mlf.candles_to_frame(candles)
+        f = mlf.compute_features(df)
+        if not bool(mlf.long_setup_flags(df, f).iloc[-1]):
+            return []
+        row = f.iloc[-1]
+        if row[mlf.feature_columns()].isna().any():  # base 特征需齐全(资金流缺省 NaN, LGB 处理)
+            return []
+        sc = self.ml.score(row, "long")
+        thr = self.ml.threshold("long")
+        if sc is None or thr is None or sc < thr:
+            return []
+        hi = self.ml.threshold_high("long") or 2.0
+        tier = "高置信" if sc >= hi else "普通"
+        return [make_long_alert(le, candle, self.long_trend_break_pct, [f"ML做多分={sc:.2f}", f"置信={tier}"])]
+
     def prime_candles(self, candles: list[Candle]) -> list[PumpEvent]:
         changed: dict[str, PumpEvent] = {}
         for candle in sorted(candles, key=lambda c: (c.close_time, c.interval)):
@@ -109,12 +175,14 @@ class SignalEngine:
         candle = event.candle
         if not self._append_candle(candle):
             return [], []
+        changed: list[PumpEvent] = []
+        alerts: list[Alert] = []
+        if self.long_enabled:
+            alerts.extend(self._process_long(candle))
         pump = self.events_by_symbol.get(candle.symbol)
         if not pump or pump.status != "active" or pump.expires_at < candle.close_time:
-            return [], []
+            return changed, alerts
 
-        changed = []
-        alerts = []
         if candle.high > pump.high_price * (1.0 + self.params.new_high_reset_pct / 100.0):
             pump.high_price = candle.high
             pump.high_time = candle.close_time
@@ -131,6 +199,9 @@ class SignalEngine:
             for alert in self._ml_signals(pump, candle):
                 if alert.level == "early_alert":
                     pump.early_alerted_after_high_time = pump.high_time
+                    le = self.long_events_by_symbol.get(candle.symbol)
+                    if le and le.status == "active":  # 见顶 = 平多, 结束做多监管
+                        le.status = "closed"; le.exit_reason = "见顶"
                 elif alert.level == "short_signal":
                     pump.short_alerted_after_high_time = pump.high_time
                 alerts.append(alert)
@@ -490,6 +561,32 @@ def make_alert(level: str, pump: PumpEvent, candle: Candle, vol_ratio: float, re
         risks=[],
         category=category,
         occurrence=occ,
+    )
+
+
+def make_long_alert(le: LongEvent, candle: Candle, trend_break_pct: float, evidence: list[str]) -> Alert:
+    """做多信号(纯提示): 启动做多。invalidation=趋势破坏止损位。"""
+    le.long_signal_seq += 1
+    from_entry = pct_change(le.entry_price, candle.close)
+    return Alert(
+        alert_id=f"{le.event_id}-long_signal-{candle.close_time}",
+        event_id=le.event_id,
+        symbol=le.symbol,
+        level="long_signal",
+        decision_time=candle.close_time,
+        source_candle_close_time=candle.close_time,
+        data_cutoff_time=candle.close_time,
+        price=candle.close,
+        invalidation_price=round(le.entry_price * (1.0 - trend_break_pct / 100.0), 8),
+        anchor_price=le.entry_price,
+        high_price=le.high_price,
+        remaining_downside_pct=0.0,
+        volume_ratio=0.0,
+        evidence=[f"入场≈{le.entry_price:.6g}", f"距入场={from_entry:+.2f}%"] + evidence
+        + [f"止损位(趋势破坏-{trend_break_pct:.0f}%)={le.entry_price * (1.0 - trend_break_pct / 100.0):.6g}"],
+        risks=[],
+        category="做多",
+        occurrence=le.long_signal_seq,
     )
 
 

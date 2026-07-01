@@ -78,7 +78,7 @@ def render_markdown_alert(alert: Alert) -> str:
     )
 
 
-LEVEL_CN = {"early_alert": "顶部预警", "short_signal": "下跌启动", "fallback_alert": "回落兜底"}
+LEVEL_CN = {"early_alert": "顶部预警", "short_signal": "下跌启动", "fallback_alert": "回落兜底", "long_signal": "做多"}
 
 
 def render_wecom_markdown(alert: Alert) -> str:
@@ -87,15 +87,19 @@ def render_wecom_markdown(alert: Alert) -> str:
     score = next((e.split("=", 1)[1] for e in alert.evidence if e.startswith("ML") and "分=" in e), "")
     hint = next((e.replace("经验", "") for e in alert.evidence if e.startswith("经验见底")), "")
     tags = []
-    if alert.category:
+    if alert.category and alert.category != "做多":
         tags.append(alert.category)
     if tier and tier != "普通":  # 只在高置信时标出, 普通档为默认不标
         tags.append(tier)
     tag = f" [{'·'.join(tags)}]" if tags else ""
     url = f"https://www.binance.com/zh-CN/futures/{alert.symbol}"
-    metrics = f"现价 {alert.price} · 距锚点 {alert.remaining_downside_pct:.1f}% · 量比 {alert.volume_ratio:.1f}x"
-    if hint:
-        metrics += f" · {hint}"
+    if alert.level == "long_signal":
+        from_entry = next((e.split("=", 1)[1] for e in alert.evidence if e.startswith("距入场=")), "")
+        metrics = f"现价 {alert.price}" + (f" · 距入场 {from_entry}" if from_entry else "") + f" · 止损 {alert.invalidation_price}"
+    else:
+        metrics = f"现价 {alert.price} · 距锚点 {alert.remaining_downside_pct:.1f}% · 量比 {alert.volume_ratio:.1f}x"
+        if hint:
+            metrics += f" · {hint}"
     if score:
         metrics += f" · ML分{score}"
     seq = f" 第{alert.occurrence}次" if alert.occurrence else ""

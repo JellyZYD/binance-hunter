@@ -157,12 +157,15 @@ def compute_liquidity_records(
         )
     gain15 = {r["symbol"]: i + 1 for i, r in enumerate(sorted(temp, key=lambda r: r["pct_15m"], reverse=True))}
     gain30 = {r["symbol"]: i + 1 for i, r in enumerate(sorted(temp, key=lambda r: r["pct_30m"], reverse=True))}
+    qvol30_rank = {r["symbol"]: i + 1 for i, r in enumerate(sorted(temp, key=lambda r: r["quote_volume_30m"], reverse=True))}
     temp.sort(key=lambda r: r["quote_volume_15m"] * 2.0 + r["quote_volume_30m"], reverse=True)
 
     out: list[LiquidityRecord] = []
     for i, row in enumerate(temp, 1):
         selected = i <= top_n
         pump = selected and is_pump_qualified(row, gain15[row["symbol"]], gain30[row["symbol"]], params)
+        qv30r = qvol30_rank[row["symbol"]]
+        long_cand = selected and not pump and is_long_candidate(row, qv30r, params)
         out.append(
             LiquidityRecord(
                 symbol=row["symbol"],
@@ -187,6 +190,8 @@ def compute_liquidity_records(
                 quote_volume_4h=row["quote_volume_4h"],
                 quote_volume_12h=row["quote_volume_12h"],
                 quote_volume_1d=row["quote_volume_1d"],
+                qvol30_rank=qv30r,
+                long_candidate=long_cand,
             )
         )
     return out
@@ -213,3 +218,15 @@ def is_pump_qualified(row: dict[str, Any], gain_rank_15m: int, gain_rank_30m: in
         and row["volume_ratio_30m"] >= params.volume_ratio_30m
     )
     return bool(direct or ranked_15m or ranked_30m)
+
+
+def is_long_candidate(row: dict[str, Any], qvol30_rank: int, params: SignalParams) -> bool:
+    """做多候选粗筛(动量+热度+横截面成交额排名): 结构+ML 在引擎的 long_setup_flags 判。"""
+    return bool(
+        row["pct_30m"] >= params.long_ret_30m_pct
+        and row["volume_ratio_30m"] >= params.long_vol_ratio_30m
+        and row.get("pct_1d", 0.0) <= params.long_heat_24h_pct
+        and row.get("pct_4h", 0.0) <= params.long_heat_4h_pct
+        and row.get("pct_12h", 0.0) <= params.long_heat_12h_pct
+        and qvol30_rank <= params.long_qvol_rank_top
+    )
