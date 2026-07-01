@@ -96,6 +96,47 @@ def dump_setup_flags(f: "pd.DataFrame | pd.Series"):
     return (f["runup_96"] >= PUMP_RUNUP) & (f["dd_96"] <= DUMP_DD96) & (f["body"] < 0) & (f["close_pos"] <= DUMP_CPOS)
 
 
+# ---- 做多资金流特征(OI / 多空比 / taker) ----
+# flow_df 需含: close(价格,用于OI/价背离) + oi,oival,lsg(全局多空),lstp(大户持仓多空),tkr(taker买卖比),按 15m 网格对齐
+FLOW_RAW = ["oi", "oival", "lsg", "lstp", "tkr"]
+
+
+def compute_flow_features(flow_df: "pd.DataFrame") -> "pd.DataFrame":
+    d = pd.DataFrame(index=flow_df.index)
+    oi = flow_df["oi"]
+    d["oi_chg16"] = oi / oi.shift(16) - 1
+    d["oi_chg96"] = oi / oi.shift(96) - 1
+    d["oi_div16"] = d["oi_chg16"] - (flow_df["close"] / flow_df["close"].shift(16) - 1)
+    d["oival_chg16"] = flow_df["oival"] / flow_df["oival"].shift(16) - 1
+    lsg = flow_df["lsg"]
+    d["ls_global"] = lsg
+    d["ls_global_z"] = (lsg - lsg.rolling(96).mean()) / lsg.rolling(96).std().replace(0, np.nan)
+    d["ls_top_pos"] = flow_df["lstp"]
+    d["tk_ratio"] = flow_df["tkr"]
+    d["tk_ma8"] = flow_df["tkr"].rolling(8).mean()
+    return d
+
+
+def flow_columns() -> list[str]:
+    return ["oi_chg16", "oi_chg96", "oi_div16", "oival_chg16", "ls_global", "ls_global_z", "ls_top_pos", "tk_ratio", "tk_ma8"]
+
+
+def long_feature_columns() -> list[str]:
+    return feature_columns() + flow_columns()
+
+
+# 做多候选门槛(与研究一致)
+LONG_RET2_MIN = 0.045     # 30m 涨幅 >= 4.5%
+LONG_VOLR30_MIN = 2.0     # 30m 量能 >= 2x 基线
+LONG_HEAT_24H = 0.25      # 24h 涨幅 <= 25%
+LONG_HEAT_4H = 0.18       # 4h  涨幅 <= 18%
+LONG_HEAT_12H = 0.28      # 12h 涨幅 <= 28%
+LONG_CPOS_MIN = 0.60
+LONG_UWICK_MAX = 0.06
+LONG_DIST_EMA21_MAX = 0.12
+PUMP_4H, PUMP_12H, PUMP_1D = 0.20, 0.30, 0.40  # 妖币(空监管)态阈值
+
+
 def candles_to_frame(candles: list[Any]) -> "pd.DataFrame":
     """把引擎缓冲里的 Candle 列表转成特征所需的 15m DataFrame(按时间升序)。"""
     rows = [

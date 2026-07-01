@@ -13,6 +13,7 @@ class MLScorer:
         self.dir = Path(models_dir) if models_dir else MODELS_DIR
         self.meta: dict[str, Any] | None = None
         self.cols: list[str] = []
+        self._cols: dict[str, list[str]] = {}
         self._boosters: dict[str, Any] = {}
         self._np = None
         self.error = ""
@@ -33,7 +34,9 @@ class MLScorer:
         try:
             self.meta = json.loads(meta_p.read_text(encoding="utf-8"))
             self.cols = list(self.meta["feature_cols"])
-            for task in ("dump", "top"):
+            long_cols = list(self.meta.get("long_feature_cols", self.cols))
+            self._cols = {"dump": self.cols, "top": self.cols, "long": long_cols}
+            for task in ("dump", "top", "long"):
                 p = self.dir / f"{task}.txt"
                 if p.exists():
                     self._boosters[task] = lgb.Booster(model_file=str(p))
@@ -50,8 +53,9 @@ class MLScorer:
         booster = self._boosters.get(task)
         if booster is None or self._np is None:
             return None
+        cols = self._cols.get(task, self.cols)
         get = feat_row.get if hasattr(feat_row, "get") else (lambda k, d=None: feat_row[k])
-        x = self._np.array([[float(get(c, self._np.nan)) for c in self.cols]], dtype="float64")
+        x = self._np.array([[float(get(c, self._np.nan)) for c in cols]], dtype="float64")
         return float(booster.predict(x)[0])
 
     def threshold(self, task: str) -> float | None:

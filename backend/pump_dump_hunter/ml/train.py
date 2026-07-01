@@ -20,7 +20,12 @@ import pyarrow.parquet as pq
 import lightgbm as lgb
 from sklearn.metrics import roc_auc_score
 
-from .features import compute_features, top_setup_flags, dump_setup_flags, feature_columns, LOOKBACK
+from .features import (
+    compute_features, top_setup_flags, dump_setup_flags, feature_columns, LOOKBACK,
+    compute_flow_features, flow_columns, long_feature_columns,
+    LONG_RET2_MIN, LONG_VOLR30_MIN, LONG_HEAT_24H, LONG_HEAT_4H, LONG_HEAT_12H,
+    LONG_CPOS_MIN, LONG_UWICK_MAX, LONG_DIST_EMA21_MAX, PUMP_4H, PUMP_12H, PUMP_1D,
+)
 
 MODELS_DIR = Path(__file__).resolve().parent / "models"
 EXCLUDE = {
@@ -126,7 +131,8 @@ def build_rows(source, days):
     return pd.concat(rows, ignore_index=True), start, end
 
 
-def fit_model(d, ycol):
+def fit_model(d, ycol, feats=None):
+    feats = feats or FEATS
     ts = d.ts.values
     cut = np.quantile(ts, 0.80)
     tr, va = ts < cut, ts >= cut
@@ -134,18 +140,110 @@ def fit_model(d, ycol):
     params = dict(objective="binary", n_estimators=300, learning_rate=0.03, num_leaves=32,
                   min_child_samples=60, subsample=0.8, colsample_bytree=0.7, reg_lambda=1.0,
                   scale_pos_weight=max(1.0, neg / max(pos, 1)), n_jobs=-1, verbosity=-1)
-    m = lgb.LGBMClassifier(**params); m.fit(d.loc[tr, FEATS], d.loc[tr, ycol])
+    m = lgb.LGBMClassifier(**params); m.fit(d.loc[tr, feats], d.loc[tr, ycol])
     va_auc = float("nan")
     if va.sum() and d.loc[va, ycol].nunique() > 1:
-        va_auc = float(roc_auc_score(d.loc[va, ycol], m.predict_proba(d.loc[va, FEATS])[:, 1]))
+        va_auc = float(roc_auc_score(d.loc[va, ycol], m.predict_proba(d.loc[va, feats])[:, 1]))
     # 最终在全部数据上重训
     pos = d[ycol].sum(); neg = len(d) - pos
     params["scale_pos_weight"] = max(1.0, neg / max(pos, 1))
-    final = lgb.LGBMClassifier(**params); final.fit(d[FEATS], d[ycol])
-    scores = final.predict_proba(d[FEATS])[:, 1]
+    final = lgb.LGBMClassifier(**params); final.fit(d[feats], d[ycol])
+    scores = final.predict_proba(d[feats])[:, 1]
     thr = float(np.quantile(scores, 0.95))       # top5% 作为触发阈值
     thr_high = float(np.quantile(scores, 0.98))   # top2% 作为高置信
     return final.booster_, va_auc, thr, thr_high, int(pos)
+
+
+def _data_end(source):
+    end = 0
+    files = [f for f in glob.glob(os.path.join(source, "klines", "*.parquet"))
+             if os.path.basename(f)[:-8].upper() not in EXCLUDE][:5]
+    for f in files:
+        try:
+            pf = pq.ParquetFile(f)
+            for i in range(pf.metadata.num_row_groups):
+                st = pf.metadata.row_group(i).column(0).statistics
+                if st and st.has_min_max:
+                    end = max(end, int(st.max))
+        except Exception:
+            pass
+    return end or int(datetime.now(timezone.utc).timestamp() * 1000)
+
+
+def _read_ms(source, group, sym, cols, start, end):
+    p = os.path.join(source, "market_state_hist", group, f"{sym}.parquet")
+    if not os.path.exists(p):
+        return None
+    try:
+        return (pq.read_table(p, columns=["timestamp"] + cols, filters=[("timestamp", ">=", start - 3 * DAY), ("timestamp", "<=", end)])
+                .to_pandas().drop_duplicates("timestamp").sort_values("timestamp"))
+    except Exception:
+        return None
+
+
+def _flow_frame(source, sym, g, start, end):
+    f = pd.DataFrame({"b": g["b"].values, "close": g["close"].values})
+    for grp, cols, names in [("oi", ["oi", "oi_value"], ["oi", "oival"]), ("global_acct_ratio", ["ratio"], ["lsg"]),
+                             ("top_pos_ratio", ["ratio"], ["lstp"]), ("taker_ratio", ["ratio"], ["tkr"])]:
+        d = _read_ms(source, grp, sym, cols, start, end)
+        if d is None:
+            for nn in names:
+                f[nn] = np.nan
+        else:
+            mm = pd.merge_asof(f[["b"]], d, left_on="b", right_on="timestamp", direction="backward")
+            for c, nn in zip(cols, names):
+                f[nn] = mm[c].values
+    return f
+
+
+def build_long_rows(source, days):
+    end = _data_end(source); start = end - days * DAY
+    files = [f for f in glob.glob(os.path.join(source, "klines", "*.parquet"))
+             if os.path.basename(f)[:-8].upper() not in EXCLUDE]
+    G = {}; SYMc = []; TS = []; QV = []
+    for path in files:
+        sym = os.path.basename(path)[:-8].upper()
+        try:
+            g = agg15(path, start - 3 * DAY, end)
+        except Exception:
+            continue
+        if g is None or len(g) < LOOKBACK + 300:
+            continue
+        G[sym] = g; SYMc.append(sym)
+        TS.append(g.b.values); QV.append(g.qv.rolling(2).sum().values)
+    Q = pd.DataFrame({"ts": np.concatenate(TS), "qv": np.concatenate(QV)})
+    Q["rank"] = Q.groupby("ts")["qv"].rank(ascending=False, method="min")
+    rank_all = Q["rank"].values; pos = 0; RANK = {}
+    for sym in SYMc:
+        n = len(G[sym]); RANK[sym] = rank_all[pos:pos + n]; pos += n
+    rows = []
+    for sym in SYMc:
+        g = G[sym]; F = compute_features(g); c, h, l = g.close, g.high, g.low; n = len(g)
+        FL = compute_flow_features(_flow_frame(source, sym, g, start, end))
+        ret2 = c / c.shift(2) - 1; ret16 = c / c.shift(16) - 1; ret48 = c / c.shift(48) - 1; ret96 = c / c.shift(96) - 1
+        qv30 = g.qv.rolling(2).sum(); volr30 = qv30 / qv30.rolling(20).mean()
+        breakout = (c > np.maximum(g.open, c).rolling(8).max().shift(1)).values
+        inpump = ((ret16 >= PUMP_4H) | (ret48 >= PUMP_12H) | (ret96 >= PUMP_1D)).values
+        cand = ((ret2 >= LONG_RET2_MIN) & (volr30 >= LONG_VOLR30_MIN) & (ret96 <= LONG_HEAT_24H) & (ret16 <= LONG_HEAT_4H)
+                & (ret48 <= LONG_HEAT_12H) & breakout & (F["close_pos"] >= LONG_CPOS_MIN) & (F["uwick"] <= LONG_UWICK_MAX)
+                & (F["dist_ema21"] > 0) & (F["dist_ema21"] <= LONG_DIST_EMA21_MAX) & (F["ema_spread"] > 0)
+                & (~pd.Series(inpump, index=F.index)) & (pd.Series(RANK[sym], index=F.index) <= 150)).values
+        valid = np.zeros(n, bool); valid[LOOKBACK:max(LOOKBACK, n - 289)] = True
+        finite = np.isfinite(c.values) & F[FEATS].notna().all(axis=1).values
+        idx = np.where(cand & valid & finite)[0]
+        if len(idx) == 0:
+            continue
+        ylong = np.array([1 if any(inpump[j] for j in range(i + 1, min(i + 193, n))) else 0 for i in idx])
+        sub = pd.concat([F.iloc[idx][FEATS].reset_index(drop=True), FL.iloc[idx][flow_columns()].reset_index(drop=True)], axis=1)
+        sub["y_long"] = ylong; sub["ts"] = g.b.values[idx]; sub["symbol"] = sym
+        ev = np.zeros(len(idx), int); k = 0
+        for m in range(1, len(idx)):
+            if idx[m] - idx[m - 1] > 96:
+                k += 1
+            ev[m] = k
+        sub["event"] = [f"{sym}-{e}" for e in ev]
+        rows.append(sub)
+    return pd.concat(rows, ignore_index=True), start, end
 
 
 def main(argv=None):
@@ -172,8 +270,19 @@ def main(argv=None):
         booster.save_model(str(MODELS_DIR / f"{task}.txt"))
         meta[task] = {"val_auc": round(auc, 3), "n_pos": npos, "n_cand": int(len(d)), "thr": round(thr, 4), "thr_high": round(thr_high, 4)}
         print(f"[{task}] val_auc={auc:.3f} 正例={npos} 阈值={thr:.3f}/{thr_high:.3f}", flush=True)
+
+    # 做多模型(base + 资金流特征, 标签=48h 内成妖币)
+    LFEATS = long_feature_columns()
+    dfl, _, _ = build_long_rows(args.source, args.days)
+    dl = dfl.reset_index(drop=True)
+    booster, auc, thr, thr_high, npos = fit_model(dl, "y_long", feats=LFEATS)
+    booster.save_model(str(MODELS_DIR / "long.txt"))
+    meta["long_feature_cols"] = LFEATS
+    meta["long"] = {"val_auc": round(auc, 3), "n_pos": npos, "n_cand": int(len(dl)), "thr": round(thr, 4), "thr_high": round(thr_high, 4)}
+    print(f"[long] val_auc={auc:.3f} 正例={npos} 候选={len(dl)} 阈值={thr:.3f}/{thr_high:.3f}", flush=True)
+
     (MODELS_DIR / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
-    print("已保存 ml/models/{dump.txt,top.txt,meta.json}", flush=True)
+    print("已保存 ml/models/{dump.txt,top.txt,long.txt,meta.json}", flush=True)
 
 
 if __name__ == "__main__":

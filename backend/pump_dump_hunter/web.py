@@ -91,6 +91,7 @@ def read_model_meta() -> dict[str, Any]:
     try:
         m = json.loads(p.read_text(encoding="utf-8"))
         m.pop("feature_cols", None)  # 前端不需要, 省流量
+        m.pop("long_feature_cols", None)
         m["ready"] = True
         return m
     except Exception as exc:
