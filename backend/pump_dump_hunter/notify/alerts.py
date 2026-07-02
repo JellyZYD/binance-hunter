@@ -46,6 +46,14 @@ class AlertSink:
         try:
             with urlopen(req, timeout=10) as resp:
                 body = resp.read().decode("utf-8", errors="replace")
+            try:
+                data = json.loads(body)
+            except json.JSONDecodeError:
+                return False, f"invalid wecom response: {body[:160]}"
+            errcode = data.get("errcode")
+            if errcode not in (0, "0"):
+                errmsg = data.get("errmsg", body)
+                return False, f"wecom errcode={errcode} errmsg={errmsg}"[:200]
             return True, body
         except Exception as exc:
             return False, f"{type(exc).__name__}: {exc}"[:200]
@@ -83,7 +91,6 @@ LEVEL_CN = {
     "short_signal": "下跌启动",
     "fallback_alert": "回落兜底",
     "long_signal": "做多观察",
-    "long_invalid": "做多失效",
     "long_timeout": "做多超时",
 }
 

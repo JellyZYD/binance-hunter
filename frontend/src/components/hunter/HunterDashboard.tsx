@@ -158,7 +158,6 @@ function signalLabel(level?: string) {
   if (level === 'early_alert') return '顶部预警';
   if (level === 'short_signal') return '下跌启动';
   if (level === 'long_signal') return '做多观察';
-  if (level === 'long_invalid') return '做多失效';
   if (level === 'long_timeout') return '做多超时';
   if (level === 'fallback_alert') return '回落兜底';
   return level || '等待信号';
@@ -198,7 +197,6 @@ function signalClass(level?: string) {
   if (level === 'short_signal') return 'signal-short';
   if (level === 'early_alert') return 'signal-early';
   if (level === 'long_signal') return 'signal-long';
-  if (level === 'long_invalid') return 'signal-long-invalid';
   if (level === 'long_timeout') return 'signal-long-timeout';
   if (level === 'fallback_alert') return 'signal-fallback';
   return 'signal-idle';
@@ -208,7 +206,6 @@ function sigShort(level?: string) {
   if (level === 'early_alert') return '顶';
   if (level === 'short_signal') return '空';
   if (level === 'long_signal') return '多';
-  if (level === 'long_invalid') return '失';
   if (level === 'long_timeout') return '超';
   if (level === 'fallback_alert') return '兜';
   return '?';
@@ -218,7 +215,6 @@ function sigColor(level?: string) {
   if (level === 'short_signal') return '#ff4f70';
   if (level === 'early_alert') return '#ffbf4a';
   if (level === 'long_signal') return '#34d399';
-  if (level === 'long_invalid') return '#ff4f70';
   if (level === 'long_timeout') return '#94a3b8';
   if (level === 'fallback_alert') return '#d86cff';
   return '#7dd3fc';
@@ -241,7 +237,8 @@ export default function HunterDashboard() {
         api<{ rows: AlertRow[] }>('/api/hunter/alerts?limit=80'),
         api<{ rows: BacktestRow[] }>('/api/hunter/backtests?limit=20'),
       ]);
-      setData({ summary, liquidity: liquidity.rows, pumps: pumps.rows, alerts: alerts.rows, backtests: backtests.rows });
+      const visibleAlerts = alerts.rows.filter((alert) => alert.level !== 'long_invalid');
+      setData({ summary, liquidity: liquidity.rows, pumps: pumps.rows, alerts: visibleAlerts, backtests: backtests.rows });
       const now = Date.now();
       setUpdatedAt(new Date(now));
       setNowMs(now);

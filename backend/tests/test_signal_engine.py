@@ -131,7 +131,7 @@ class SignalEngineTests(unittest.TestCase):
 
         self.assertEqual([a.level for a in alerts], ["early_alert"])
 
-    def test_long_timeout_and_invalid_emit_status_alerts(self):
+    def test_long_timeout_emits_status_alert_and_invalid_is_silent(self):
         settings = temp_settings()
         settings["signals"]["mode"] = "ml"
         settings["signals"]["long_enabled"] = True
@@ -166,7 +166,9 @@ class SignalEngineTests(unittest.TestCase):
         _changed, invalid_alerts = engine.on_kline(KlineClosed(invalid_candle.symbol, "15m", invalid_candle))
 
         self.assertEqual([a.level for a in timeout_alerts], ["long_timeout"])
-        self.assertEqual([a.level for a in invalid_alerts], ["long_invalid"])
+        self.assertEqual([a.level for a in invalid_alerts], [])
+        self.assertEqual(engine.long_events_by_symbol["BADUSDT"].status, "closed")
+        self.assertEqual(engine.long_events_by_symbol["BADUSDT"].exit_reason, "趋势破坏")
 
     def test_pump_then_dump_emits_short_once(self):
         settings = temp_settings()

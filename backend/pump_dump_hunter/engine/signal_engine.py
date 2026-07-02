@@ -170,7 +170,7 @@ class SignalEngine:
         le.last_seen = candle.close_time
         if candle.close <= le.entry_price * (1.0 - self.long_trend_break_pct / 100.0):
             le.status = "closed"; le.exit_reason = "趋势破坏"
-            return [make_long_status_alert("long_invalid", le, candle, "趋势破坏", [f"drop_from_entry={pct_change(candle.close, le.entry_price):+.2f}%"])]
+            return []
         exit_alerts = self._long_exit_signals(le, candle)
         if exit_alerts:
             return exit_alerts
