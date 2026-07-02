@@ -141,16 +141,20 @@ def fit_model(d, ycol, feats=None, thr_quantile: float = 0.95, thr_high_quantile
                   min_child_samples=60, subsample=0.8, colsample_bytree=0.7, reg_lambda=1.0,
                   scale_pos_weight=max(1.0, neg / max(pos, 1)), n_jobs=-1, verbosity=-1)
     m = lgb.LGBMClassifier(**params); m.fit(d.loc[tr, feats], d.loc[tr, ycol])
-    va_auc = float("nan")
-    if va.sum() and d.loc[va, ycol].nunique() > 1:
-        va_auc = float(roc_auc_score(d.loc[va, ycol], m.predict_proba(d.loc[va, feats])[:, 1]))
+    va_auc = float("nan"); va_scores = None
+    if va.sum():
+        va_scores = m.predict_proba(d.loc[va, feats])[:, 1]
+        if d.loc[va, ycol].nunique() > 1:
+            va_auc = float(roc_auc_score(d.loc[va, ycol], va_scores))
     # 最终在全部数据上重训
     pos = d[ycol].sum(); neg = len(d) - pos
     params["scale_pos_weight"] = max(1.0, neg / max(pos, 1))
     final = lgb.LGBMClassifier(**params); final.fit(d[feats], d[ycol])
-    scores = final.predict_proba(d[feats])[:, 1]
-    thr = float(np.quantile(scores, thr_quantile))
-    thr_high = float(np.quantile(scores, thr_high_quantile))
+    # 阈值用验证段(模型未见过的数据)分数校准: 样本内分位数会因 OOS 分数塌陷
+    # (top/long 尤甚, 训练0.9+ -> 新数据p95仅0.3-0.6)导致线上信号哑火
+    calib = va_scores if va_scores is not None and len(va_scores) >= 50 else final.predict_proba(d[feats])[:, 1]
+    thr = float(np.quantile(calib, thr_quantile))
+    thr_high = float(np.quantile(calib, thr_high_quantile))
     return final.booster_, va_auc, thr, thr_high, int(pos)
 
 
