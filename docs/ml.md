@@ -21,6 +21,8 @@
 
 信号引擎 `signals.mode="ml"` 时:每根 15m 收线,在候选上算特征→模型打分→分数≥阈值发信号。见顶/下跌启动使用 `top5%` 阈值触发、`top2%` 标"高置信";做多使用 `top10%` 触发、`top2%` 标"高置信",普通触发在 UI/推送标为"普通观察"。见顶→顶部预警,破位→下跌启动。**已删除回落兜底。**
 
+PumpWatch 的顶部/下跌启动已经升级为 **4h 冷却多次信号**:`signals.multi_signal_cooldown_hours=4.0`。同一监控事件同类信号必须再次满足 setup + ML 阈值,且距离上次同类信号满 4h 才会再次发出;`occurrence` 显示第 N 次,最后发出时间落库。实验过程见 [lifecycle_experiments.md](./lifecycle_experiments.md)。
+
 ### 做多模型(`long.txt`,`signals.long_enabled`)
 
 - 特征 = base85 + **资金流 9**(OI 变化/OI-价背离、全局多空比+z、大户持仓多空、taker 买卖比),共 94。标签 = "48h 内涨成妖币"(换 6 种标签验证此最优)。

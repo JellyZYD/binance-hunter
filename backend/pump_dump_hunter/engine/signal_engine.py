@@ -17,6 +17,8 @@ class SignalEngine:
         self.early_interval = str(self.signal_cfg.get("early_interval", "5m"))
         self.confirm_interval = str(self.signal_cfg.get("confirm_interval", "15m"))
         self.mode = str(self.signal_cfg.get("mode", "legacy"))
+        self.multi_signal_cooldown_hours = float(self.signal_cfg.get("multi_signal_cooldown_hours", 4.0))
+        self.multi_signal_cooldown_ms = int(max(0.0, self.multi_signal_cooldown_hours) * 3_600_000)
         self.ml = None
         if self.mode == "ml":
             try:
@@ -43,6 +45,38 @@ class SignalEngine:
     def load_long_events(self, events: list[LongEvent]) -> None:
         for event in events:
             self.long_events_by_symbol[event.symbol] = event
+
+    def _pump_signal_last_time(self, pump: PumpEvent, level: str) -> int | None:
+        if level == "early_alert":
+            return pump.early_last_alert_time or (
+                pump.early_alerted_after_high_time if pump.early_alerted_after_high_time == pump.high_time else None
+            )
+        if level == "short_signal":
+            return pump.short_last_alert_time or (
+                pump.short_alerted_after_high_time if pump.short_alerted_after_high_time == pump.high_time else None
+            )
+        if level == "fallback_alert":
+            return pump.fallback_last_alert_time or (
+                pump.fallback_alerted_after_high_time if pump.fallback_alerted_after_high_time == pump.high_time else None
+            )
+        return None
+
+    def _can_emit_pump_signal(self, pump: PumpEvent, level: str, decision_time: int) -> bool:
+        last_time = self._pump_signal_last_time(pump, level)
+        if last_time is None or self.multi_signal_cooldown_ms <= 0:
+            return True
+        return decision_time - int(last_time) >= self.multi_signal_cooldown_ms
+
+    def _mark_pump_signal(self, pump: PumpEvent, level: str, decision_time: int) -> None:
+        if level == "early_alert":
+            pump.early_alerted_after_high_time = pump.high_time
+            pump.early_last_alert_time = decision_time
+        elif level == "short_signal":
+            pump.short_alerted_after_high_time = pump.high_time
+            pump.short_last_alert_time = decision_time
+        elif level == "fallback_alert":
+            pump.fallback_alerted_after_high_time = pump.high_time
+            pump.fallback_last_alert_time = decision_time
 
     def on_discovery(self, records: list[LiquidityRecord], decision_time: int) -> list[PumpEvent]:
         changed = []
@@ -244,14 +278,13 @@ class SignalEngine:
         if self.mode == "ml":
             long_exit_triggered = False
             for alert in self._ml_signals(pump, candle):
+                self._mark_pump_signal(pump, alert.level, alert.decision_time)
                 if alert.level == "early_alert":
-                    pump.early_alerted_after_high_time = pump.high_time
                     le = self.long_events_by_symbol.get(candle.symbol)
                     if le and le.status == "active":  # 见顶 = 平多, 结束做多监管
                         le.status = "closed"; le.exit_reason = "见顶"
                         long_exit_triggered = True
                 elif alert.level == "short_signal":
-                    pump.short_alerted_after_high_time = pump.high_time
                     le = self.long_events_by_symbol.get(candle.symbol)
                     if le and le.status == "active":  # 下跌启动 = 平多/做空, 结束做多监管
                         le.status = "closed"; le.exit_reason = "下跌启动"
@@ -267,14 +300,14 @@ class SignalEngine:
             if candle.interval == self.early_interval:
                 alert = self._early_alert_v2(pump, candle)
                 if alert:
-                    pump.early_alerted_after_high_time = pump.high_time
+                    self._mark_pump_signal(pump, alert.level, alert.decision_time)
                     alerts.append(alert)
                     changed.append(pump)
                     long_exit_triggered = True
             if candle.interval == self.confirm_interval:
                 alert = self._short_signal_v2(pump, candle)
                 if alert:
-                    pump.short_alerted_after_high_time = pump.high_time
+                    self._mark_pump_signal(pump, alert.level, alert.decision_time)
                     alerts.append(alert)
                     changed.append(pump)
                     long_exit_triggered = True
@@ -286,14 +319,14 @@ class SignalEngine:
         if candle.interval == self.early_interval:
             alert = self._early_alert(pump, candle)
             if alert:
-                pump.early_alerted_after_high_time = pump.high_time
+                self._mark_pump_signal(pump, alert.level, alert.decision_time)
                 alerts.append(alert)
                 changed.append(pump)
                 long_exit_triggered = True
         if candle.interval == self.confirm_interval:
             alert = self._short_signal(pump, candle)
             if alert:
-                pump.short_alerted_after_high_time = pump.high_time
+                self._mark_pump_signal(pump, alert.level, alert.decision_time)
                 alerts.append(alert)
                 changed.append(pump)
                 long_exit_triggered = True
@@ -315,7 +348,7 @@ class SignalEngine:
         return True
 
     def _early_alert(self, pump: PumpEvent, candle: Candle) -> Alert | None:
-        if pump.early_alerted_after_high_time == pump.high_time:
+        if not self._can_emit_pump_signal(pump, "early_alert", candle.close_time):
             return None
         candles = list(self.buffers[(pump.symbol, self.early_interval)])
         lookback = int(self.params.consolidation_lookback)
@@ -342,12 +375,13 @@ class SignalEngine:
                     f"probe={consolidation['probe_pct']:.2f}%",
                     f"range={consolidation['range_pct']:.2f}%",
                     f"drift={consolidation['drift_pct']:+.2f}%",
+                    f"cooldown={self.multi_signal_cooldown_hours:g}h",
                 ],
             )
         return None
 
     def _short_signal(self, pump: PumpEvent, candle: Candle) -> Alert | None:
-        if pump.short_alerted_after_high_time == pump.high_time:
+        if not self._can_emit_pump_signal(pump, "short_signal", candle.close_time):
             return None
         candles = list(self.buffers[(pump.symbol, self.confirm_interval)])
         if len(candles) < int(self.signal_cfg["volume_window"]) + 2:
@@ -364,13 +398,16 @@ class SignalEngine:
             and breaks_structure
             and remaining >= self.params.confirm_min_remaining_pct
         ):
-            return make_alert("short_signal", pump, candle, vol_ratio, remaining, [f"{self.confirm_interval} closed breakdown"])
+            return make_alert("short_signal", pump, candle, vol_ratio, remaining, [
+                f"{self.confirm_interval} closed breakdown",
+                f"cooldown={self.multi_signal_cooldown_hours:g}h",
+            ])
         return None
 
     # ---- v2 数据驱动信号 ----
     def _early_alert_v2(self, pump: PumpEvent, candle: Candle) -> Alert | None:
         """顶部预警:近妖币高点 + 放量 + 冲高回落(收盘在K线下半部)。多而贴顶,容忍逆向。"""
-        if pump.early_alerted_after_high_time == pump.high_time:
+        if not self._can_emit_pump_signal(pump, "early_alert", candle.close_time):
             return None
         candles = list(self.buffers[(pump.symbol, self.early_interval)])
         if len(candles) < int(self.signal_cfg["volume_window"]) + 1:
@@ -388,13 +425,19 @@ class SignalEngine:
         ):
             return make_alert(
                 "early_alert", pump, candle, vol_ratio, remaining,
-                [f"{self.early_interval} climax rejection", "near_high", f"close_pos={cpos:.2f}", f"vol={vol_ratio:.2f}x"],
+                [
+                    f"{self.early_interval} climax rejection",
+                    "near_high",
+                    f"close_pos={cpos:.2f}",
+                    f"vol={vol_ratio:.2f}x",
+                    f"cooldown={self.multi_signal_cooldown_hours:g}h",
+                ],
             )
         return None
 
     def _short_signal_v2(self, pump: PumpEvent, candle: Candle) -> Alert | None:
         """下跌启动:跌破高位区 + 弱收阴线(+可选主动卖盘)。低逆向、会一直跌。"""
-        if pump.short_alerted_after_high_time == pump.high_time:
+        if not self._can_emit_pump_signal(pump, "short_signal", candle.close_time):
             return None
         candles = list(self.buffers[(pump.symbol, self.confirm_interval)])
         if len(candles) < int(self.signal_cfg["volume_window"]) + 1:
@@ -417,7 +460,8 @@ class SignalEngine:
             return make_alert(
                 "short_signal", pump, candle, vol_ratio, remaining,
                 [f"{self.confirm_interval} high-zone breakdown", f"close_pos={cpos:.2f}", f"taker_sell={tsell:.2f}",
-                 f"drop_from_high={pct_change(candle.close, pump.high_price):+.2f}%"],
+                 f"drop_from_high={pct_change(candle.close, pump.high_price):+.2f}%",
+                 f"cooldown={self.multi_signal_cooldown_hours:g}h"],
             )
         return None
 
@@ -439,8 +483,7 @@ class SignalEngine:
             ("top", "early_alert", mlf.top_setup_flags, "ML见顶分"),
             ("dump", "short_signal", mlf.dump_setup_flags, "ML破位分"),
         ):
-            already = pump.early_alerted_after_high_time if level == "early_alert" else pump.short_alerted_after_high_time
-            if already == pump.high_time or not bool(setup_fn(row)):
+            if not self._can_emit_pump_signal(pump, level, candle.close_time) or not bool(setup_fn(row)):
                 continue
             sc = self.ml.score(row, task)
             thr = self.ml.threshold(task)
@@ -448,7 +491,14 @@ class SignalEngine:
                 continue
             hi = self.ml.threshold_high(task) or 2.0
             tier = "高置信" if sc >= hi else "普通"
-            out.append(make_alert(level, pump, candle, vol_ratio, remaining, [f"{tag}={sc:.2f}", f"置信={tier}"]))
+            out.append(make_alert(
+                level,
+                pump,
+                candle,
+                vol_ratio,
+                remaining,
+                [f"{tag}={sc:.2f}", f"置信={tier}", f"cooldown={self.multi_signal_cooldown_hours:g}h"],
+            ))
         return out
 
 

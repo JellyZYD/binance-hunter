@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from pump_dump_hunter.discovery import compute_liquidity_records
+from pump_dump_hunter.data.store import Store
 from pump_dump_hunter.engine.signal_engine import SignalEngine
 from pump_dump_hunter.engine.signal_engine import breaks_post_high_structure
 from pump_dump_hunter.models import Alert, Candle, KlineClosed, LongEvent, PumpEvent, SignalParams
@@ -52,6 +53,57 @@ class SignalEngineTests(unittest.TestCase):
         self.assertEqual([a.level for a in alerts], ["short_signal"])
         self.assertEqual(engine.long_events_by_symbol["PUMPUSDT"].status, "closed")
         self.assertEqual(engine.long_events_by_symbol["PUMPUSDT"].exit_reason, "下跌启动")
+
+    def test_pump_signal_uses_four_hour_cooldown(self):
+        settings = temp_settings()
+        settings["signals"]["multi_signal_cooldown_hours"] = 4.0
+        engine = SignalEngine(settings)
+        pump = PumpEvent(
+            event_id="PUMPUSDT-1",
+            symbol="PUMPUSDT",
+            first_seen=1,
+            last_seen=1,
+            expires_at=100_000_000,
+            trigger_window="1d",
+            anchor_price=100.0,
+            high_price=150.0,
+            high_time=1_000,
+            current_price=140.0,
+            max_gain_pct=50.0,
+        )
+
+        engine._mark_pump_signal(pump, "short_signal", 10_000)
+
+        self.assertFalse(engine._can_emit_pump_signal(pump, "short_signal", 10_000 + 4 * 3_600_000 - 1))
+        self.assertTrue(engine._can_emit_pump_signal(pump, "short_signal", 10_000 + 4 * 3_600_000))
+        self.assertTrue(engine._can_emit_pump_signal(pump, "early_alert", 10_000))
+
+    def test_pump_signal_last_time_persists(self):
+        settings = temp_settings()
+        store = Store(settings["paths"]["db_path"])
+        pump = PumpEvent(
+            event_id="PUMPUSDT-1",
+            symbol="PUMPUSDT",
+            first_seen=1,
+            last_seen=2,
+            expires_at=100_000,
+            trigger_window="1d",
+            anchor_price=100.0,
+            high_price=150.0,
+            high_time=1_000,
+            current_price=140.0,
+            max_gain_pct=50.0,
+            short_alerted_after_high_time=1_000,
+            short_last_alert_time=42_000,
+            short_signal_seq=2,
+        )
+
+        store.upsert_pump_events([pump])
+        loaded = store.get_pump_event("PUMPUSDT-1")
+
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.short_last_alert_time, 42_000)
+        self.assertEqual(loaded.short_signal_seq, 2)
 
     def test_long_event_runs_exit_before_long_signal_without_pump_event(self):
         settings = temp_settings()

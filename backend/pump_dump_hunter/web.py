@@ -17,6 +17,7 @@ def run_web(settings: dict[str, Any], host: str = "127.0.0.1", port: int = 8787)
         pass
 
     Handler.store = store
+    Handler.settings = settings
     server = ThreadingHTTPServer((host, int(port)), Handler)
     print(f"dashboard API listening on http://{host}:{port}", flush=True)
     try:
@@ -29,6 +30,7 @@ def run_web(settings: dict[str, Any], host: str = "127.0.0.1", port: int = 8787)
 
 class DashboardHandler(BaseHTTPRequestHandler):
     store: Store
+    settings: dict[str, Any] = {}
 
     def log_message(self, fmt: str, *args: Any) -> None:
         return
@@ -72,6 +74,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         for key in ("latest_snapshot_time", "latest_data_cutoff_time", "latest_alert_time"):
             value = data.get(key)
             data[f"{key}_iso"] = iso_from_ms(int(value)) if value else None
+        signals = self.settings.get("signals", {})
+        data["strategy"] = {
+            "mode": signals.get("mode", ""),
+            "confirm_interval": signals.get("confirm_interval", ""),
+            "multi_signal_cooldown_hours": signals.get("multi_signal_cooldown_hours", 4.0),
+            "long_enabled": bool(signals.get("long_enabled", False)),
+        }
         return data
 
     def write_json(self, payload: dict[str, Any]) -> None:

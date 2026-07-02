@@ -8,6 +8,14 @@ type Summary = {
   latest_snapshot_time_iso?: string | null;
   latest_data_cutoff_time_iso?: string | null;
   latest_alert_time_iso?: string | null;
+  strategy?: StrategyMeta;
+};
+
+type StrategyMeta = {
+  mode?: string;
+  confirm_interval?: string;
+  multi_signal_cooldown_hours?: number;
+  long_enabled?: boolean;
 };
 
 type LiquidityRow = {
@@ -35,6 +43,8 @@ type PumpRow = {
   evidence?: string[];
   first_seen?: number;
   anchor_price?: number;
+  early_last_alert_time?: number | null;
+  short_last_alert_time?: number | null;
 };
 
 type Candle = {
@@ -101,7 +111,6 @@ type MonitorRow = PumpRow & {
   latestAlert?: AlertRow;
   history: AlertRow[];
   drawdownPct: number;
-  alertAgeMs?: number;
 };
 
 async function api<T>(path: string): Promise<T> {
@@ -155,6 +164,25 @@ function signalLabel(level?: string) {
   return level || '等待信号';
 }
 
+function durationText(ms: number) {
+  const totalMinutes = Math.max(0, Math.ceil(ms / 60000));
+  const hours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (hours <= 0) return `${minutes}m`;
+  if (minutes <= 0) return `${hours}h`;
+  return `${hours}h${minutes}m`;
+}
+
+function cooldownStatus(alert?: AlertRow, cooldownHours = 4, nowMs = 0) {
+  const hours = Number.isFinite(cooldownHours) ? cooldownHours : 4;
+  if (!alert) return `${fmt(hours, 1)}h冷却`;
+  if (alert.level !== 'early_alert' && alert.level !== 'short_signal') return '-';
+  if (!nowMs) return '-';
+  const next = Number(alert.decision_time) + hours * 3_600_000;
+  const left = next - nowMs;
+  return left > 0 ? `冷却${durationText(left)}` : '可再触发';
+}
+
 function seqText(occurrence?: number) {
   return occurrence && occurrence > 0 ? `第${occurrence}次` : '';
 }
@@ -200,6 +228,7 @@ export default function HunterDashboard() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [error, setError] = useState<string>('');
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
+  const [nowMs, setNowMs] = useState<number>(0);
   const [model, setModel] = useState<ModelMeta | null>(null);
   const [longRows, setLongRows] = useState<LongRow[]>([]);
 
@@ -213,7 +242,9 @@ export default function HunterDashboard() {
         api<{ rows: BacktestRow[] }>('/api/hunter/backtests?limit=20'),
       ]);
       setData({ summary, liquidity: liquidity.rows, pumps: pumps.rows, alerts: alerts.rows, backtests: backtests.rows });
-      setUpdatedAt(new Date());
+      const now = Date.now();
+      setUpdatedAt(new Date(now));
+      setNowMs(now);
       setError('');
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -260,7 +291,6 @@ export default function HunterDashboard() {
         latestAlert,
         history,
         drawdownPct: drawdown(pump.high_price, pump.current_price),
-        alertAgeMs: latestAlert ? Date.now() - Number(latestAlert.decision_time) : undefined,
       };
     });
 
@@ -287,6 +317,9 @@ export default function HunterDashboard() {
       { label: '最近信号', value: date(summary.latest_alert_time_iso), tone: 'neutral' },
     ];
   }, [data?.summary, monitorRows]);
+  const strategy = data?.summary?.strategy;
+  const rawCooldownHours = Number(strategy?.multi_signal_cooldown_hours ?? 4);
+  const cooldownHours = Number.isFinite(rawCooldownHours) ? rawCooldownHours : 4;
 
   return (
     <main className="hunter-shell">
@@ -294,7 +327,7 @@ export default function HunterDashboard() {
         <div className="header-copy">
           <p className="eyebrow">BINANCE USD-M FUTURES</p>
           <h1>妖币急跌做空监控台</h1>
-          <p className="subtitle"> active watchlist / signal board / liquidity radar </p>
+          <p className="subtitle"> active watchlist / 4h cooldown signal board / liquidity radar </p>
         </div>
         <div className="header-actions">
           <button type="button" onClick={refresh} aria-label="刷新数据">
@@ -304,7 +337,8 @@ export default function HunterDashboard() {
         </div>
       </header>
 
-      <ModelBar model={model} />
+      <ModelBar model={model} nowMs={nowMs} />
+      <StrategyBar strategy={strategy} />
 
       {error ? (
         <div className="error-box">
@@ -332,7 +366,7 @@ export default function HunterDashboard() {
 
         <div className="monitor-board">
           {monitorRows.length ? monitorRows.map((row) => (
-            <MonitorContract key={row.symbol} row={row} />
+            <MonitorContract key={row.symbol} row={row} cooldownHours={cooldownHours} nowMs={nowMs} />
           )) : <div className="empty-state">暂无入池合约</div>}
         </div>
       </section>
@@ -370,7 +404,7 @@ export default function HunterDashboard() {
           <table className="compact-table">
             <thead>
               <tr>
-                <th>Time</th><th>Level</th><th>Symbol</th><th>Price</th><th>Invalid</th><th>空间</th><th>量比</th>
+                <th>Time</th><th>Level</th><th>Symbol</th><th>Price</th><th>Invalid</th><th>空间</th><th>量比</th><th>冷却</th>
               </tr>
             </thead>
             <tbody>{(data?.alerts || []).map((r) => (
@@ -388,6 +422,7 @@ export default function HunterDashboard() {
                 <td>{fmt(r.invalidation_price)}</td>
                 <td>{fmt(r.remaining_downside_pct)}%</td>
                 <td>{fmt(r.volume_ratio)}x</td>
+                <td><span className="cooldown-pill">{cooldownStatus(r, cooldownHours, nowMs)}</span></td>
               </tr>
             ))}</tbody>
           </table>
@@ -427,7 +462,19 @@ function dayStr(iso?: string) {
   return Number.isNaN(d.getTime()) ? '-' : d.toISOString().slice(0, 10);
 }
 
-function ModelBar({ model }: { model: ModelMeta | null }) {
+function StrategyBar({ strategy }: { strategy?: StrategyMeta }) {
+  const rawCooldown = Number(strategy?.multi_signal_cooldown_hours ?? 4);
+  const cooldown = Number.isFinite(rawCooldown) ? rawCooldown : 4;
+  return (
+    <div className="strategy-bar">
+      <span>实时口径：{strategy?.mode || 'unknown'} / {strategy?.confirm_interval || '15m'} 收线</span>
+      <span>同一监控事件同类信号 {fmt(cooldown, 1)}h 冷却后可再次提醒</span>
+      <span>{strategy?.long_enabled ? '做多监控已启用' : '仅做空监控'}</span>
+    </div>
+  );
+}
+
+function ModelBar({ model, nowMs }: { model: ModelMeta | null; nowMs: number }) {
   if (!model) return null;
   if (!model.ready) {
     return (
@@ -437,7 +484,7 @@ function ModelBar({ model }: { model: ModelMeta | null }) {
     );
   }
   const end = model.data_end ? new Date(model.data_end) : null;
-  const staleDays = end && !Number.isNaN(end.getTime()) ? Math.floor((Date.now() - end.getTime()) / 86400000) : null;
+  const staleDays = end && !Number.isNaN(end.getTime()) && nowMs ? Math.floor((nowMs - end.getTime()) / 86400000) : null;
   const stale = staleDays != null && staleDays > 30;
   return (
     <div className={`model-bar ${stale ? 'warn' : ''}`}>
@@ -485,9 +532,10 @@ function LongWatchPanel({ rows }: { rows: LongRow[] }) {
   );
 }
 
-function MonitorContract({ row }: { row: MonitorRow }) {
+function MonitorContract({ row, cooldownHours, nowMs }: { row: MonitorRow; cooldownHours: number; nowMs: number }) {
   const alert = row.latestAlert;
   const ml = mlInfo(alert?.evidence);
+  const repeated = Number(alert?.occurrence || 0) > 1;
   const [open, setOpen] = useState(false);
   const [candles, setCandles] = useState<Candle[] | null>(null);
   const [loading, setLoading] = useState(false);
@@ -512,7 +560,7 @@ function MonitorContract({ row }: { row: MonitorRow }) {
   }
 
   return (
-    <article className={`monitor-row ${alert ? 'has-signal' : ''}`}>
+    <article className={`monitor-row ${alert ? 'has-signal' : ''} ${repeated ? 'repeat-signal' : ''}`}>
       <div className="contract-main">
         <div className="symbol-line">
           <strong>{row.symbol}</strong>
@@ -539,6 +587,7 @@ function MonitorContract({ row }: { row: MonitorRow }) {
             {ml.tier === '普通观察' ? <em className="cat-tag watch">普通观察</em> : null}
             {ml.score ? <em className="cat-tag">分{ml.score}</em> : null}
           </span>
+          <strong>{cooldownStatus(alert, cooldownHours, nowMs)}</strong>
         </div>
         <div className={`signal-time-big ${alert ? '' : 'muted'}`}>{alert ? date(alert.decision_time) : '待触发'}</div>
         {alert ? (
@@ -546,6 +595,10 @@ function MonitorContract({ row }: { row: MonitorRow }) {
             <div className="signal-price">
               <b>{fmt(alert.price, 6)}</b>
               <span>空间 {fmt(alert.remaining_downside_pct)}% · 量比 {fmt(alert.volume_ratio)}x</span>
+            </div>
+            <div className="signal-rule">
+              <span>{fmt(cooldownHours, 1)}h 冷却</span>
+              <span>{repeated ? '重复确认' : '首次信号'}</span>
             </div>
             {row.history.length > 1 ? (
               <div className="signal-history">

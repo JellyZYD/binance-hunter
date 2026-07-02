@@ -121,6 +121,7 @@
     "structure_lookback_5m": 8,
     "volume_window": 20,
     "invalidation_buffer_pct": 0.35,
+    "multi_signal_cooldown_hours": 4.0,
     "long_enabled": true,
     "long_watch_hours": 36,
     "long_trend_break_pct": 8.0

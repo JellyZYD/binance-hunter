@@ -200,6 +200,9 @@ class PumpEvent:
     early_alerted_after_high_time: int | None = None
     short_alerted_after_high_time: int | None = None
     fallback_alerted_after_high_time: int | None = None
+    early_last_alert_time: int | None = None
+    short_last_alert_time: int | None = None
+    fallback_last_alert_time: int | None = None
     early_alert_seq: int = 0
     short_signal_seq: int = 0
     fallback_alert_seq: int = 0
