@@ -109,6 +109,12 @@ def render_wecom_markdown(alert: Alert) -> str:
             metrics += f" · {hint}"
     if score:
         metrics += f" · ML分{score}"
+    advice = next((e.split("=", 1)[1] for e in alert.evidence if e.startswith("建议=")), "")
+    event_tag = next((e.split("=", 1)[1] for e in alert.evidence if e.startswith("事件=")), "")
+    if event_tag:
+        metrics += f" · {event_tag}"
+    if advice:
+        metrics += f" · 建议{advice}"
     seq = f" 第{alert.occurrence}次" if alert.occurrence else ""
     return "\n".join([
         f"**{name}{seq} · {alert.symbol}{tag}**",
