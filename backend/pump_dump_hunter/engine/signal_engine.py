@@ -448,16 +448,7 @@ class SignalEngine:
                 continue
             hi = self.ml.threshold_high(task) or 2.0
             tier = "高置信" if sc >= hi else "普通"
-            extra = [f"{tag}={sc:.2f}", f"置信={tier}"]
-            if level == "short_signal":
-                # 5年4473事件分型回测: 事件涨幅<60%的"婴儿期"破位信号粘住尾巴率31%/EV负,
-                # 涨幅>=60%的"成熟期"尾巴率13%/EV+2.75~3.51%(走查) —— 别空婴儿, 空成年人
-                gain = (pump.high_price / pump.anchor_price - 1) * 100 if pump.anchor_price > 0 else 0.0
-                age_h = max(0.0, (candle.close_time - pump.first_seen) / 3_600_000)
-                mature = gain >= 60.0
-                extra.append(f"事件={'成熟' if mature else '婴儿'}(涨{gain:.0f}%/{age_h:.0f}h)")
-                extra.append(f"建议={'可空' if mature else '观望(婴儿期粘住风险)'}")
-            out.append(make_alert(level, pump, candle, vol_ratio, remaining, extra))
+            out.append(make_alert(level, pump, candle, vol_ratio, remaining, [f"{tag}={sc:.2f}", f"置信={tier}"]))
         return out
 
 
