@@ -323,8 +323,8 @@ export default function HunterDashboard() {
       <header className="hunter-header">
         <div className="header-copy">
           <p className="eyebrow">BINANCE USD-M FUTURES</p>
-          <h1>妖币急跌做空监控台</h1>
-          <p className="subtitle"> active watchlist / 4h cooldown signal board / liquidity radar </p>
+          <h1>合约主力动向监控</h1>
+          <p className="subtitle">主力异动 / 多空信号 / 4h 冷却确认 / 流动性雷达</p>
         </div>
         <div className="header-actions">
           <button type="button" onClick={refresh} aria-label="刷新数据">
