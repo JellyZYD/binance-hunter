@@ -173,6 +173,11 @@ class SignalParams:
     long_heat_4h_pct: float = 18.0
     long_heat_12h_pct: float = 28.0
     long_qvol_rank_top: int = 150
+    long_min_close_pos_30m: float = 0.65
+    long_body_break_buffer_pct: float = 0.0
+    long_max_drawdown_1h_pct: float = 8.0
+    long_max_drawdown_4h_pct: float = 12.0
+    long_max_drawdown_12h_pct: float = 18.0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SignalParams":

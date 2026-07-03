@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
 from pump_dump_hunter.discovery import compute_liquidity_records
 from pump_dump_hunter.data.store import Store
 from pump_dump_hunter.engine.signal_engine import SignalEngine
 from pump_dump_hunter.engine.signal_engine import breaks_post_high_structure
-from pump_dump_hunter.models import Alert, Candle, KlineClosed, LongEvent, PumpEvent, SignalParams
+from pump_dump_hunter.models import Alert, Candle, KlineClosed, LiquidityRecord, LongEvent, PumpEvent, SignalParams
 from tests.helpers import pump_dump_1m, temp_settings
 
 
@@ -96,6 +97,169 @@ class SignalEngineTests(unittest.TestCase):
 
         self.assertFalse(engine._can_emit_long_signal(le, 10_000 + 2 * 3_600_000 - 1))
         self.assertTrue(engine._can_emit_long_signal(le, 10_000 + 2 * 3_600_000))
+
+    def test_discovery_does_not_create_long_after_pump_short_signal(self):
+        settings = temp_settings()
+        settings["signals"]["long_enabled"] = True
+        engine = SignalEngine(settings)
+        engine.load_events([
+            PumpEvent(
+                event_id="NOMUSDT-1",
+                symbol="NOMUSDT",
+                first_seen=1,
+                last_seen=10_000,
+                expires_at=1_000_000,
+                trigger_window="1d",
+                anchor_price=0.0015,
+                high_price=0.0023,
+                high_time=10_000,
+                current_price=0.0020,
+                max_gain_pct=50.0,
+                short_last_alert_time=10_000,
+            )
+        ])
+        record = LiquidityRecord(
+            symbol="NOMUSDT",
+            rank=1,
+            last_price=0.0021,
+            quote_volume_15m=100_000.0,
+            quote_volume_30m=220_000.0,
+            pct_15m=2.0,
+            pct_30m=5.0,
+            amp_15m=3.0,
+            amp_30m=6.0,
+            volume_ratio_15m=1.5,
+            volume_ratio_30m=2.2,
+            gain_rank_15m=5,
+            gain_rank_30m=3,
+            selected=True,
+            pump_qualified=False,
+            data_cutoff_time=20_000,
+            qvol30_rank=2,
+            ret30_rank=3,
+            qvol30_rank_pct=0.02,
+            ret30_rank_pct=0.03,
+            long_candidate=True,
+        )
+
+        changed = engine.on_discovery([record], 20_000)
+
+        self.assertEqual(changed, [])
+        self.assertNotIn("NOMUSDT", engine.long_events_by_symbol)
+
+    def test_discovery_closes_long_event_when_candidate_lost(self):
+        settings = temp_settings()
+        settings["signals"]["long_enabled"] = True
+        engine = SignalEngine(settings)
+        engine.load_long_events([
+            LongEvent(
+                event_id="NOMUSDT-L-1",
+                symbol="NOMUSDT",
+                first_seen=1,
+                last_seen=1,
+                expires_at=1_000_000,
+                entry_price=0.0020,
+                high_price=0.0022,
+                current_price=0.0021,
+            )
+        ])
+        record = LiquidityRecord(
+            symbol="NOMUSDT",
+            rank=1,
+            last_price=0.0020,
+            quote_volume_15m=100_000.0,
+            quote_volume_30m=220_000.0,
+            pct_15m=-1.0,
+            pct_30m=1.0,
+            amp_15m=3.0,
+            amp_30m=6.0,
+            volume_ratio_15m=1.0,
+            volume_ratio_30m=1.1,
+            gain_rank_15m=80,
+            gain_rank_30m=90,
+            selected=True,
+            pump_qualified=False,
+            data_cutoff_time=20_000,
+            qvol30_rank=2,
+            ret30_rank=90,
+            qvol30_rank_pct=0.02,
+            ret30_rank_pct=0.90,
+            long_candidate=False,
+        )
+
+        engine.on_discovery([record], 20_000)
+
+        self.assertEqual(engine.long_events_by_symbol["NOMUSDT"].status, "closed")
+        self.assertEqual(engine.long_events_by_symbol["NOMUSDT"].exit_reason, "long_candidate_lost")
+
+    def test_existing_long_event_closes_when_pump_risk_signal_is_active(self):
+        settings = temp_settings()
+        settings["signals"]["long_enabled"] = True
+        engine = SignalEngine(settings)
+        engine.load_events([
+            PumpEvent(
+                event_id="NOMUSDT-1",
+                symbol="NOMUSDT",
+                first_seen=1,
+                last_seen=10_000,
+                expires_at=1_000_000,
+                trigger_window="1d",
+                anchor_price=0.0015,
+                high_price=0.0023,
+                high_time=10_000,
+                current_price=0.0020,
+                max_gain_pct=50.0,
+                early_last_alert_time=10_000,
+            )
+        ])
+        engine.load_long_events([
+            LongEvent(
+                event_id="NOMUSDT-L-1",
+                symbol="NOMUSDT",
+                first_seen=5_000,
+                last_seen=5_000,
+                expires_at=1_000_000,
+                entry_price=0.0020,
+                high_price=0.0021,
+                current_price=0.00205,
+            )
+        ])
+        engine._long_signals = lambda le, c: [dummy_alert("long_signal", le.event_id, le.symbol, c)]  # type: ignore[method-assign]
+        candle = Candle("NOMUSDT", "5m", 20_000, 0.00205, 0.0021, 0.0020, 0.00208, 100.0, 319_999, 5000.0, 100)
+
+        alerts = engine._process_long(candle)
+
+        self.assertEqual(alerts, [])
+        self.assertEqual(engine.long_events_by_symbol["NOMUSDT"].status, "closed")
+        self.assertEqual(engine.long_events_by_symbol["NOMUSDT"].exit_reason, "pump_risk_conflict")
+
+    def test_lifecycle_short_suppresses_same_candle_early_alert(self):
+        settings = temp_settings()
+        settings["signals"]["mode"] = "ml"
+        settings["signals"]["strategy_version"] = "lifecycle_expert"
+        engine = SignalEngine(settings)
+        engine.ml = DummyLifecycleScorer()
+        pump = PumpEvent(
+            event_id="NOMUSDT-1",
+            symbol="NOMUSDT",
+            first_seen=1,
+            last_seen=1,
+            expires_at=10_000_000,
+            trigger_window="1d",
+            anchor_price=0.0015,
+            high_price=0.0023,
+            high_time=1_000,
+            current_price=0.0020,
+            max_gain_pct=50.0,
+        )
+        candle = Candle("NOMUSDT", "15m", 2_000, 0.0020, 0.0022, 0.0019, 0.00205, 100.0, 901_999, 5000.0, 100)
+        engine._append_candle(candle)
+
+        with patch("pump_dump_hunter.engine.signal_engine.life.build_lifecycle_row", return_value={"behavior_state": "distribution", "f": 1.0}):
+            alerts = engine._lifecycle_signals(pump, candle)
+
+        self.assertEqual([a.level for a in alerts], ["short_signal"])
+        self.assertEqual(alerts[0].model_name, "fast_short")
 
     def test_long_derived_pump_waits_until_mature_before_short_models(self):
         settings = temp_settings()
@@ -404,6 +568,24 @@ def dummy_alert(level: str, event_id: str, symbol: str, candle: Candle) -> Alert
         evidence=[],
         risks=[],
     )
+
+
+class DummyLifecycleScorer:
+    lifecycle_ready = True
+
+    def lifecycle_columns(self, model_name: str) -> list[str]:
+        return ["f"]
+
+    def lifecycle_score(self, feat_row, model_name: str) -> float:
+        return {
+            "fast_top": 0.9,
+            "slow_warning": 0.8,
+            "fast_short": 0.95,
+            "slow_short": 0.7,
+        }[model_name]
+
+    def lifecycle_threshold(self, model_name: str) -> float:
+        return 0.5
 
 
 if __name__ == "__main__":

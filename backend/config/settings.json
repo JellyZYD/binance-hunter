@@ -109,7 +109,18 @@
     "short_v2_vol_ratio": 1.2,
     "short_v2_taker_min": 0.0,
     "short_v2_min_remaining_pct": 5.0,
-    "fallback_drop_pct": 8.0
+    "fallback_drop_pct": 8.0,
+    "long_ret_30m_pct": 4.5,
+    "long_vol_ratio_30m": 2.0,
+    "long_heat_24h_pct": 25.0,
+    "long_heat_4h_pct": 18.0,
+    "long_heat_12h_pct": 28.0,
+    "long_qvol_rank_top": 150,
+    "long_min_close_pos_30m": 0.65,
+    "long_body_break_buffer_pct": 0.0,
+    "long_max_drawdown_1h_pct": 8.0,
+    "long_max_drawdown_4h_pct": 12.0,
+    "long_max_drawdown_12h_pct": 18.0
   },
   "signals": {
     "mode": "ml",

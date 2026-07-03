@@ -4,7 +4,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from .data.rest_client import BinanceRestClient
-from .indicators import volume_ratio, window_metrics
+from .indicators import pct_change, safe_div, volume_ratio, window_metrics
 from .models import Candle, LiquidityRecord, SignalParams
 from .timeutils import closed_candle_cutoff_ms
 
@@ -134,6 +134,7 @@ def compute_liquidity_records(
         qv1d, pct1d, _amp1d = window_metrics(context, 96)
         if not context:
             pct1d = float(row.get("pct_24h", 0.0) or 0.0)
+        long_structure = long_structure_metrics(candles, context)
         temp.append(
             {
                 "symbol": symbol,
@@ -153,6 +154,7 @@ def compute_liquidity_records(
                 "pct_4h": pct4h,
                 "pct_12h": pct12h,
                 "pct_1d": pct1d,
+                **long_structure,
             }
         )
     gain15 = {r["symbol"]: i + 1 for i, r in enumerate(sorted(temp, key=lambda r: r["pct_15m"], reverse=True))}
@@ -234,4 +236,29 @@ def is_long_candidate(row: dict[str, Any], qvol30_rank: int, params: SignalParam
         and row.get("pct_4h", 0.0) <= params.long_heat_4h_pct
         and row.get("pct_12h", 0.0) <= params.long_heat_12h_pct
         and qvol30_rank <= params.long_qvol_rank_top
+        and row.get("long_close_pos_30m", 0.0) >= params.long_min_close_pos_30m
+        and row.get("long_body_break_30m_pct", -999.0) >= params.long_body_break_buffer_pct
+        and row.get("long_drawdown_1h_pct", -999.0) >= -params.long_max_drawdown_1h_pct
+        and row.get("long_drawdown_4h_pct", -999.0) >= -params.long_max_drawdown_4h_pct
+        and row.get("long_drawdown_12h_pct", -999.0) >= -params.long_max_drawdown_12h_pct
     )
+
+
+def long_structure_metrics(candles: list[Candle], context: list[Candle]) -> dict[str, float]:
+    close = candles[-1].close if candles else 0.0
+    win30 = candles[-30:] if len(candles) >= 30 else candles
+    win60 = candles[-60:] if len(candles) >= 60 else candles
+    high30 = max((c.high for c in win30), default=0.0)
+    low30 = min((c.low for c in win30), default=0.0)
+    prev = candles[-31:-1] if len(candles) >= 31 else candles[:-1]
+    prev_body_high = max((max(c.open, c.close) for c in prev), default=0.0)
+    high1h = max((c.high for c in win60), default=0.0)
+    high4h = max((c.high for c in context[-16:]), default=0.0)
+    high12h = max((c.high for c in context[-48:]), default=0.0)
+    return {
+        "long_close_pos_30m": safe_div(close - low30, high30 - low30, 0.0),
+        "long_body_break_30m_pct": pct_change(prev_body_high, close),
+        "long_drawdown_1h_pct": pct_change(high1h, close),
+        "long_drawdown_4h_pct": pct_change(high4h, close),
+        "long_drawdown_12h_pct": pct_change(high12h, close),
+    }

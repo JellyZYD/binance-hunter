@@ -94,12 +94,29 @@ class SignalEngine:
             return True
         return decision_time - int(le.long_last_signal_time) >= self.long_signal_cooldown_ms
 
+    def _long_blocked_by_pump_risk(self, symbol: str, decision_time: int) -> bool:
+        pump = self.events_by_symbol.get(symbol)
+        if pump is None or pump.status != "active" or pump.expires_at < decision_time:
+            return False
+        return bool(pump.early_last_alert_time or pump.short_last_alert_time)
+
     def on_discovery(self, records: list[LiquidityRecord], decision_time: int) -> list[PumpEvent]:
         changed = []
         active_ms = int(self.active_hours * 3_600_000)
         for record in records:
-            if self.long_enabled and record.long_candidate:
-                self._upsert_long_event(record, decision_time)
+            if self.long_enabled:
+                le = self.long_events_by_symbol.get(record.symbol)
+                if le and le.status == "active" and record.selected and not record.long_candidate:
+                    le.status = "closed"
+                    le.exit_reason = "long_candidate_lost"
+                if record.long_candidate and self._long_blocked_by_pump_risk(record.symbol, decision_time):
+                    le = self.long_events_by_symbol.get(record.symbol)
+                    if le and le.status == "active":
+                        le.status = "closed"
+                        le.exit_reason = "pump_risk_conflict"
+                    continue
+                if record.long_candidate:
+                    self._upsert_long_event(record, decision_time)
             if not record.pump_qualified:
                 continue
             existing = self.events_by_symbol.get(record.symbol)
@@ -189,6 +206,10 @@ class SignalEngine:
         """做多监管: 更新窗口, 判退出(超时/趋势破坏), 出做多信号(long_setup + ML)。"""
         le = self.long_events_by_symbol.get(candle.symbol)
         if le is None or le.status != "active":
+            return []
+        if self._long_blocked_by_pump_risk(le.symbol, candle.close_time):
+            le.status = "closed"
+            le.exit_reason = "pump_risk_conflict"
             return []
         if candle.close_time > le.expires_at:
             le.status = "closed"; le.exit_reason = "超时"
@@ -697,49 +718,86 @@ class SignalEngine:
         else:
             pump.lifecycle_mode = "risk_watch"
 
-        out: list[Alert] = []
-        for level in ("early_alert", "short_signal"):
-            eligible = [
-                item
-                for item in scored
-                if item["level"] == level
-                and state in item["gate"]
-                and item["score"] >= item["threshold"]
-                and self._can_emit_pump_signal(pump, level, candle.close_time)
-            ]
-            if not eligible:
-                continue
-            best = max(eligible, key=lambda x: x["ratio"])
-            pump.lifecycle_mode = best["mode"]
-            evidence = [
-                "strategy=lifecycle_expert",
-                f"interval={self.confirm_interval}",
-                f"mode={best['mode']}",
-                f"state={state}",
-                f"model={best['model']}",
-                f"score={best['score']:.3f}",
-                f"threshold={best['threshold']:.3f}",
-                f"ratio={best['ratio']:.2f}",
-                f"cooldown={self.multi_signal_cooldown_hours:g}h",
-            ]
-            out.append(
-                make_alert(
-                    level,
+        short_ready = [
+            item
+            for item in scored
+            if item["level"] == "short_signal"
+            and state in item["gate"]
+            and item["score"] >= item["threshold"]
+        ]
+        if short_ready:
+            if not self._can_emit_pump_signal(pump, "short_signal", candle.close_time):
+                return []
+            return [
+                self._make_lifecycle_alert(
+                    "short_signal",
                     pump,
                     candle,
                     vol_ratio,
                     remaining,
-                    evidence,
-                    category_override=best["mode"],
-                    lifecycle_mode=best["mode"],
-                    behavior_state=state,
-                    model_name=best["model"],
-                    model_score=best["score"],
-                    model_threshold=best["threshold"],
-                    signal_interval=self.confirm_interval,
+                    state,
+                    max(short_ready, key=lambda x: x["ratio"]),
                 )
+            ]
+
+        early_ready = [
+            item
+            for item in scored
+            if item["level"] == "early_alert"
+            and state in item["gate"]
+            and item["score"] >= item["threshold"]
+        ]
+        if not early_ready or not self._can_emit_pump_signal(pump, "early_alert", candle.close_time):
+            return []
+        return [
+            self._make_lifecycle_alert(
+                "early_alert",
+                pump,
+                candle,
+                vol_ratio,
+                remaining,
+                state,
+                max(early_ready, key=lambda x: x["ratio"]),
             )
-        return out
+        ]
+
+    def _make_lifecycle_alert(
+        self,
+        level: str,
+        pump: PumpEvent,
+        candle: Candle,
+        vol_ratio: float,
+        remaining: float,
+        state: str,
+        best: dict[str, Any],
+    ) -> Alert:
+        pump.lifecycle_mode = best["mode"]
+        evidence = [
+            "strategy=lifecycle_expert",
+            f"interval={self.confirm_interval}",
+            f"mode={best['mode']}",
+            f"state={state}",
+            f"model={best['model']}",
+            f"score={best['score']:.3f}",
+            f"threshold={best['threshold']:.3f}",
+            f"ratio={best['ratio']:.2f}",
+            f"cooldown={self.multi_signal_cooldown_hours:g}h",
+        ]
+        return make_alert(
+            level,
+            pump,
+            candle,
+            vol_ratio,
+            remaining,
+            evidence,
+            category_override=best["mode"],
+            lifecycle_mode=best["mode"],
+            behavior_state=state,
+            model_name=best["model"],
+            model_score=best["score"],
+            model_threshold=best["threshold"],
+            signal_interval=self.confirm_interval,
+        )
 
     def _lifecycle_pump_signal_ready(self, pump: PumpEvent, row: Any) -> tuple[bool, str]:
         if not is_long_derived_pump(pump):
