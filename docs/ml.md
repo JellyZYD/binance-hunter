@@ -1,65 +1,101 @@
-# ML 打分模型
+# ML 模型
 
-信号从"规则即发"升级为**两段式:规则出候选 → LightGBM 打分 → 超阈值才发**。经离线验证(纯 holdout、打乱标签验伪、事件级去重)证明比纯规则显著更好,尤其"下跌启动"。
+服务器只做推理，训练在本地完成后提交模型文件。
 
-## 为什么是两段式
+## 生产模型目录
 
-对所有盯盘 K 打分噪声太大(前期实验 AUC≈0.55)。改为**只在结构候选上打分**后:
+全局旧模型仍保留在：
 
-- **下跌启动**:holdout AUC **0.91**,top5% 精度 37%(基线 4.5%),逆向更低,发得早(距高点 ~6%)。
-- **见顶**:holdout AUC **0.78**,精度 30%(基线 10%),贴峰值发,但逆向仍 ~19%(抄顶天生难)。
-- OI/多空比/资金费率做过 ablation:**无 OOS 增益**,故不使用。
+`backend/pump_dump_hunter/ml/models/`
 
-## 组成(`backend/pump_dump_hunter/ml/`)
+生命周期专家版新增：
 
-| 文件 | 作用 |
-| --- | --- |
-| `features.py` | 85 个特征 + setup 候选判定。**训练与实盘共用同一份**(否则模型失效) |
-| `train.py` | 本地训练管线:读 parquet → 候选/事件级标签 → 训三个 LGB(dump/top/long) → 存模型+元数据 |
-| `model.py` | 推理封装(`MLScorer`):加载模型打分,缺模型/依赖时优雅降级 |
-| `models/` | 提交进仓库的产物:`dump.txt`、`top.txt`、`long.txt`、`meta.json`(特征列表、阈值、训练时间、数据起止、AUC) |
+`backend/pump_dump_hunter/ml/models/lifecycle/`
 
-信号引擎 `signals.mode="ml"` 时:每根 15m 收线,在候选上算特征→模型打分→分数≥阈值发信号。见顶/下跌启动使用 `top5%` 阈值触发、`top2%` 标"高置信";做多使用 `top10%` 触发、`top2%` 标"高置信",普通触发在 UI/推送标为"普通观察"。见顶→顶部预警,破位→下跌启动。**已删除回落兜底。**
+包含：
 
-PumpWatch 的顶部/下跌启动已经升级为 **4h 冷却多次信号**:`signals.multi_signal_cooldown_hours=4.0`。同一监控事件同类信号必须再次满足 setup + ML 阈值,且距离上次同类信号满 4h 才会再次发出;`occurrence` 显示第 N 次,最后发出时间落库。实验过程见 [lifecycle_experiments.md](./lifecycle_experiments.md)。
+- `long_pump_event.txt`
+- `long_start_quality.txt`
+- `fast_top.txt`
+- `fast_short.txt`
+- `slow_warning.txt`
+- `slow_short.txt`
+- `meta.json`
 
-### 做多模型(`long.txt`,`signals.long_enabled`)
+`MLScorer.lifecycle_ready=True` 才表示生命周期专家模型完整可用。
 
-- 特征 = base85 + **资金流 9**(OI 变化/OI-价背离、全局多空比+z、大户持仓多空、taker 买卖比),共 94。标签 = "48h 内涨成妖币"(换 6 种标签验证此最优)。
-- 走查 AUC~0.71,建议 `top10%` 作为普通做多观察、`top2%` 作为高置信。天花板 ~0.72(预测"要涨"本质比"已在跌"难)。
-- **实盘资金流**:`live.refresh_long_flow` 每 15m 用 `/futures/data/`(openInterestHist / globalLongShortAccountRatio / topLongShortPositionRatio / takerlongshortRatio)拉取做多监管币的资金流,`period=15m` 对齐喂入;拉不到 → NaN,LGB 原生处理(退化到 base~0.71)。
-- 训练需 parquet 的 `market_state_hist/`(oi/global_acct_ratio/top_pos_ratio/taker_ratio)。生命周期见 [strategy.md](./strategy.md#做多线)。
+## 当前模型版本
 
-## 本地训练 / 更新模型(服务器 2 核 2G 不训练)
+`meta.json` 记录：
 
-训练只在本地跑(需要 parquet 全量数据 + 额外依赖):
+- 策略版本：`lifecycle_expert`
+- 做多周期：`5m`
+- 顶部/做空周期：`15m`
+- 冷却：`2h`
+- 数据区间：`2025-06-13` 到 `2026-06-13`
+- 样本币数：172
+
+## 推理链路
+
+做多：
+
+1. discovery 产生 LongWatch 候选；
+2. WebSocket 收到 5m `x=true`；
+3. 使用已收线 5m K 线计算生命周期 long 特征；
+4. `long_pump_event` 和 `long_start_quality` 加权；
+5. 分数达到 q90 发 `long_signal`。
+
+顶部/做空：
+
+1. PumpWatch 每根 15m `x=true` 更新 lifecycle row；
+2. 动态路由器给出 `behavior_state`；
+3. 只在 `distribution/climax_risk/pullback_risk` 状态下评估专家；
+4. 分数超过对应阈值后发 `early_alert` 或 `short_signal`。
+
+## 最佳回测摘要
+
+### 5m 做多
+
+holdout q90：
+
+- 信号数：40
+- 进入目标生命周期率：57.5%
+- 做多启动成功率：55.0%
+- 48h 最大上涨中位：17.9%
+- 入场后先逆向中位：4.7%
+
+### 15m 生命周期专家，2h 冷却
+
+PumpWatch short 汇总：
+
+- 信号数：42
+- 6h 下跌中位：8.2%
+- 24h 下跌中位：21.7%
+- 72h 下跌中位：61.8%
+- 24h 逆向中位：4.6%
+- clean big short：38.1%
+
+因此生产采用 **5m long + 15m expert + 2h cooldown**。
+
+## 服务器更新
+
+服务器执行：
 
 ```bash
-cd backend
-pip install -r requirements.txt -r requirements-train.txt
-python -m pump_dump_hunter.ml.train --source "E:\2C2G\币安数据库" --days 365
+cd /opt/binance-hunter
+sudo bash deploy/update.sh
 ```
 
-- `--source` 指向含 `klines/` 的 parquet 目录;`--days` 默认 365(实测下跌启动 ~240 天到平台、见顶 ~290 天,取 365 稳妥)。
-- 产物写到 `ml/models/`。确认后提交推送:
+更新后检查：
 
 ```bash
-git add backend/pump_dump_hunter/ml/models
-git commit -m "chore(ml): 更新模型"
-git push
+journalctl -u binance-hunter-monitor -n 80 --no-pager
 ```
 
-- 服务器 `sudo bash deploy/update.sh` 拉取新模型 + 重启,`journalctl -u binance-hunter-monitor` 会打印 `ML scorer ready=True ...`。
+日志中应看到：
 
-## 更新提醒
+```text
+ML scorer ready=True
+```
 
-- 网页顶部显示模型**数据起止 + 训练时间 + 三个 AUC**。
-- 模型数据**超过 30 天**会变黄条提醒"建议本地重训后 push 更新"。
-- 建议**每月**本地重训一次推送。
-
-## 阈值 / 回退
-
-- 阈值在 `meta.json`(`thr`=触发、`thr_high`=高置信),由训练时的分数分位数确定。想更严就重训时调,或后续做成可配置。
-- 若服务器 lightgbm 安装失败或模型缺失,`mode="ml"` 会**不发信号**并日志告警;临时可把 `backend/config/settings.json` 的 `signals.mode` 改回 `v2` 或 `legacy` 再重启。
-
-详见 [strategy.md](./strategy.md)。
+网页 `/api/hunter/model` 应返回 `lifecycle_ready: true`。

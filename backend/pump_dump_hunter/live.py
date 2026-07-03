@@ -105,10 +105,11 @@ def run_discovery_cycle(
     changed = engine.on_discovery(records, meta["data_cutoff_time"])
     store.upsert_pump_events(changed)
     if engine.long_enabled:
-        try:
-            refresh_long_flow(client, engine, max_workers)
-        except Exception as exc:
-            print(f"[{local_stamp()}] long flow refresh failed: {type(exc).__name__}: {exc}", flush=True)
+        if not engine._use_lifecycle():
+            try:
+                refresh_long_flow(client, engine, max_workers)
+            except Exception as exc:
+                print(f"[{local_stamp()}] long flow refresh failed: {type(exc).__name__}: {exc}", flush=True)
         store.upsert_long_events(list(engine.long_events_by_symbol.values()))
     selected = [r.symbol for r in records if r.selected]
     long_cands = sum(1 for r in records if r.long_candidate)

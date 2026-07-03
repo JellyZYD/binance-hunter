@@ -168,6 +168,19 @@ class Store:
                     "early_alert_seq": "INTEGER NOT NULL DEFAULT 0",
                     "short_signal_seq": "INTEGER NOT NULL DEFAULT 0",
                     "fallback_alert_seq": "INTEGER NOT NULL DEFAULT 0",
+                    "lifecycle_mode": "TEXT NOT NULL DEFAULT ''",
+                    "behavior_state": "TEXT NOT NULL DEFAULT ''",
+                    "lifecycle_updated_time": "INTEGER",
+                },
+            )
+            ensure_columns(
+                conn,
+                "long_events",
+                {
+                    "qv30_rank": "INTEGER NOT NULL DEFAULT 0",
+                    "ret30_rank": "INTEGER NOT NULL DEFAULT 0",
+                    "qv30_rank_pct": "REAL NOT NULL DEFAULT 0",
+                    "ret30_rank_pct": "REAL NOT NULL DEFAULT 0",
                 },
             )
             ensure_columns(
@@ -176,6 +189,12 @@ class Store:
                 {
                     "occurrence": "INTEGER NOT NULL DEFAULT 0",
                     "category": "TEXT NOT NULL DEFAULT ''",
+                    "lifecycle_mode": "TEXT NOT NULL DEFAULT ''",
+                    "behavior_state": "TEXT NOT NULL DEFAULT ''",
+                    "model_name": "TEXT NOT NULL DEFAULT ''",
+                    "model_score": "REAL NOT NULL DEFAULT 0",
+                    "model_threshold": "REAL NOT NULL DEFAULT 0",
+                    "signal_interval": "TEXT NOT NULL DEFAULT ''",
                 },
             )
             conn.commit()
@@ -316,8 +335,9 @@ class Store:
                     anchor_price, high_price, high_time, current_price, max_gain_pct,
                     status, evidence_json, early_alerted_after_high_time, short_alerted_after_high_time,
                     fallback_alerted_after_high_time, early_last_alert_time, short_last_alert_time,
-                    fallback_last_alert_time, early_alert_seq, short_signal_seq, fallback_alert_seq
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    fallback_last_alert_time, early_alert_seq, short_signal_seq, fallback_alert_seq,
+                    lifecycle_mode, behavior_state, lifecycle_updated_time
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         e.event_id,
@@ -342,6 +362,9 @@ class Store:
                         e.early_alert_seq,
                         e.short_signal_seq,
                         e.fallback_alert_seq,
+                        e.lifecycle_mode,
+                        e.behavior_state,
+                        e.lifecycle_updated_time,
                     )
                     for e in events
                 ],
@@ -368,13 +391,15 @@ class Store:
             conn.executemany(
                 """INSERT OR REPLACE INTO long_events(
                     event_id, symbol, first_seen, last_seen, expires_at, entry_price,
-                    high_price, current_price, long_signal_seq, status, exit_reason, evidence_json
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    high_price, current_price, long_signal_seq, status, exit_reason, evidence_json,
+                    qv30_rank, ret30_rank, qv30_rank_pct, ret30_rank_pct
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         e.event_id, e.symbol, e.first_seen, e.last_seen, e.expires_at, e.entry_price,
                         e.high_price, e.current_price, e.long_signal_seq, e.status, e.exit_reason,
                         json.dumps(e.evidence, ensure_ascii=False),
+                        e.qv30_rank, e.ret30_rank, e.qv30_rank_pct, e.ret30_rank_pct,
                     )
                     for e in events
                 ],
@@ -439,8 +464,9 @@ class Store:
                     alert_id, event_id, symbol, level, decision_time, source_candle_close_time,
                     data_cutoff_time, price, invalidation_price, anchor_price, high_price,
                     remaining_downside_pct, volume_ratio, evidence_json, risks_json, pushed, push_error,
-                    occurrence, category
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    occurrence, category, lifecycle_mode, behavior_state, model_name, model_score,
+                    model_threshold, signal_interval
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     alert.alert_id,
                     alert.event_id,
@@ -461,6 +487,12 @@ class Store:
                     push_error,
                     alert.occurrence,
                     alert.category,
+                    alert.lifecycle_mode,
+                    alert.behavior_state,
+                    alert.model_name,
+                    alert.model_score,
+                    alert.model_threshold,
+                    alert.signal_interval,
                 ),
             )
             conn.commit()
@@ -634,6 +666,9 @@ def row_to_event(row: sqlite3.Row) -> PumpEvent:
         early_alert_seq=row_get(row, "early_alert_seq") or 0,
         short_signal_seq=row_get(row, "short_signal_seq") or 0,
         fallback_alert_seq=row_get(row, "fallback_alert_seq") or 0,
+        lifecycle_mode=str(row_get(row, "lifecycle_mode") or ""),
+        behavior_state=str(row_get(row, "behavior_state") or ""),
+        lifecycle_updated_time=row_get(row, "lifecycle_updated_time"),
     )
 
 
@@ -651,6 +686,10 @@ def row_to_long_event(row: sqlite3.Row) -> LongEvent:
         status=str(row["status"]),
         exit_reason=str(row_get(row, "exit_reason") or ""),
         evidence=json.loads(row_get(row, "evidence_json") or "[]"),
+        qv30_rank=int(row_get(row, "qv30_rank") or 0),
+        ret30_rank=int(row_get(row, "ret30_rank") or 0),
+        qv30_rank_pct=float(row_get(row, "qv30_rank_pct") or 0.0),
+        ret30_rank_pct=float(row_get(row, "ret30_rank_pct") or 0.0),
     )
 
 

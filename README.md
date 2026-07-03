@@ -85,3 +85,20 @@ sudo bash deploy/update.sh
 ```
 
 如果前端部署到 Vercel，服务器只跑 `binance-hunter-monitor` 和 `binance-hunter-api`，然后把 Vercel 的 `HUNTER_API_BASE_URL` 指到服务器公开 API 地址。详见 `deploy/README.md`。
+## Current Production Strategy
+
+当前默认生产策略是 `lifecycle_expert`：
+
+- WebSocket 订阅 `5m` + `15m` 已收线 K 线；
+- 做多信号：5m lifecycle long combo；
+- 顶部/做空信号：15m `fast_dump` / `slow_distribution` 专家模型；
+- 同类 PumpWatch 信号冷却：2h；
+- 前端标题：合约主力动向监控；
+- 企业微信、Markdown 和网页都会显示 `lifecycle_mode`、`behavior_state`、`model_name`、`model_score`、`signal_interval`。
+
+更新服务器：
+
+```bash
+cd /opt/binance-hunter
+sudo bash deploy/update.sh
+```

@@ -1,112 +1,94 @@
 # 策略说明
 
-目标:抓"短时间暴涨 / 多周期大涨"的妖币,在**高位放量转弱**和**下跌启动**时发**做空提示信号**(给人手动决策,不自动下单)。全程只用**已收线 15m K 线**,实盘与回测共用同一个 `SignalEngine`,无未来函数。
+当前生产默认是 **生命周期专家版**，只发人工参考信号，不自动下单。
 
-## 事件一致性
+核心流程：
 
-- 实盘:WebSocket 收到 Binance kline `x=true`(已收线)→ `KlineClosed`。
-- 回测:历史 K 线按时间 replay 同样的 `KlineClosed`。
-- Discovery:实盘/回测都只用当时已收线的数据窗口。
-- 主动买量 `taker_buy_quote` 实盘来自 ws 字段 `Q`、回测来自 parquet 同字段,两边一致。
+1. REST discovery 每 15m 扫描 USDT 永续山寨币，排除 BTC/ETH/主流币/股票/贵金属合约。
+2. 流动性 TopN 进入 WebSocket，实盘只处理 Binance kline `x=true` 的已收线 K 线。
+3. 两条入口并行：
+   - `LongEvent`：可能进入拉升生命周期的做多监测池。
+   - `PumpEvent`：已经明显拉升的顶部/做空监测池，即使没有触发做多信号也会进入。
+4. 做多信号用 5m 生命周期 long 模型。
+5. 顶部预警和下跌启动用 15m 生命周期专家模型。
 
-## 选币入池(谁进观察池)
+## 当前生产配置
 
-入池只是"开始 15m 盯盘",不是做空信号。`discovery.py` 流程:
-1. USD-M 永续,排除 BTC/ETH 等主流币和股票/贵金属合约,24h 成交额 ≥ `min_24h_quote_volume`,按 24h 额取前 `broad_top`。
-2. 按 15m/30m 流动性排序取前 `top`(=监控池,上 WebSocket)。
-3. **入选原由 `is_pump_qualified`**:在监控池里,满足任一:
-   - 直接:15m≥8% 或 30m≥10% 或 4h≥20% 或 12h≥30% 或 1d≥40%;
-   - 排名:15m/30m 涨幅排进前 `gain_rank_top` 且涨幅达标 + 量比≥2;
-   - 且 24h 涨幅 ≤ `max_24h_pct`(不追已涨疯的)。
-4. 入池后用 `anchor_price`(起涨锚点 = 现价/(1+最强周期涨幅))做参照,默认活跃 36h,刷新新高(>`new_high_reset_pct`)延长并重新布防。
+配置文件：`backend/config/settings.json`
 
-## 信号逻辑
+| 项 | 当前值 |
+| --- | --- |
+| `signals.mode` | `ml` |
+| `signals.strategy_version` | `lifecycle_expert` |
+| WebSocket 周期 | `5m`, `15m` |
+| 做多信号周期 | `5m` |
+| 顶部/做空信号周期 | `15m` |
+| 同类信号冷却 | `2h` |
+| 正式信号数据 | 只用已收线 K 线 |
 
-> **当前默认 `signals.mode="ml"`(两段式:规则出候选 → LightGBM 打分 → 超阈值才发)**,详见 [ml.md](./ml.md)。经离线验证比纯规则显著更好(下跌启动 holdout AUC 0.91)。**已删除回落兜底。**
-> 下面的 v2 规则(`mode="v2"`)作为 ML 的**候选生成器与可回退基线**保留;`mode="legacy"` 是最早的旧逻辑。三者可切换做 A/B。
+## 入池
 
-### 4h 冷却多次信号(当前实盘口径)
+`discovery.py` 仍先用 REST 做横截面筛选：
 
-此前 PumpWatch 顶部/下跌启动同一轮高点只报一次。离线回测发现,妖币常见路径是"跌 → 反弹 → 再跌更深",只看第一次会漏掉后面更贴近主跌段的重复确认。因此当前版本改为:
+- 扫描 24h 成交额 broad pool；
+- 拉最近 1m K 线计算 15m/30m 成交额、涨幅、振幅、量比；
+- 计算 4h/12h/1d 大级别涨幅；
+- 满足明显拉升条件的币进入 PumpWatch；
+- 满足早期拉升候选条件的币进入 LongWatch。
 
-- `early_alert` / `short_signal` 每次仍必须重新满足规则候选 + ML 阈值;
-- 同一 `PumpEvent`、同一信号级别,距离上次正式发出满 `signals.multi_signal_cooldown_hours` 才能再次发,默认 **4h**;
-- 每次发出都会递增 `occurrence`,前端/推送显示"第N次";
-- `early_last_alert_time` / `short_last_alert_time` 落库,服务重启后继续遵守冷却;
-- 刷新新高仍会更新高点和延长监控,但不会绕过 4h 冷却刷屏。
+PumpWatch 是“顶部/做空监控”，不是做空信号。LongWatch 是“可能做多监控”，不是做多信号。
 
-这不是"每根 K 都提醒",而是"同类高分信号 4h 后允许再次确认"。
+## 做多信号
 
-### 做多线(`signals.long_enabled`,与空监管并存)
+做多信号使用 5m native 生命周期 long 模型：
 
-抓"暴涨启动"做多,和短线同为**纯提示**。完整生命周期:**做多 → 见顶(=平多)→ 下跌启动(做空)**。
+- 模型：`long_pump_event.txt` + `long_start_quality.txt`
+- 组合权重：`0.65 * pump_event + 0.35 * start_quality`
+- 触发阈值：q90 `0.700658`
+- 高置信阈值：q95 `0.764311`
 
-- **候选池**(discovery 每 15m,横截面):30m 涨幅≥4.5% + 30m 量比≥2 + 24h≤25%/4h≤18%/12h≤28% + 30m 成交额横截面排名≤150 + 未成妖币。约 26% 会在 48h 内涨成妖币。
-- **做多信号**(引擎 15m 收线):候选 + `long_setup`(破 8 根实体高、收盘位≥0.6、上影≤6%、站上 EMA21≤12%、EMA8>EMA21)+ **long 模型打分≥阈值**(base85+资金流,标签"48h成妖币",走查 AUC~0.71;`top10%`=普通观察,`top2%`=高置信)。资金流(OI/多空/taker)由 live 层每 15m 实时拉取(`/futures/data/`)对齐喂入;拉不到时缺省 NaN,LGB 原生处理。
-- **监管窗口**:入选后保持 **W=36h**(`long_watch_hours`),持续满足则滚动刷新;**涨成妖币后仍保留**,给继续触发做多的机会(第N次=信号增强)。
-- **退出**(数据定):① **见顶信号**=平多;② **下跌启动**=平多/做空;③ **趋势破坏**——自入场回撤≥**8%**(`long_trend_break_pct`,EMA21 破位实测无用弃用);④ **W 超时**。即使某币只有 LongEvent、尚未进入空头妖币监管池,也会直接跑 top/dump scorer 做平多/转空判断。趋势破坏只关闭做多监管、不再发 `long_invalid` 噪音信号;超时仍发 `long_timeout` 状态提醒。
-- 详见 [ml.md](./ml.md)。
+做多信号触发后，会同时建立/激活同币 `PumpEvent`，用于后续顶部预警和下跌启动监控。
 
-### v2 规则(候选/基线,`signals.mode="v2"`)
+## 生命周期状态
 
-v2 的条件来自对 174 个币 / 180 天 / 1618 个真实妖币事件的复盘(不是凭经验拍的)。复盘结论:
-- **真顶的共性 = 放量(量比~3)+ 收盘在 K 线下半部(冲高回落)**;主动卖盘在顶部**不区分**(顶49% vs 途中49%)。
-- **下跌启动 = 高位横盘(中位 1h)后破位**,破位那根弱收阴线、主动卖盘升到~54%,破位后逆向中位仅~4%、89% 继续跌≥5%。
+每根 15m 收线后，PumpWatch 会更新动态状态：
 
-| 信号 | 触发条件(15m 收线) | 入选原由 |
-| --- | --- | --- |
-| **顶部预警 early** | 处在妖币新高附近 + 量比≥`early_v2_vol_ratio`(2) + 收盘位置≤`early_v2_close_pos_max`(0.45) | "放量+冲高回落"命中 40% 真顶、上涨途中仅 7% 误触 |
-| **下跌启动 short** | 跌破高位区(顶×(1−`short_v2_break_pct`%),默认 7%)+ 弱收阴线(收盘位置≤`short_v2_close_pos_max` 0.35)(可选主动卖盘≥阈值) | 破位后逆向中位仅 4%、89% 继续跌,是最佳进场点 |
-| **回落兜底 fallback** | 已删除 | 实盘信号量足够,不再用兜底补漏 |
+- `acceleration`：加速拉升；
+- `trend_hold`：趋势保持；
+- `distribution`：高位派发；
+- `climax_risk`：冲顶风险；
+- `pullback_risk`：回落风险；
+- `breakdown`：破位；
+- `neutral_watch`：中性观察。
 
-参数都在 `backend/config/settings.json` 的 `params` 段(`early_v2_*`/`short_v2_*`),可调。`signals.mode="legacy"` 可切回旧逻辑(横盘+插针/破 EMA21)做 A/B。
+生产信号只在最佳回测选定的风险状态触发：
 
-## 回测表现(90 天 / 100 币 / 549 个真实妖币事件)
+`distribution`, `climax_risk`, `pullback_risk`
 
-A/B(旧 legacy → 新 v2):
+这点要和回测保持一致，不在生产里额外放开 `breakdown`。
 
-| 指标 | legacy | v2 |
-| --- | --- | --- |
-| 真实下跌覆盖率(不漏报) | 21% | **45%** |
-| early 数量 / short 数量 | 166 / 151 | **729 / 559** |
-| fallback | 无 | 已删除 |
-| short 逆向(普通币,中位) | 11% | **10.7%** |
+## 顶部/做空专家
 
-**妖币 vs 普通币(关键区别)**:
+15m 生命周期专家模型：
 
-| | 普通币(涨幅<50%) | 妖币(涨幅≥50%) |
-| --- | --- | --- |
-| 每个事件信号次数(early) | ~1 次 | ~4 次 |
-| 信号后逆向(中位) | 10~15% | 25~44% |
-| 第1次 vs 第2次逆向 | 差不多(第1个就动) | 越靠后越贴顶(别追第1个) |
-| 信号后见底用时 | ~20h | ~18h |
+| 模型 | 类型 | 信号 | 阈值 |
+| --- | --- | --- | ---: |
+| `fast_top` | `fast_dump` | `early_alert` | `0.523018` |
+| `fast_short` | `fast_dump` | `short_signal` | `0.620131` |
+| `slow_warning` | `slow_distribution` | `early_alert` | `0.794619` |
+| `slow_short` | `slow_distribution` | `short_signal` | `0.534692` |
 
-结论:**普通币第一个信号即可动作;妖币逆向大、会反复报,别追第一个,宜分批/等更靠后的信号。** 任何信号后大约 **15~21 小时见底**(波段持有 ~1 天)。
+`fast_dump` 更偏快拉急跌，`slow_distribution` 更偏高位派发后慢慢破位。`slow_warning` 是高位风险/平多预警，不应理解成强做空点。
 
-### 生命周期专家实验:4h 冷却版本
+## 输出字段
 
-最新的 dense 15m 生命周期实验把信号拆成 `fast_top` / `fast_short` / `slow_warning` / `slow_short`,并比较 first-only、1h 冷却、4h 冷却。当前项目先把最稳的工程结论落到实盘:PumpWatch 顶部/下跌启动改为 4h 冷却重复提醒。详细实验过程见 [lifecycle_experiments.md](./lifecycle_experiments.md)。
+每条正式信号都会落库并推送：
 
-核心 OOS 结果:
+- `lifecycle_mode`：`fast_dump` / `slow_distribution` / `long_entry` / `trend_watch`；
+- `behavior_state`：当前动态阶段；
+- `model_name`：触发模型；
+- `model_score` / `model_threshold`；
+- `signal_interval`：`5m` 或 `15m`；
+- `occurrence`：同一 PumpEvent 同类信号第几次。
 
-| 口径 | PumpWatch short 数 | 24h 中位跌幅 | 72h 中位跌幅 | 24h 中位逆向 | clean big short |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| first-only | 19 | 21.2% | 58.4% | 5.1% | 36.8% |
-| 4h 冷却多次 | 29 | 21.2% | 58.4% | 4.4% | 37.9% |
-| 1h 冷却多次 | 62 | 17.7% | 21.0% | 4.3% | 37.1% |
-
-结论:4h 冷却比 first-only 多拿到 52% 的信号,逆向略降,没有像 1h 冷却那样显著变吵。`fast_short` 是大肉主线;`slow_warning` 只适合作为高位风险状态,不作为频繁做空推送。
-
-## 信号标注与跳转
-
-每条信号(网页"证据"列 + 企业微信推送)都带:
-- **类型**:妖币 / 普通(按 anchor→高点涨幅≥50% 判定);
-- **经验见底时间**:early/short≈18-21h;
-- **币安合约链接**:推送里 `📊 打开币安合约` 直达 `https://www.binance.com/zh-CN/futures/<SYMBOL>`(手机装了币安 App 会唤起 App)。
-
-阈值(妖币 50%、见底时长)写在 `engine/signal_engine.py` 的 `make_alert` 与 `BOTTOM_HINT_HOURS`。
-
-## 后续扩展
-
-- short 想更低逆向:加主动卖盘阈值 `short_v2_taker_min`≥0.52 或收紧 `close_pos`。
-- 做多线可继续细分"普通观察/高置信"的仓位提示,但当前系统只发信号、不自动下单。
+前端“合约主力动向监控”会在正在监控的合约旁边显示当前类型和阶段，信号卡片显示模型、周期和分数。

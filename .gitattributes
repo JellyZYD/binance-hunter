@@ -4,3 +4,4 @@ deploy/systemd/*.service text eol=lf
 *.json text eol=lf
 *.md text eol=lf
 backend/pump_dump_hunter/ml/models/*.txt -text
+backend/pump_dump_hunter/ml/models/**/*.txt -text

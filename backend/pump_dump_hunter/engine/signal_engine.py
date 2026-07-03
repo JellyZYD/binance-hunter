@@ -4,6 +4,7 @@ from collections import defaultdict, deque
 from typing import Any
 
 from ..indicators import ema, mean, pct_change, safe_div
+from ..ml import lifecycle as life
 from ..models import Alert, Candle, KlineClosed, LiquidityRecord, LongEvent, PumpEvent, SignalParams
 from ..timeutils import interval_to_ms
 
@@ -16,6 +17,8 @@ class SignalEngine:
         self.signal_cfg = settings["signals"]
         self.early_interval = str(self.signal_cfg.get("early_interval", "5m"))
         self.confirm_interval = str(self.signal_cfg.get("confirm_interval", "15m"))
+        self.long_interval = str(self.signal_cfg.get("long_interval", self.confirm_interval))
+        self.strategy_version = str(self.signal_cfg.get("strategy_version", "global_ml"))
         self.mode = str(self.signal_cfg.get("mode", "legacy"))
         self.multi_signal_cooldown_hours = float(self.signal_cfg.get("multi_signal_cooldown_hours", 4.0))
         self.multi_signal_cooldown_ms = int(max(0.0, self.multi_signal_cooldown_hours) * 3_600_000)
@@ -35,8 +38,11 @@ class SignalEngine:
         self.long_trend_break_pct = float(self.signal_cfg.get("long_trend_break_pct", 8.0))
         self.long_events_by_symbol: dict[str, LongEvent] = {}
         self.flow_cache: dict[str, Any] = {}  # symbol -> 资金流 DataFrame(ts,oi,oival,lsg,lstp,tkr), 每15m刷新
-        self.buffers: dict[tuple[str, str], deque[Candle]] = defaultdict(lambda: deque(maxlen=240))
+        self.buffers: dict[tuple[str, str], deque[Candle]] = defaultdict(lambda: deque(maxlen=640))
         self.buffer_times: dict[tuple[str, str], set[int]] = defaultdict(set)
+
+    def _use_lifecycle(self) -> bool:
+        return self.mode == "ml" and self.strategy_version == "lifecycle_expert" and self.ml is not None and self.ml.lifecycle_ready
 
     def load_events(self, events: list[PumpEvent]) -> None:
         for event in events:
@@ -141,14 +147,26 @@ class SignalEngine:
             le.current_price = record.last_price
             le.high_price = max(le.high_price, record.last_price)
             le.expires_at = decision_time + watch_ms
+            self._copy_long_rank_fields(le, record)
         else:
             self.long_events_by_symbol[record.symbol] = LongEvent(
                 event_id=f"{record.symbol}-L-{decision_time}",
                 symbol=record.symbol, first_seen=decision_time, last_seen=decision_time,
                 expires_at=decision_time + watch_ms, entry_price=record.last_price,
                 high_price=record.last_price, current_price=record.last_price,
+                qv30_rank=record.qvol30_rank,
+                ret30_rank=record.ret30_rank,
+                qv30_rank_pct=record.qvol30_rank_pct,
+                ret30_rank_pct=record.ret30_rank_pct,
                 evidence=[f"入选做多: 30m={record.pct_30m:+.2f}% 量比={record.volume_ratio_30m:.1f}x 4h={record.pct_4h:+.2f}%"],
             )
+
+    @staticmethod
+    def _copy_long_rank_fields(le: LongEvent, record: LiquidityRecord) -> None:
+        le.qv30_rank = record.qvol30_rank
+        le.ret30_rank = record.ret30_rank
+        le.qv30_rank_pct = record.qvol30_rank_pct
+        le.ret30_rank_pct = record.ret30_rank_pct
 
     def active_long_symbols(self) -> list[str]:
         return [s for s, le in self.long_events_by_symbol.items() if le.status == "active"]
@@ -177,6 +195,8 @@ class SignalEngine:
         return self._long_signals(le, candle)
 
     def _long_exit_signals(self, le: LongEvent, candle: Candle) -> list[Alert]:
+        if self._use_lifecycle():
+            return []
         if candle.interval != self.confirm_interval or self.ml is None or not self.ml.ready:
             return []
         from ..ml import features as mlf
@@ -205,6 +225,8 @@ class SignalEngine:
         return []
 
     def _long_signals(self, le: LongEvent, candle: Candle) -> list[Alert]:
+        if self._use_lifecycle():
+            return self._lifecycle_long_signals(le, candle)
         if candle.interval != self.confirm_interval or self.ml is None or not self.ml.ready:
             return []
         from ..ml import features as mlf
@@ -231,6 +253,97 @@ class SignalEngine:
         hi = self.ml.threshold_high("long") or 2.0
         tier = "高置信" if sc >= hi else "普通观察"
         return [make_long_alert(le, candle, self.long_trend_break_pct, [f"ML做多分={sc:.2f}", f"置信={tier}"])]
+
+    def _lifecycle_long_signals(self, le: LongEvent, candle: Candle) -> list[Alert]:
+        if candle.interval != self.long_interval or self.ml is None or not self.ml.lifecycle_ready:
+            return []
+        interval_ms = interval_to_ms(self.long_interval)
+        candles = sorted(self.buffers[(le.symbol, self.long_interval)], key=lambda c: c.open_time)
+        if len(candles) < life.bars_15m_units(life.LOOKBACK_UNITS, interval_ms) + 2:
+            return []
+        frame = life.candles_to_frame(candles)
+        features = life.compute_features(frame, interval_ms, raw_lag_mode="native")
+        rank_values = {
+            "qv30_rank": le.qv30_rank,
+            "ret30_rank": le.ret30_rank,
+            "qv30_rank_pct": le.qv30_rank_pct,
+            "ret30_rank_pct": le.ret30_rank_pct,
+        }
+        row = life.add_long_extras(frame, features, rank_values, interval_ms)
+        cols = self.ml.lifecycle_columns("long_pump_event")
+        if not cols or not life.finite_for(row, cols):
+            return []
+        scores = self.ml.lifecycle_long_score(row)
+        score = scores.get("score")
+        thr = self.ml.lifecycle_long_threshold(high=False)
+        if score is None or thr is None or score < thr:
+            return []
+        high_thr = self.ml.lifecycle_long_threshold(high=True)
+        tier = "high" if high_thr is not None and score >= high_thr else "normal"
+        evidence = [
+            "strategy=lifecycle_expert",
+            f"interval={self.long_interval}",
+            "model=lifecycle_long_combo",
+            f"score={score:.3f}",
+            f"threshold={thr:.3f}",
+            f"tier={tier}",
+            f"pump_score={float(scores.get('pump') or 0.0):.3f}",
+            f"quality_score={float(scores.get('quality') or 0.0):.3f}",
+            f"qv30_rank={le.qv30_rank}",
+            f"ret30_rank={le.ret30_rank}",
+        ]
+        self._ensure_pump_watch_from_long(le, candle, evidence)
+        return [
+            make_long_alert(
+                le,
+                candle,
+                self.long_trend_break_pct,
+                evidence,
+                lifecycle_mode="long_entry",
+                behavior_state="entry_watch",
+                model_name="lifecycle_long_combo",
+                model_score=float(score),
+                model_threshold=float(thr),
+                signal_interval=self.long_interval,
+            )
+        ]
+
+    def _ensure_pump_watch_from_long(self, le: LongEvent, candle: Candle, evidence: list[str]) -> PumpEvent:
+        active_ms = int(self.active_hours * 3_600_000)
+        existing = self.events_by_symbol.get(le.symbol)
+        high_price = max(le.high_price, candle.high)
+        if existing and existing.status == "active" and existing.expires_at >= candle.close_time:
+            existing.last_seen = candle.close_time
+            existing.expires_at = max(existing.expires_at, candle.close_time + active_ms)
+            existing.current_price = candle.close
+            if high_price > existing.high_price * (1.0 + self.params.new_high_reset_pct / 100.0):
+                existing.high_price = high_price
+                existing.high_time = candle.close_time
+                existing.early_alerted_after_high_time = None
+                existing.short_alerted_after_high_time = None
+                existing.fallback_alerted_after_high_time = None
+            existing.max_gain_pct = pct_change(existing.anchor_price, existing.high_price)
+            existing.evidence = sorted(set(existing.evidence + ["source=long_signal_pump_watch"] + evidence))
+            return existing
+        pump = PumpEvent(
+            event_id=f"{le.symbol}-PW-{le.first_seen}",
+            symbol=le.symbol,
+            first_seen=le.first_seen,
+            last_seen=candle.close_time,
+            expires_at=candle.close_time + active_ms,
+            trigger_window=f"long_{self.long_interval}",
+            anchor_price=le.entry_price,
+            high_price=high_price,
+            high_time=candle.close_time,
+            current_price=candle.close,
+            max_gain_pct=pct_change(le.entry_price, high_price),
+            lifecycle_mode="long_entry",
+            behavior_state="entry_watch",
+            lifecycle_updated_time=candle.close_time,
+            evidence=["source=long_signal_pump_watch"] + evidence,
+        )
+        self.events_by_symbol[le.symbol] = pump
+        return pump
 
     def prime_candles(self, candles: list[Candle]) -> list[PumpEvent]:
         changed: dict[str, PumpEvent] = {}
@@ -261,6 +374,9 @@ class SignalEngine:
         if not pump or pump.status != "active" or pump.expires_at < candle.close_time:
             if self.long_enabled:
                 alerts.extend(self._process_long(candle))
+                pump_after_long = self.events_by_symbol.get(candle.symbol)
+                if pump_after_long and pump_after_long.status == "active" and pump_after_long.expires_at >= candle.close_time:
+                    changed.append(pump_after_long)
             return changed, alerts
 
         if candle.high > pump.high_price * (1.0 + self.params.new_high_reset_pct / 100.0):
@@ -290,6 +406,8 @@ class SignalEngine:
                         le.status = "closed"; le.exit_reason = "下跌启动"
                         long_exit_triggered = True
                 alerts.append(alert)
+                changed.append(pump)
+            if self._use_lifecycle() and candle.interval == self.confirm_interval and pump not in changed:
                 changed.append(pump)
             if self.long_enabled and not long_exit_triggered:
                 alerts.extend(self._process_long(candle))
@@ -466,6 +584,8 @@ class SignalEngine:
         return None
 
     def _ml_signals(self, pump: PumpEvent, candle: Candle) -> list[Alert]:
+        if self._use_lifecycle():
+            return self._lifecycle_signals(pump, candle)
         """ML 模式: 在 setup 候选上用模型打分, 超阈值才发。见顶->early, 破位->short。"""
         if candle.interval != self.confirm_interval or self.ml is None or not self.ml.ready:
             return []
@@ -499,6 +619,96 @@ class SignalEngine:
                 remaining,
                 [f"{tag}={sc:.2f}", f"置信={tier}", f"cooldown={self.multi_signal_cooldown_hours:g}h"],
             ))
+        return out
+
+    def _lifecycle_signals(self, pump: PumpEvent, candle: Candle) -> list[Alert]:
+        if candle.interval != self.confirm_interval or self.ml is None or not self.ml.lifecycle_ready:
+            return []
+        interval_ms = interval_to_ms(self.confirm_interval)
+        candles = sorted(self.buffers[(pump.symbol, self.confirm_interval)], key=lambda c: c.open_time)
+        row = life.build_lifecycle_row(candles, pump.first_seen, pump.anchor_price, interval_ms)
+        if row is None:
+            return []
+        state = str(row.get("behavior_state", "neutral_watch") or "neutral_watch")
+        vol_ratio = current_volume_ratio(candles, int(self.signal_cfg["volume_window"]))
+        remaining = remaining_downside_pct(pump.anchor_price, candle.close)
+        scored: list[dict[str, Any]] = []
+        for model_name, level, mode_name, gate in (
+            ("fast_top", "early_alert", "fast_dump", life.FAST_GATE),
+            ("slow_warning", "early_alert", "slow_distribution", life.SLOW_GATE),
+            ("fast_short", "short_signal", "fast_dump", life.FAST_GATE),
+            ("slow_short", "short_signal", "slow_distribution", life.SLOW_GATE),
+        ):
+            cols = self.ml.lifecycle_columns(model_name)
+            if not cols or not life.finite_for(row, cols):
+                continue
+            score = self.ml.lifecycle_score(row, model_name)
+            threshold = self.ml.lifecycle_threshold(model_name)
+            if score is None or threshold is None or threshold <= 0:
+                continue
+            scored.append(
+                {
+                    "model": model_name,
+                    "level": level,
+                    "mode": mode_name,
+                    "gate": gate,
+                    "score": float(score),
+                    "threshold": float(threshold),
+                    "ratio": float(score) / float(threshold),
+                }
+            )
+
+        pump.behavior_state = state
+        pump.lifecycle_updated_time = candle.close_time
+        if state in ("acceleration", "trend_hold", "neutral_watch"):
+            pump.lifecycle_mode = "trend_watch"
+        elif scored:
+            pump.lifecycle_mode = max(scored, key=lambda x: x["ratio"])["mode"]
+        else:
+            pump.lifecycle_mode = "risk_watch"
+
+        out: list[Alert] = []
+        for level in ("early_alert", "short_signal"):
+            eligible = [
+                item
+                for item in scored
+                if item["level"] == level
+                and state in item["gate"]
+                and item["score"] >= item["threshold"]
+                and self._can_emit_pump_signal(pump, level, candle.close_time)
+            ]
+            if not eligible:
+                continue
+            best = max(eligible, key=lambda x: x["ratio"])
+            pump.lifecycle_mode = best["mode"]
+            evidence = [
+                "strategy=lifecycle_expert",
+                f"interval={self.confirm_interval}",
+                f"mode={best['mode']}",
+                f"state={state}",
+                f"model={best['model']}",
+                f"score={best['score']:.3f}",
+                f"threshold={best['threshold']:.3f}",
+                f"ratio={best['ratio']:.2f}",
+                f"cooldown={self.multi_signal_cooldown_hours:g}h",
+            ]
+            out.append(
+                make_alert(
+                    level,
+                    pump,
+                    candle,
+                    vol_ratio,
+                    remaining,
+                    evidence,
+                    category_override=best["mode"],
+                    lifecycle_mode=best["mode"],
+                    behavior_state=state,
+                    model_name=best["model"],
+                    model_score=best["score"],
+                    model_threshold=best["threshold"],
+                    signal_interval=self.confirm_interval,
+                )
+            )
         return out
 
 
@@ -645,7 +855,22 @@ def remaining_downside_pct(anchor_price: float, price: float) -> float:
     return max(0.0, (price - anchor_price) / price * 100.0) if price else 0.0
 
 
-def make_alert(level: str, pump: PumpEvent, candle: Candle, vol_ratio: float, remaining: float, evidence: list[str]) -> Alert:
+def make_alert(
+    level: str,
+    pump: PumpEvent,
+    candle: Candle,
+    vol_ratio: float,
+    remaining: float,
+    evidence: list[str],
+    *,
+    category_override: str | None = None,
+    lifecycle_mode: str = "",
+    behavior_state: str = "",
+    model_name: str = "",
+    model_score: float = 0.0,
+    model_threshold: float = 0.0,
+    signal_interval: str = "",
+) -> Alert:
     buffer_pct = 1.0 + float(0.01 * 0.35)
     invalidation = max(pump.high_price, candle.high) * buffer_pct
     alert_id = f"{pump.event_id}-{level}-{candle.close_time}"
@@ -673,12 +898,30 @@ def make_alert(level: str, pump: PumpEvent, candle: Candle, vol_ratio: float, re
             f"remaining_to_anchor={remaining:.2f}%",
         ],
         risks=[],
-        category=category,
+        category=category_override or category,
         occurrence=occ,
+        lifecycle_mode=lifecycle_mode,
+        behavior_state=behavior_state,
+        model_name=model_name,
+        model_score=model_score,
+        model_threshold=model_threshold,
+        signal_interval=signal_interval,
     )
 
 
-def make_long_alert(le: LongEvent, candle: Candle, trend_break_pct: float, evidence: list[str]) -> Alert:
+def make_long_alert(
+    le: LongEvent,
+    candle: Candle,
+    trend_break_pct: float,
+    evidence: list[str],
+    *,
+    lifecycle_mode: str = "",
+    behavior_state: str = "",
+    model_name: str = "",
+    model_score: float = 0.0,
+    model_threshold: float = 0.0,
+    signal_interval: str = "",
+) -> Alert:
     """做多信号(纯提示): 启动做多。invalidation=趋势破坏止损位。"""
     le.long_signal_seq += 1
     from_entry = pct_change(le.entry_price, candle.close)
@@ -701,6 +944,12 @@ def make_long_alert(le: LongEvent, candle: Candle, trend_break_pct: float, evide
         risks=[],
         category="做多",
         occurrence=le.long_signal_seq,
+        lifecycle_mode=lifecycle_mode,
+        behavior_state=behavior_state,
+        model_name=model_name,
+        model_score=model_score,
+        model_threshold=model_threshold,
+        signal_interval=signal_interval,
     )
 
 

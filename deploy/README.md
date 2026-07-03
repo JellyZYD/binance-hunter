@@ -1,3 +1,23 @@
+## Lifecycle Expert Production Version
+
+当前默认生产策略已经升级为生命周期专家版：
+
+- `signals.strategy_version=lifecycle_expert`
+- WebSocket 周期：`5m`, `15m`
+- 做多：5m lifecycle long combo
+- 顶部/做空：15m `fast_top`, `fast_short`, `slow_warning`, `slow_short`
+- PumpWatch 同类信号冷却：2h
+- 模型目录：`backend/pump_dump_hunter/ml/models/lifecycle/`
+
+服务器执行 `sudo bash deploy/update.sh` 后，检查：
+
+```bash
+journalctl -u binance-hunter-monitor -n 80 --no-pager
+curl -s http://127.0.0.1:8787/api/model | head
+```
+
+`/api/model` 应包含 `lifecycle_ready: true`。如果企业微信配置了 `WECOM_WEBHOOK_URL`，推送内容会带 `interval/mode/state/model/score`。
+
 # Deployment
 
 目标服务器：Ubuntu，2 核 2G 可运行。可以选择整站部署在服务器，或后端在服务器、前端放 Vercel。

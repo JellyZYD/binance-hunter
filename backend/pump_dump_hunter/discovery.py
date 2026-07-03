@@ -165,6 +165,8 @@ def compute_liquidity_records(
         selected = i <= top_n
         pump = selected and is_pump_qualified(row, gain15[row["symbol"]], gain30[row["symbol"]], params)
         qv30r = qvol30_rank[row["symbol"]]
+        ret30r = gain30[row["symbol"]]
+        denom = max(1, len(temp))
         long_cand = selected and not pump and is_long_candidate(row, qv30r, params)
         out.append(
             LiquidityRecord(
@@ -191,6 +193,9 @@ def compute_liquidity_records(
                 quote_volume_12h=row["quote_volume_12h"],
                 quote_volume_1d=row["quote_volume_1d"],
                 qvol30_rank=qv30r,
+                ret30_rank=ret30r,
+                qvol30_rank_pct=qv30r / denom,
+                ret30_rank_pct=ret30r / denom,
                 long_candidate=long_cand,
             )
         )

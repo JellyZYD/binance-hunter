@@ -60,17 +60,36 @@ class AlertSink:
 
 
 def render_console_alert(alert: Alert) -> str:
+    meta = render_lifecycle_inline(alert)
     return (
         f"[{iso_from_ms(alert.decision_time)}] {alert.level} {alert.symbol} "
         f"price={alert.price} invalid={alert.invalidation_price} "
-        f"remaining={alert.remaining_downside_pct:.2f}% vol={alert.volume_ratio:.2f}x"
+        f"remaining={alert.remaining_downside_pct:.2f}% vol={alert.volume_ratio:.2f}x{meta}"
     )
+
+
+def render_lifecycle_inline(alert: Alert) -> str:
+    parts = []
+    if alert.signal_interval:
+        parts.append(f"interval={alert.signal_interval}")
+    if alert.lifecycle_mode:
+        parts.append(f"mode={alert.lifecycle_mode}")
+    if alert.behavior_state:
+        parts.append(f"state={alert.behavior_state}")
+    if alert.model_name:
+        parts.append(f"model={alert.model_name}")
+    if alert.model_score:
+        parts.append(f"score={alert.model_score:.3f}")
+    if alert.model_threshold:
+        parts.append(f"thr={alert.model_threshold:.3f}")
+    return " " + " ".join(parts) if parts else ""
 
 
 def render_markdown_alert(alert: Alert) -> str:
     evidence = "; ".join(alert.evidence)
     risks = "; ".join(alert.risks) or "-"
     cat = f" [{alert.category}]" if alert.category else ""
+    lifecycle = render_lifecycle_inline(alert).strip() or "-"
     seq = f" 第{alert.occurrence}次" if alert.occurrence else ""
     return "\n".join(
         [
@@ -80,6 +99,7 @@ def render_markdown_alert(alert: Alert) -> str:
             f"- high/anchor: {alert.high_price} / {alert.anchor_price}",
             f"- remaining_to_anchor: {alert.remaining_downside_pct:.2f}%",
             f"- volume_ratio: {alert.volume_ratio:.2f}x",
+            f"- lifecycle: {lifecycle}",
             f"- evidence: {evidence}",
             f"- risks: {risks}",
         ]
@@ -117,6 +137,20 @@ def render_wecom_markdown(alert: Alert) -> str:
     if score:
         metrics += f" · ML分{score}"
     seq = f" 第{alert.occurrence}次" if alert.occurrence else ""
+    if alert.model_score:
+        metrics += f" | score {alert.model_score:.3f}/{alert.model_threshold:.3f}"
+    lifecycle_bits = []
+    if alert.signal_interval:
+        lifecycle_bits.append(alert.signal_interval)
+    if alert.lifecycle_mode:
+        lifecycle_bits.append(alert.lifecycle_mode)
+    if alert.behavior_state:
+        lifecycle_bits.append(alert.behavior_state)
+    if alert.model_name:
+        lifecycle_bits.append(alert.model_name)
+    lifecycle_line = " / ".join(lifecycle_bits)
+    if lifecycle_line:
+        metrics += f" | {lifecycle_line}"
     return "\n".join([
         f"**{name}{seq} · {alert.symbol}{tag}**",
         f"> {metrics}",

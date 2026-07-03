@@ -13,7 +13,10 @@ type Summary = {
 
 type StrategyMeta = {
   mode?: string;
+  strategy_version?: string;
+  early_interval?: string;
   confirm_interval?: string;
+  long_interval?: string;
   multi_signal_cooldown_hours?: number;
   long_enabled?: boolean;
 };
@@ -45,6 +48,9 @@ type PumpRow = {
   anchor_price?: number;
   early_last_alert_time?: number | null;
   short_last_alert_time?: number | null;
+  lifecycle_mode?: string;
+  behavior_state?: string;
+  lifecycle_updated_time?: number | null;
 };
 
 type Candle = {
@@ -67,6 +73,12 @@ type AlertRow = {
   evidence?: string[];
   occurrence?: number;
   category?: string;
+  lifecycle_mode?: string;
+  behavior_state?: string;
+  model_name?: string;
+  model_score?: number;
+  model_threshold?: number;
+  signal_interval?: string;
 };
 
 type BacktestRow = {
@@ -105,6 +117,25 @@ type ModelMeta = {
   dump?: { val_auc?: number };
   top?: { val_auc?: number };
   long?: { val_auc?: number };
+  lifecycle?: {
+    strategy_version?: string;
+    trained_data?: {
+      data_start?: string;
+      data_end?: string;
+      symbols?: number;
+    };
+    runtime?: {
+      long_interval?: string;
+      expert_interval?: string;
+      multi_signal_cooldown_hours?: number;
+    };
+    long_score?: {
+      threshold?: number;
+      threshold_high?: number;
+    };
+    models?: Record<string, { interval?: string; mode?: string; signal_level?: string; threshold?: number }>;
+  };
+  lifecycle_ready?: boolean;
 };
 
 type MonitorRow = PumpRow & {
@@ -161,6 +192,34 @@ function signalLabel(level?: string) {
   if (level === 'long_timeout') return '做多超时';
   if (level === 'fallback_alert') return '回落兜底';
   return level || '等待信号';
+}
+
+function lifecycleModeText(mode?: string) {
+  if (mode === 'fast_dump') return '快拉急跌';
+  if (mode === 'slow_distribution') return '高位派发';
+  if (mode === 'long_entry') return '做多启动';
+  if (mode === 'trend_watch') return '趋势观察';
+  if (mode === 'risk_watch') return '风险观察';
+  return mode || '未分型';
+}
+
+function behaviorText(state?: string) {
+  if (state === 'acceleration') return '加速';
+  if (state === 'trend_hold') return '趋势保持';
+  if (state === 'distribution') return '派发';
+  if (state === 'climax_risk') return '冲顶风险';
+  if (state === 'pullback_risk') return '回落风险';
+  if (state === 'breakdown') return '破位';
+  if (state === 'entry_watch') return '入场观察';
+  if (state === 'neutral_watch') return '中性观察';
+  return state || '等待阶段';
+}
+
+function modelScore(alert?: AlertRow) {
+  if (!alert || !Number.isFinite(Number(alert.model_score))) return '';
+  const score = Number(alert.model_score).toFixed(3);
+  const thr = Number.isFinite(Number(alert.model_threshold)) ? Number(alert.model_threshold).toFixed(3) : '-';
+  return `${score}/${thr}`;
 }
 
 function durationText(ms: number) {
@@ -335,7 +394,8 @@ export default function HunterDashboard() {
       </header>
 
       <ModelBar model={model} nowMs={nowMs} />
-      <StrategyBar strategy={strategy} />
+      <LifecycleModelBar model={model} />
+      <LifecycleStrategyBar strategy={strategy} />
 
       {error ? (
         <div className="error-box">
@@ -413,6 +473,11 @@ export default function HunterDashboard() {
                   {mlInfo(r.evidence).tier === '高置信' ? <span className="badge badge-hi">高置信</span> : null}
                   {mlInfo(r.evidence).tier === '普通观察' ? <span className="badge badge-watch">普通观察</span> : null}
                   {mlInfo(r.evidence).score ? <span className="ml-score">分{mlInfo(r.evidence).score}</span> : null}
+                  {r.lifecycle_mode || r.behavior_state || r.model_name ? (
+                    <div className="lifecycle-inline">
+                      {[r.signal_interval, lifecycleModeText(r.lifecycle_mode), behaviorText(r.behavior_state), r.model_name, modelScore(r)].filter(Boolean).join(' / ')}
+                    </div>
+                  ) : null}
                 </td>
                 <td><b>{r.symbol}</b></td>
                 <td>{fmt(r.price)}</td>
@@ -457,6 +522,36 @@ function dayStr(iso?: string) {
   if (!iso) return '-';
   const d = new Date(iso);
   return Number.isNaN(d.getTime()) ? '-' : d.toISOString().slice(0, 10);
+}
+
+function LifecycleStrategyBar({ strategy }: { strategy?: StrategyMeta }) {
+  const rawCooldown = Number(strategy?.multi_signal_cooldown_hours ?? 2);
+  const cooldown = Number.isFinite(rawCooldown) ? rawCooldown : 2;
+  return (
+    <div className="strategy-bar">
+      <span>策略：{strategy?.strategy_version || strategy?.mode || 'unknown'}</span>
+      <span>做多：{strategy?.long_interval || '5m'} 收线</span>
+      <span>顶部/做空：{strategy?.confirm_interval || '15m'} 收线</span>
+      <span>同类信号冷却：{fmt(cooldown, 1)}h</span>
+      <span>{strategy?.long_enabled ? '做多监测开启' : '仅做空监测'}</span>
+    </div>
+  );
+}
+
+function LifecycleModelBar({ model }: { model: ModelMeta | null }) {
+  const lifecycle = model?.lifecycle;
+  if (!lifecycle) return null;
+  return (
+    <div className={`model-bar ${model?.lifecycle_ready ? '' : 'warn'}`}>
+      <span className="mb-item">
+        生命周期模型：{lifecycle.strategy_version || 'lifecycle_expert'} | {lifecycle.runtime?.long_interval || '5m'} 做多 / {lifecycle.runtime?.expert_interval || '15m'} 顶部做空 / 冷却 {fmt(lifecycle.runtime?.multi_signal_cooldown_hours ?? 2, 1)}h
+      </span>
+      <span className="mb-item">
+        数据 {dayStr(lifecycle.trained_data?.data_start)} ~ {dayStr(lifecycle.trained_data?.data_end)} | symbols {lifecycle.trained_data?.symbols ?? '-'} | long q90 {fmt(lifecycle.long_score?.threshold, 3)} q95 {fmt(lifecycle.long_score?.threshold_high, 3)}
+      </span>
+      <span className="mb-item">专家 {Object.keys(lifecycle.models || {}).join(' / ')}</span>
+    </div>
+  );
 }
 
 function StrategyBar({ strategy }: { strategy?: StrategyMeta }) {
@@ -562,9 +657,11 @@ function MonitorContract({ row, cooldownHours, nowMs }: { row: MonitorRow; coold
         <div className="symbol-line">
           <strong>{row.symbol}</strong>
           <span>{row.trigger_window}</span>
+          <span className="lifecycle-chip">{lifecycleModeText(row.lifecycle_mode)} / {behaviorText(row.behavior_state)}</span>
           <span className="contract-actions">
             <button type="button" className="link-btn" onClick={toggleChart}>{open ? '收起K线' : '15m K线'}</button>
             <a className="trade-link" href={tradeUrl} target="_blank" rel="noreferrer">交易 ↗</a>
+            {alert?.model_name ? <em className="cat-tag">{alert.signal_interval || '15m'} / {alert.model_name} / {modelScore(alert)}</em> : null}
           </span>
         </div>
         <div className="contract-stats">

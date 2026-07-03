@@ -77,7 +77,10 @@ class DashboardHandler(BaseHTTPRequestHandler):
         signals = self.settings.get("signals", {})
         data["strategy"] = {
             "mode": signals.get("mode", ""),
+            "strategy_version": signals.get("strategy_version", ""),
+            "early_interval": signals.get("early_interval", ""),
             "confirm_interval": signals.get("confirm_interval", ""),
+            "long_interval": signals.get("long_interval", ""),
             "multi_signal_cooldown_hours": signals.get("multi_signal_cooldown_hours", 4.0),
             "long_enabled": bool(signals.get("long_enabled", False)),
         }
@@ -97,12 +100,18 @@ class DashboardHandler(BaseHTTPRequestHandler):
 def read_model_meta() -> dict[str, Any]:
     from pathlib import Path
     p = Path(__file__).resolve().parent / "ml" / "models" / "meta.json"
+    lifecycle_p = Path(__file__).resolve().parent / "ml" / "models" / "lifecycle" / "meta.json"
     if not p.exists():
         return {"ready": False}
     try:
         m = json.loads(p.read_text(encoding="utf-8"))
         m.pop("feature_cols", None)  # 前端不需要, 省流量
         m.pop("long_feature_cols", None)
+        if lifecycle_p.exists():
+            lifecycle = json.loads(lifecycle_p.read_text(encoding="utf-8"))
+            lifecycle.pop("feature_sets", None)
+            m["lifecycle"] = lifecycle
+            m["lifecycle_ready"] = True
         m["ready"] = True
         return m
     except Exception as exc:

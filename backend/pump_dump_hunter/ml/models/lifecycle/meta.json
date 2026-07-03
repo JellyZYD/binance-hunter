@@ -1,0 +1,105 @@
+{
+  "strategy_version": "lifecycle_expert",
+  "router": "dyn_big_pump_tolerant",
+  "trained_data": {
+    "source": "E:/2C2G/binance_klines",
+    "symbols": 172,
+    "data_start": "2025-06-13T16:23:00+00:00",
+    "data_end": "2026-06-13T16:23:00+00:00",
+    "holdout_start_long_5m": "2026-04-23T00:00:00+00:00",
+    "holdout_start_experts_15m": "2026-05-03T00:00:00+00:00"
+  },
+  "runtime": {
+    "long_interval": "5m",
+    "expert_interval": "15m",
+    "multi_signal_cooldown_hours": 2.0,
+    "closed_candles_only": true
+  },
+  "long_score": {
+    "feature_set": "long",
+    "interval": "5m",
+    "models": ["long_pump_event", "long_start_quality"],
+    "weights": {
+      "pump": 0.65,
+      "quality": 0.35
+    },
+    "threshold": 0.700658,
+    "threshold_high": 0.764311,
+    "threshold_source": "best_lifecycle_backtest_5m_multi_2h.q90/q95",
+    "holdout_q90": {
+      "signals": 40,
+      "pump_event_rate": 0.575,
+      "long_start_rate": 0.55,
+      "median_future_high_48h": 0.17878988842654853,
+      "median_adverse_before_up5": 0.04660205824773034
+    }
+  },
+  "models": {
+    "long_pump_event": {
+      "feature_set": "long",
+      "interval": "5m",
+      "target": "pump_event_after_entry"
+    },
+    "long_start_quality": {
+      "feature_set": "long",
+      "interval": "5m",
+      "target": "clean_long_start"
+    },
+    "fast_top": {
+      "feature_set": "fast",
+      "interval": "15m",
+      "mode": "fast_dump",
+      "signal_level": "early_alert",
+      "threshold": 0.523018,
+      "threshold_quantile": 0.8,
+      "gate_states": ["distribution", "climax_risk", "pullback_risk"]
+    },
+    "fast_short": {
+      "feature_set": "fast",
+      "interval": "15m",
+      "mode": "fast_dump",
+      "signal_level": "short_signal",
+      "threshold": 0.620131,
+      "threshold_quantile": 0.9,
+      "gate_states": ["distribution", "climax_risk", "pullback_risk"]
+    },
+    "slow_warning": {
+      "feature_set": "slow",
+      "interval": "15m",
+      "mode": "slow_distribution",
+      "signal_level": "early_alert",
+      "threshold": 0.794619,
+      "threshold_quantile": 0.95,
+      "gate_states": ["distribution", "climax_risk", "pullback_risk"]
+    },
+    "slow_short": {
+      "feature_set": "slow",
+      "interval": "15m",
+      "mode": "slow_distribution",
+      "signal_level": "short_signal",
+      "threshold": 0.534692,
+      "threshold_quantile": 0.9,
+      "gate_states": ["distribution", "climax_risk", "pullback_risk"]
+    }
+  },
+  "holdout_backtest_15m_multi_2h": {
+    "pumpwatch_short_all": {
+      "signals": 19,
+      "median_future_drop_6h": 0.11123921451948826,
+      "median_future_drop_24h": 0.21205666205133666,
+      "median_future_drop_72h": 0.583915211970075
+    },
+    "multi_fast_short": {
+      "signals": 30,
+      "median_future_up_24h": 0.07363400877956294,
+      "median_future_drop_24h": 0.2925463443371482,
+      "clean_big_short_rate": 0.43333333333333335
+    },
+    "multi_slow_short": {
+      "signals": 12,
+      "median_future_up_24h": 0.0408180449678337,
+      "median_future_drop_24h": 0.06061375587629947,
+      "clean_big_short_rate": 0.25
+    }
+  }
+}

@@ -66,9 +66,9 @@
     "active_hours": 36
   },
   "websocket": {
-    "intervals": ["15m"],
+    "intervals": ["5m", "15m"],
     "max_streams_per_connection": 180,
-    "prewarm_limit": 120,
+    "prewarm_limit": 360,
     "heartbeat_events": 250,
     "reconnect_initial_seconds": 1,
     "reconnect_max_seconds": 30
@@ -113,15 +113,17 @@
   },
   "signals": {
     "mode": "ml",
+    "strategy_version": "lifecycle_expert",
     "ema_fast": 8,
     "ema_confirm": 21,
     "early_interval": "15m",
     "confirm_interval": "15m",
+    "long_interval": "5m",
     "structure_lookback_1m": 5,
     "structure_lookback_5m": 8,
     "volume_window": 20,
     "invalidation_buffer_pct": 0.35,
-    "multi_signal_cooldown_hours": 4.0,
+    "multi_signal_cooldown_hours": 2.0,
     "long_enabled": true,
     "long_watch_hours": 36,
     "long_trend_break_pct": 8.0

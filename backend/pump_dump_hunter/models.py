@@ -117,6 +117,9 @@ class LiquidityRecord:
     quote_volume_4h: float = 0.0
     quote_volume_12h: float = 0.0
     quote_volume_1d: float = 0.0
+    ret30_rank: int = 0
+    qvol30_rank_pct: float = 0.0
+    ret30_rank_pct: float = 0.0
     qvol30_rank: int = 0          # 横截面 30m 成交额排名(做多候选用)
     long_candidate: bool = False  # 做多候选(动量+热度+排名粗筛, 结构+ML在引擎判)
 
@@ -206,6 +209,9 @@ class PumpEvent:
     early_alert_seq: int = 0
     short_signal_seq: int = 0
     fallback_alert_seq: int = 0
+    lifecycle_mode: str = ""
+    behavior_state: str = ""
+    lifecycle_updated_time: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -227,6 +233,10 @@ class LongEvent:
     status: str = "active"
     exit_reason: str = ""    # "" 活跃 / "见顶" / "下跌启动" / "趋势破坏" / "超时"
     evidence: list[str] = field(default_factory=list)
+    qv30_rank: int = 0
+    ret30_rank: int = 0
+    qv30_rank_pct: float = 0.0
+    ret30_rank_pct: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -251,6 +261,12 @@ class Alert:
     risks: list[str]
     category: str = ""
     occurrence: int = 0
+    lifecycle_mode: str = ""
+    behavior_state: str = ""
+    model_name: str = ""
+    model_score: float = 0.0
+    model_threshold: float = 0.0
+    signal_interval: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()

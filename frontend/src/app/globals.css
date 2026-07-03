@@ -544,6 +544,18 @@ td { color: #1d333a; }
   color: var(--cyan);
 }
 .ml-score { margin-left: 6px; font-size: 11px; color: var(--muted); }
+.lifecycle-chip {
+  border-color: rgba(22, 138, 99, 0.24) !important;
+  color: #137454 !important;
+  background: rgba(22, 138, 99, 0.08) !important;
+}
+.lifecycle-inline {
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: #137454;
+  word-break: break-word;
+}
 .signal-topline .cat-tag.hi { color: var(--green); opacity: 1; }
 .signal-topline .cat-tag.watch { color: var(--cyan); opacity: 1; }
 
