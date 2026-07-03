@@ -253,6 +253,16 @@ function cooldownStatus(alert?: AlertRow, cooldownHours = 4, nowMs = 0) {
   return left > 0 ? `冷却${durationText(left)}` : '可再触发';
 }
 
+function longCooldownStatus(row: LongRow, cooldownHours = 2, nowMs = 0) {
+  const last = Number(row.long_last_signal_time || 0);
+  if (!last) return '待首信号';
+  if (!nowMs) return '-';
+  const hours = Number.isFinite(cooldownHours) ? cooldownHours : 2;
+  const next = last + hours * 3_600_000;
+  const left = next - nowMs;
+  return left > 0 ? `冷却${durationText(left)}` : '可再触发';
+}
+
 function seqText(occurrence?: number) {
   return occurrence && occurrence > 0 ? `第${occurrence}次` : '';
 }
@@ -400,6 +410,8 @@ export default function HunterDashboard() {
   const strategy = data?.summary?.strategy;
   const rawCooldownHours = Number(strategy?.multi_signal_cooldown_hours ?? 4);
   const cooldownHours = Number.isFinite(rawCooldownHours) ? rawCooldownHours : 4;
+  const rawLongCooldownHours = Number(strategy?.long_signal_cooldown_hours ?? 2);
+  const longCooldownHours = Number.isFinite(rawLongCooldownHours) ? rawLongCooldownHours : 2;
 
   return (
     <main className="hunter-shell">
@@ -453,7 +465,7 @@ export default function HunterDashboard() {
         </div>
       </section>
 
-      <LongWatchPanel rows={longRows} />
+      <LongWatchPanel rows={longRows} cooldownHours={longCooldownHours} nowMs={nowMs} />
       <WatchHistoryPanel pumps={pumpHistory} longs={longHistory} />
 
       <section className="split-grid">
@@ -604,7 +616,7 @@ function ModelBar({ model, nowMs }: { model: ModelMeta | null; nowMs: number }) 
   );
 }
 
-function LongWatchPanel({ rows }: { rows: LongRow[] }) {
+function LongWatchPanel({ rows, cooldownHours, nowMs }: { rows: LongRow[]; cooldownHours: number; nowMs: number }) {
   return (
     <section className="monitor-section">
       <div className="section-heading">
@@ -617,7 +629,7 @@ function LongWatchPanel({ rows }: { rows: LongRow[] }) {
       {rows.length ? (
         <table className="long-table">
           <thead>
-            <tr><th>Symbol</th><th>入场</th><th>现价</th><th>距入场</th><th>最高</th><th>做多信号</th><th></th></tr>
+            <tr><th>Symbol</th><th>入场</th><th>现价</th><th>距入场</th><th>最高</th><th>做多信号</th><th>冷却</th><th></th></tr>
           </thead>
           <tbody>
             {rows.map((r) => {
@@ -630,6 +642,7 @@ function LongWatchPanel({ rows }: { rows: LongRow[] }) {
                   <td style={{ color: chg >= 0 ? '#34d399' : '#ff4f70' }}>{chg >= 0 ? '+' : ''}{fmt(chg)}%</td>
                   <td>{fmt(r.high_price, 6)}</td>
                   <td>{r.long_signal_seq > 0 ? `已发${r.long_signal_seq}次` : '待触发'}</td>
+                  <td><span className="cooldown-pill">{longCooldownStatus(r, cooldownHours, nowMs)}</span></td>
                   <td><a href={`https://www.binance.com/zh-CN/futures/${r.symbol}`} target="_blank" rel="noreferrer">合约↗</a></td>
                 </tr>
               );
