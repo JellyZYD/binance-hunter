@@ -47,8 +47,12 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.write_json({"rows": self.store.latest_liquidity(limit=int_param(query, "limit", 100))})
             elif parsed.path == "/api/pumps":
                 self.write_json({"rows": decode_pumps(self.store.active_pump_rows(utc_ms(), limit=int_param(query, "limit", 100)))})
+            elif parsed.path == "/api/pump-history":
+                self.write_json({"rows": decode_pumps(self.store.pump_event_rows(limit=int_param(query, "limit", 300)))})
             elif parsed.path == "/api/long":
                 self.write_json({"rows": self.store.active_long_rows(utc_ms(), limit=int_param(query, "limit", 100))})
+            elif parsed.path == "/api/long-history":
+                self.write_json({"rows": decode_longs(self.store.long_event_rows(limit=int_param(query, "limit", 300)))})
             elif parsed.path == "/api/alerts":
                 self.write_json({"rows": decode_alerts(self.store.recent_alerts(limit=int_param(query, "limit", 100)))})
             elif parsed.path == "/api/backtests":
@@ -82,6 +86,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "confirm_interval": signals.get("confirm_interval", ""),
             "long_interval": signals.get("long_interval", ""),
             "multi_signal_cooldown_hours": signals.get("multi_signal_cooldown_hours", 4.0),
+            "long_signal_cooldown_hours": signals.get("long_signal_cooldown_hours", 2.0),
+            "lifecycle_long_watch_min_gain_pct": signals.get("lifecycle_long_watch_min_gain_pct", 15.0),
+            "lifecycle_min_remaining_pct": signals.get("lifecycle_min_remaining_pct", 5.0),
             "long_enabled": bool(signals.get("long_enabled", False)),
         }
         return data
@@ -143,6 +150,15 @@ def decode_alerts(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def decode_pumps(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["evidence"] = decode_json_field(item.pop("evidence_json", "[]"), [])
+        out.append(item)
+    return out
+
+
+def decode_longs(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     out = []
     for row in rows:
         item = dict(row)

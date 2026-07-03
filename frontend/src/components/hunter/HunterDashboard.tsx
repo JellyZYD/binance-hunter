@@ -18,6 +18,9 @@ type StrategyMeta = {
   confirm_interval?: string;
   long_interval?: string;
   multi_signal_cooldown_hours?: number;
+  long_signal_cooldown_hours?: number;
+  lifecycle_long_watch_min_gain_pct?: number;
+  lifecycle_min_remaining_pct?: number;
   long_enabled?: boolean;
 };
 
@@ -37,12 +40,15 @@ type LiquidityRow = {
 };
 
 type PumpRow = {
+  event_id?: string;
   symbol: string;
   trigger_window: string;
   high_price: number;
   current_price: number;
   max_gain_pct: number;
   expires_at: number;
+  status?: string;
+  last_seen?: number;
   evidence?: string[];
   first_seen?: number;
   anchor_price?: number;
@@ -97,11 +103,17 @@ type DashboardData = {
 };
 
 type LongRow = {
+  event_id?: string;
   symbol: string;
+  first_seen?: number;
   entry_price: number;
   high_price: number;
   current_price: number;
   long_signal_seq: number;
+  long_last_signal_time?: number | null;
+  status?: string;
+  exit_reason?: string;
+  evidence?: string[];
   expires_at: number;
   last_seen: number;
 };
@@ -286,6 +298,8 @@ export default function HunterDashboard() {
   const [nowMs, setNowMs] = useState<number>(0);
   const [model, setModel] = useState<ModelMeta | null>(null);
   const [longRows, setLongRows] = useState<LongRow[]>([]);
+  const [pumpHistory, setPumpHistory] = useState<PumpRow[]>([]);
+  const [longHistory, setLongHistory] = useState<LongRow[]>([]);
 
   async function refresh() {
     try {
@@ -309,6 +323,16 @@ export default function HunterDashboard() {
       setLongRows((await api<{ rows: LongRow[] }>('/api/hunter/long?limit=60')).rows);
     } catch {
       /* 做多接口可选,忽略 */
+    }
+    try {
+      const [pumpHistoryRes, longHistoryRes] = await Promise.all([
+        api<{ rows: PumpRow[] }>('/api/hunter/pump-history?limit=300'),
+        api<{ rows: LongRow[] }>('/api/hunter/long-history?limit=300'),
+      ]);
+      setPumpHistory(pumpHistoryRes.rows || []);
+      setLongHistory(longHistoryRes.rows || []);
+    } catch {
+      /* 历史监管接口可选,忽略 */
     }
     try {
       setModel(await api<ModelMeta>('/api/hunter/model'));
@@ -386,6 +410,7 @@ export default function HunterDashboard() {
           <p className="subtitle">主力异动 / 多空信号 / 4h 冷却确认 / 流动性雷达</p>
         </div>
         <div className="header-actions">
+          <a className="header-link" href="#watch-history">监管记录</a>
           <button type="button" onClick={refresh} aria-label="刷新数据">
             刷新
           </button>
@@ -429,6 +454,7 @@ export default function HunterDashboard() {
       </section>
 
       <LongWatchPanel rows={longRows} />
+      <WatchHistoryPanel pumps={pumpHistory} longs={longHistory} />
 
       <section className="split-grid">
         <DataSection title="近期流动性 TopN">
@@ -533,6 +559,9 @@ function LifecycleStrategyBar({ strategy }: { strategy?: StrategyMeta }) {
       <span>做多：{strategy?.long_interval || '5m'} 收线</span>
       <span>顶部/做空：{strategy?.confirm_interval || '15m'} 收线</span>
       <span>同类信号冷却：{fmt(cooldown, 1)}h</span>
+      <span>做多重复冷却：{fmt(strategy?.long_signal_cooldown_hours ?? 2, 1)}h</span>
+      <span>long 派生做空门槛：涨过 {fmt(strategy?.lifecycle_long_watch_min_gain_pct ?? 15, 1)}%</span>
+      <span>回到起涨区踢出：空间 &lt; {fmt(strategy?.lifecycle_min_remaining_pct ?? 5, 1)}%</span>
       <span>{strategy?.long_enabled ? '做多监测开启' : '仅做空监测'}</span>
     </div>
   );
@@ -550,18 +579,6 @@ function LifecycleModelBar({ model }: { model: ModelMeta | null }) {
         数据 {dayStr(lifecycle.trained_data?.data_start)} ~ {dayStr(lifecycle.trained_data?.data_end)} | symbols {lifecycle.trained_data?.symbols ?? '-'} | long q90 {fmt(lifecycle.long_score?.threshold, 3)} q95 {fmt(lifecycle.long_score?.threshold_high, 3)}
       </span>
       <span className="mb-item">专家 {Object.keys(lifecycle.models || {}).join(' / ')}</span>
-    </div>
-  );
-}
-
-function StrategyBar({ strategy }: { strategy?: StrategyMeta }) {
-  const rawCooldown = Number(strategy?.multi_signal_cooldown_hours ?? 4);
-  const cooldown = Number.isFinite(rawCooldown) ? rawCooldown : 4;
-  return (
-    <div className="strategy-bar">
-      <span>实时口径：{strategy?.mode || 'unknown'} / {strategy?.confirm_interval || '15m'} 收线</span>
-      <span>同一监控事件同类信号 {fmt(cooldown, 1)}h 冷却后可再次提醒</span>
-      <span>{strategy?.long_enabled ? '做多监控已启用' : '仅做空监控'}</span>
     </div>
   );
 }
@@ -620,6 +637,75 @@ function LongWatchPanel({ rows }: { rows: LongRow[] }) {
           </tbody>
         </table>
       ) : <div className="empty-state">暂无做多监管币</div>}
+    </section>
+  );
+}
+
+function WatchHistoryPanel({ pumps, longs }: { pumps: PumpRow[]; longs: LongRow[] }) {
+  const closedPumps = pumps.filter((row) => row.status !== 'active').length;
+  const closedLongs = longs.filter((row) => row.status !== 'active').length;
+  return (
+    <section className="monitor-section history-section" id="watch-history">
+      <div className="section-heading">
+        <div>
+          <p className="eyebrow">WATCH HISTORY</p>
+          <h2>监管记录</h2>
+        </div>
+        <span className="section-count">
+          Pump {pumps.length} / Long {longs.length} / 已踢出 {closedPumps + closedLongs}
+        </span>
+      </div>
+      <div className="history-grid">
+        <div className="history-table">
+          <div className="section-heading small"><h2>PumpWatch 历史</h2></div>
+          <div className="table-wrap">
+            <table className="compact-table">
+              <thead>
+                <tr><th>Symbol</th><th>状态</th><th>来源</th><th>入池</th><th>最近</th><th>最大涨幅</th><th>现价</th><th>阶段</th><th>记录</th></tr>
+              </thead>
+              <tbody>{pumps.map((row) => (
+                <tr key={row.event_id || `${row.symbol}-${row.first_seen}`}>
+                  <td><b>{row.symbol}</b></td>
+                  <td><span className={`badge ${row.status === 'active' ? 'badge-active' : 'badge-closed'}`}>{row.status || '-'}</span></td>
+                  <td>{row.trigger_window}</td>
+                  <td>{date(row.first_seen)}</td>
+                  <td>{date(row.last_seen)}</td>
+                  <td>{pct(row.max_gain_pct)}</td>
+                  <td>{fmt(row.current_price, 6)}</td>
+                  <td>{lifecycleModeText(row.lifecycle_mode)} / {behaviorText(row.behavior_state)}</td>
+                  <td className="history-note">{(row.evidence || []).slice(-2).join(' / ') || '-'}</td>
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+        </div>
+        <div className="history-table">
+          <div className="section-heading small"><h2>LongWatch 历史</h2></div>
+          <div className="table-wrap">
+            <table className="compact-table">
+              <thead>
+                <tr><th>Symbol</th><th>状态</th><th>入池</th><th>最近</th><th>入场</th><th>现价</th><th>最高</th><th>信号</th><th>原因</th></tr>
+              </thead>
+              <tbody>{longs.map((row) => {
+                const chg = row.entry_price > 0 ? (row.current_price / row.entry_price - 1) * 100 : 0;
+                return (
+                  <tr key={row.event_id || `${row.symbol}-${row.first_seen}`}>
+                    <td><b>{row.symbol}</b></td>
+                    <td><span className={`badge ${row.status === 'active' ? 'badge-active' : 'badge-closed'}`}>{row.status || '-'}</span></td>
+                    <td>{date(row.first_seen)}</td>
+                    <td>{date(row.last_seen)}</td>
+                    <td>{fmt(row.entry_price, 6)}</td>
+                    <td>{fmt(row.current_price, 6)} <span className={chg >= 0 ? 'trend-up' : 'trend-down'}>{chg >= 0 ? '+' : ''}{fmt(chg)}%</span></td>
+                    <td>{fmt(row.high_price, 6)}</td>
+                    <td>{row.long_signal_seq || 0} / {date(row.long_last_signal_time)}</td>
+                    <td className="history-note">{row.exit_reason || (row.evidence || []).slice(-1)[0] || '-'}</td>
+                  </tr>
+                );
+              })}</tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </section>
   );
 }

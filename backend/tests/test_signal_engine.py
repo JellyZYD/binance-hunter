@@ -78,6 +78,76 @@ class SignalEngineTests(unittest.TestCase):
         self.assertTrue(engine._can_emit_pump_signal(pump, "short_signal", 10_000 + 4 * 3_600_000))
         self.assertTrue(engine._can_emit_pump_signal(pump, "early_alert", 10_000))
 
+    def test_long_signal_uses_independent_cooldown(self):
+        settings = temp_settings()
+        settings["signals"]["long_signal_cooldown_hours"] = 2.0
+        engine = SignalEngine(settings)
+        le = LongEvent(
+            event_id="LONGUSDT-L-1",
+            symbol="LONGUSDT",
+            first_seen=1,
+            last_seen=1,
+            expires_at=100_000_000,
+            entry_price=100.0,
+            high_price=105.0,
+            current_price=104.0,
+            long_last_signal_time=10_000,
+        )
+
+        self.assertFalse(engine._can_emit_long_signal(le, 10_000 + 2 * 3_600_000 - 1))
+        self.assertTrue(engine._can_emit_long_signal(le, 10_000 + 2 * 3_600_000))
+
+    def test_long_derived_pump_waits_until_mature_before_short_models(self):
+        settings = temp_settings()
+        settings["signals"]["lifecycle_long_watch_min_gain_pct"] = 15.0
+        engine = SignalEngine(settings)
+        pump = PumpEvent(
+            event_id="LONGUSDT-PW-1",
+            symbol="LONGUSDT",
+            first_seen=1,
+            last_seen=1,
+            expires_at=100_000_000,
+            trigger_window="long_5m",
+            anchor_price=100.0,
+            high_price=112.0,
+            high_time=1_000,
+            current_price=110.0,
+            max_gain_pct=12.0,
+            evidence=["source=long_signal_pump_watch"],
+        )
+
+        ready, reason = engine._lifecycle_pump_signal_ready(pump, {"ctx_high_since_entry": 0.12})
+
+        self.assertFalse(ready)
+        self.assertIn("long_watch_not_mature", reason)
+
+        pump.high_price = 116.0
+        pump.max_gain_pct = 16.0
+        ready, _reason = engine._lifecycle_pump_signal_ready(pump, {"ctx_high_since_entry": 0.16})
+        self.assertTrue(ready)
+
+    def test_pump_exhausted_when_price_returns_to_anchor_zone(self):
+        settings = temp_settings()
+        settings["signals"]["lifecycle_min_remaining_pct"] = 5.0
+        settings["signals"]["lifecycle_exhaustion_min_gain_pct"] = 8.0
+        engine = SignalEngine(settings)
+        pump = PumpEvent(
+            event_id="PUMPUSDT-1",
+            symbol="PUMPUSDT",
+            first_seen=1,
+            last_seen=1,
+            expires_at=100_000_000,
+            trigger_window="1d",
+            anchor_price=100.0,
+            high_price=125.0,
+            high_time=1_000,
+            current_price=102.0,
+            max_gain_pct=25.0,
+        )
+
+        self.assertTrue(engine._lifecycle_pump_exhausted(pump, {"ctx_high_since_entry": 0.25}, remaining=1.96))
+        self.assertFalse(engine._lifecycle_pump_exhausted(pump, {"ctx_high_since_entry": 0.25}, remaining=6.0))
+
     def test_pump_signal_last_time_persists(self):
         settings = temp_settings()
         store = Store(settings["paths"]["db_path"])
@@ -104,6 +174,31 @@ class SignalEngineTests(unittest.TestCase):
         self.assertIsNotNone(loaded)
         self.assertEqual(loaded.short_last_alert_time, 42_000)
         self.assertEqual(loaded.short_signal_seq, 2)
+
+    def test_long_last_signal_time_persists_and_history_rows_exist(self):
+        settings = temp_settings()
+        store = Store(settings["paths"]["db_path"])
+        le = LongEvent(
+            event_id="LONGUSDT-L-1",
+            symbol="LONGUSDT",
+            first_seen=1,
+            last_seen=2,
+            expires_at=100_000,
+            entry_price=100.0,
+            high_price=110.0,
+            current_price=108.0,
+            long_signal_seq=2,
+            long_last_signal_time=88_000,
+            evidence=["test"],
+        )
+
+        store.upsert_long_events([le])
+        loaded = store.active_long_events(10)
+        history = store.long_event_rows()
+
+        self.assertEqual(loaded[0].long_last_signal_time, 88_000)
+        self.assertEqual(history[0]["symbol"], "LONGUSDT")
+        self.assertEqual(history[0]["long_last_signal_time"], 88_000)
 
     def test_long_event_runs_exit_before_long_signal_without_pump_event(self):
         settings = temp_settings()

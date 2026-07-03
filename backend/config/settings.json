@@ -124,6 +124,10 @@
     "volume_window": 20,
     "invalidation_buffer_pct": 0.35,
     "multi_signal_cooldown_hours": 2.0,
+    "long_signal_cooldown_hours": 2.0,
+    "lifecycle_long_watch_min_gain_pct": 15.0,
+    "lifecycle_min_remaining_pct": 5.0,
+    "lifecycle_exhaustion_min_gain_pct": 8.0,
     "long_enabled": true,
     "long_watch_hours": 36,
     "long_trend_break_pct": 8.0

@@ -107,6 +107,7 @@ class Store:
                     high_price REAL NOT NULL,
                     current_price REAL NOT NULL,
                     long_signal_seq INTEGER NOT NULL DEFAULT 0,
+                    long_last_signal_time INTEGER,
                     status TEXT NOT NULL,
                     exit_reason TEXT NOT NULL DEFAULT '',
                     evidence_json TEXT NOT NULL DEFAULT '[]'
@@ -177,6 +178,7 @@ class Store:
                 conn,
                 "long_events",
                 {
+                    "long_last_signal_time": "INTEGER",
                     "qv30_rank": "INTEGER NOT NULL DEFAULT 0",
                     "ret30_rank": "INTEGER NOT NULL DEFAULT 0",
                     "qv30_rank_pct": "REAL NOT NULL DEFAULT 0",
@@ -391,13 +393,13 @@ class Store:
             conn.executemany(
                 """INSERT OR REPLACE INTO long_events(
                     event_id, symbol, first_seen, last_seen, expires_at, entry_price,
-                    high_price, current_price, long_signal_seq, status, exit_reason, evidence_json,
+                    high_price, current_price, long_signal_seq, long_last_signal_time, status, exit_reason, evidence_json,
                     qv30_rank, ret30_rank, qv30_rank_pct, ret30_rank_pct
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         e.event_id, e.symbol, e.first_seen, e.last_seen, e.expires_at, e.entry_price,
-                        e.high_price, e.current_price, e.long_signal_seq, e.status, e.exit_reason,
+                        e.high_price, e.current_price, e.long_signal_seq, e.long_last_signal_time, e.status, e.exit_reason,
                         json.dumps(e.evidence, ensure_ascii=False),
                         e.qv30_rank, e.ret30_rank, e.qv30_rank_pct, e.ret30_rank_pct,
                     )
@@ -428,6 +430,17 @@ class Store:
             rows = conn.execute(
                 "SELECT * FROM long_events WHERE status='active' AND expires_at>=? ORDER BY last_seen DESC LIMIT ?",
                 (now_ms, int(limit)),
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            conn.close()
+
+    def long_event_rows(self, limit: int = 300) -> list[dict[str, Any]]:
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM long_events ORDER BY last_seen DESC LIMIT ?",
+                (int(limit),),
             ).fetchall()
             return [dict(r) for r in rows]
         finally:
@@ -536,6 +549,19 @@ class Store:
                 dedup[str(item["symbol"])] = item
             ordered = sorted(dedup.values(), key=lambda r: (float(r["max_gain_pct"]), int(r["last_seen"])), reverse=True)
             return ordered[: int(limit)]
+        finally:
+            conn.close()
+
+    def pump_event_rows(self, limit: int = 300) -> list[dict[str, Any]]:
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                """SELECT * FROM pump_events
+                ORDER BY last_seen DESC, max_gain_pct DESC
+                LIMIT ?""",
+                (int(limit),),
+            ).fetchall()
+            return [dict(r) for r in rows]
         finally:
             conn.close()
 
@@ -683,6 +709,7 @@ def row_to_long_event(row: sqlite3.Row) -> LongEvent:
         high_price=float(row["high_price"]),
         current_price=float(row["current_price"]),
         long_signal_seq=int(row_get(row, "long_signal_seq") or 0),
+        long_last_signal_time=row_get(row, "long_last_signal_time"),
         status=str(row["status"]),
         exit_reason=str(row_get(row, "exit_reason") or ""),
         evidence=json.loads(row_get(row, "evidence_json") or "[]"),

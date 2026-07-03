@@ -22,6 +22,11 @@ class SignalEngine:
         self.mode = str(self.signal_cfg.get("mode", "legacy"))
         self.multi_signal_cooldown_hours = float(self.signal_cfg.get("multi_signal_cooldown_hours", 4.0))
         self.multi_signal_cooldown_ms = int(max(0.0, self.multi_signal_cooldown_hours) * 3_600_000)
+        self.long_signal_cooldown_hours = float(self.signal_cfg.get("long_signal_cooldown_hours", 2.0))
+        self.long_signal_cooldown_ms = int(max(0.0, self.long_signal_cooldown_hours) * 3_600_000)
+        self.lifecycle_long_watch_min_gain_pct = float(self.signal_cfg.get("lifecycle_long_watch_min_gain_pct", 15.0))
+        self.lifecycle_min_remaining_pct = float(self.signal_cfg.get("lifecycle_min_remaining_pct", 5.0))
+        self.lifecycle_exhaustion_min_gain_pct = float(self.signal_cfg.get("lifecycle_exhaustion_min_gain_pct", 8.0))
         self.ml = None
         if self.mode == "ml":
             try:
@@ -83,6 +88,11 @@ class SignalEngine:
         elif level == "fallback_alert":
             pump.fallback_alerted_after_high_time = pump.high_time
             pump.fallback_last_alert_time = decision_time
+
+    def _can_emit_long_signal(self, le: LongEvent, decision_time: int) -> bool:
+        if le.long_last_signal_time is None or self.long_signal_cooldown_ms <= 0:
+            return True
+        return decision_time - int(le.long_last_signal_time) >= self.long_signal_cooldown_ms
 
     def on_discovery(self, records: list[LiquidityRecord], decision_time: int) -> list[PumpEvent]:
         changed = []
@@ -250,8 +260,11 @@ class SignalEngine:
         thr = self.ml.threshold("long")
         if sc is None or thr is None or sc < thr:
             return []
+        if not self._can_emit_long_signal(le, candle.close_time):
+            return []
         hi = self.ml.threshold_high("long") or 2.0
         tier = "高置信" if sc >= hi else "普通观察"
+        le.long_last_signal_time = candle.close_time
         return [make_long_alert(le, candle, self.long_trend_break_pct, [f"ML做多分={sc:.2f}", f"置信={tier}"])]
 
     def _lifecycle_long_signals(self, le: LongEvent, candle: Candle) -> list[Alert]:
@@ -278,6 +291,8 @@ class SignalEngine:
         thr = self.ml.lifecycle_long_threshold(high=False)
         if score is None or thr is None or score < thr:
             return []
+        if not self._can_emit_long_signal(le, candle.close_time):
+            return []
         high_thr = self.ml.lifecycle_long_threshold(high=True)
         tier = "high" if high_thr is not None and score >= high_thr else "normal"
         evidence = [
@@ -291,7 +306,9 @@ class SignalEngine:
             f"quality_score={float(scores.get('quality') or 0.0):.3f}",
             f"qv30_rank={le.qv30_rank}",
             f"ret30_rank={le.ret30_rank}",
+            f"long_cooldown={self.long_signal_cooldown_hours:g}h",
         ]
+        le.long_last_signal_time = candle.close_time
         self._ensure_pump_watch_from_long(le, candle, evidence)
         return [
             make_long_alert(
@@ -632,6 +649,22 @@ class SignalEngine:
         state = str(row.get("behavior_state", "neutral_watch") or "neutral_watch")
         vol_ratio = current_volume_ratio(candles, int(self.signal_cfg["volume_window"]))
         remaining = remaining_downside_pct(pump.anchor_price, candle.close)
+        pump.behavior_state = state
+        pump.lifecycle_updated_time = candle.close_time
+        if self._lifecycle_pump_exhausted(pump, row, remaining):
+            pump.status = "closed"
+            pump.lifecycle_mode = "completed"
+            pump.evidence = sorted(set(pump.evidence + [
+                f"completed=remaining_to_anchor<{self.lifecycle_min_remaining_pct:g}%",
+                f"completed_at={candle.close_time}",
+            ]))
+            return []
+        ready, ready_reason = self._lifecycle_pump_signal_ready(pump, row)
+        if not ready:
+            pump.lifecycle_mode = "long_watch" if is_long_derived_pump(pump) else "trend_watch"
+            if ready_reason and ready_reason not in pump.evidence:
+                pump.evidence = sorted(set(pump.evidence + [ready_reason]))
+            return []
         scored: list[dict[str, Any]] = []
         for model_name, level, mode_name, gate in (
             ("fast_top", "early_alert", "fast_dump", life.FAST_GATE),
@@ -657,9 +690,6 @@ class SignalEngine:
                     "ratio": float(score) / float(threshold),
                 }
             )
-
-        pump.behavior_state = state
-        pump.lifecycle_updated_time = candle.close_time
         if state in ("acceleration", "trend_hold", "neutral_watch"):
             pump.lifecycle_mode = "trend_watch"
         elif scored:
@@ -710,6 +740,33 @@ class SignalEngine:
                 )
             )
         return out
+
+    def _lifecycle_pump_signal_ready(self, pump: PumpEvent, row: Any) -> tuple[bool, str]:
+        if not is_long_derived_pump(pump):
+            return True, ""
+        high_gain = self._lifecycle_high_gain_pct(pump, row)
+        if high_gain < self.lifecycle_long_watch_min_gain_pct:
+            return (
+                False,
+                f"long_watch_not_mature=high_gain{high_gain:.2f}%<min{self.lifecycle_long_watch_min_gain_pct:g}%",
+            )
+        return True, ""
+
+    def _lifecycle_pump_exhausted(self, pump: PumpEvent, row: Any, remaining: float) -> bool:
+        if self.lifecycle_min_remaining_pct <= 0:
+            return False
+        if remaining >= self.lifecycle_min_remaining_pct:
+            return False
+        return self._lifecycle_high_gain_pct(pump, row) >= self.lifecycle_exhaustion_min_gain_pct
+
+    @staticmethod
+    def _lifecycle_high_gain_pct(pump: PumpEvent, row: Any) -> float:
+        get = row.get if hasattr(row, "get") else (lambda k, d=None: row[k])
+        try:
+            row_high = float(get("ctx_high_since_entry", 0.0) or 0.0) * 100.0
+        except Exception:
+            row_high = 0.0
+        return max(float(pump.max_gain_pct or 0.0), row_high)
 
 
 def close_position(candle: Candle) -> float:
@@ -853,6 +910,10 @@ def current_volume_ratio(candles: list[Candle], window: int) -> float:
 
 def remaining_downside_pct(anchor_price: float, price: float) -> float:
     return max(0.0, (price - anchor_price) / price * 100.0) if price else 0.0
+
+
+def is_long_derived_pump(pump: PumpEvent) -> bool:
+    return pump.trigger_window.startswith("long_") or "source=long_signal_pump_watch" in pump.evidence
 
 
 def make_alert(

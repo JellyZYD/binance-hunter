@@ -230,6 +230,7 @@ class LongEvent:
     high_price: float        # 入选后最高价(展示/趋势破坏参照)
     current_price: float
     long_signal_seq: int = 0
+    long_last_signal_time: int | None = None
     status: str = "active"
     exit_reason: str = ""    # "" 活跃 / "见顶" / "下跌启动" / "趋势破坏" / "超时"
     evidence: list[str] = field(default_factory=list)

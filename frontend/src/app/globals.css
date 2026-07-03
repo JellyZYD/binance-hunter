@@ -95,6 +95,17 @@ h2 { margin: 0; font-size: 18px; line-height: 1.25; }
 .header-actions button:hover {
   background: rgba(11, 159, 180, .15);
 }
+.header-link {
+  border: 1px solid rgba(44, 110, 232, .22);
+  border-radius: 6px;
+  background: rgba(44, 110, 232, .08);
+  color: #255fc9;
+  padding: 8px 14px;
+  text-decoration: none;
+}
+.header-link:hover {
+  background: rgba(44, 110, 232, .15);
+}
 
 .error-box {
   margin-top: 14px;
@@ -391,6 +402,7 @@ td { color: #1d333a; }
   background: rgba(11,159,180,.07);
 }
 .badge-active { color: var(--green); border-color: rgba(22,138,99,.32); }
+.badge-closed { color: var(--muted); border-color: rgba(96,117,125,.26); background: rgba(96,117,125,.08); }
 .empty-state {
   min-height: 120px;
   padding: 36px 12px;
@@ -612,4 +624,28 @@ td { color: #1d333a; }
   color: #5a7179;
   background: rgba(255, 255, 255, 0.62);
   font-size: 11px;
+}
+
+.history-section .table-wrap {
+  box-shadow: none;
+}
+.history-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.history-table {
+  min-width: 0;
+}
+.history-note {
+  max-width: 340px;
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+}
+
+@media (max-width: 1280px) {
+  .history-grid {
+    grid-template-columns: 1fr;
+  }
 }
