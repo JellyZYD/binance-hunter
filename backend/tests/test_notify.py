@@ -24,14 +24,40 @@ class _FakeResponse:
 
 
 class NotifyTests(unittest.TestCase):
-    def test_wecom_markdown_renders_trade_link(self):
+    def test_wecom_markdown_is_sms_style_without_trade_link(self):
         alert = dummy_alert("short_signal")
 
         text = render_wecom_markdown(alert)
 
-        self.assertIn("下跌启动", text)
+        self.assertIn("做空", text)
         self.assertIn("PUMPUSDT", text)
-        self.assertIn("https://www.binance.com/zh-CN/futures/PUMPUSDT", text)
+        self.assertIn("价格 123.45", text)
+        self.assertIn("失效 130", text)
+        self.assertIn("置信 高置信 0.910/0.800", text)
+        self.assertIn("状态 15m 破位", text)
+        self.assertIn("类型 快拉急跌 / fast_short", text)
+        self.assertNotIn("https://", text)
+        self.assertNotIn("量比", text)
+        self.assertNotIn("距锚点", text)
+
+    def test_wecom_skips_non_action_levels(self):
+        sink = AlertSink(Path(tempfile.mkdtemp()), webhook_url="https://example.invalid/webhook")
+        old_urlopen = notify_alerts.urlopen
+        called = {"value": False}
+        try:
+            def fail_if_called(*_args, **_kwargs):
+                called["value"] = True
+                raise AssertionError("webhook should not be called")
+
+            notify_alerts.urlopen = fail_if_called
+
+            ok, msg = sink.emit(dummy_alert("long_timeout"))
+        finally:
+            notify_alerts.urlopen = old_urlopen
+
+        self.assertFalse(ok)
+        self.assertEqual(msg, "")
+        self.assertFalse(called["value"])
 
     def test_wecom_nonzero_errcode_is_failure(self):
         sink = AlertSink(Path(tempfile.mkdtemp()), webhook_url="https://example.invalid/webhook")
@@ -75,10 +101,16 @@ def dummy_alert(level: str) -> Alert:
         high_price=150.0,
         remaining_downside_pct=18.0,
         volume_ratio=2.5,
-        evidence=["ML破位分=0.91", "置信=高置信", "经验见底≈18-21h"],
+        evidence=["score=0.910", "threshold=0.800", "tier=high"],
         risks=[],
         category="妖币",
         occurrence=2,
+        lifecycle_mode="fast_dump",
+        behavior_state="breakdown",
+        model_name="fast_short",
+        model_score=0.91,
+        model_threshold=0.8,
+        signal_interval="15m",
     )
 
 

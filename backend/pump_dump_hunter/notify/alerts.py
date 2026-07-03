@@ -19,7 +19,7 @@ class AlertSink:
     def emit(self, alert: Alert) -> tuple[bool, str]:
         print(render_console_alert(alert), flush=True)
         self.write_files(alert)
-        if self.webhook_url:
+        if self.webhook_url and should_push_wecom(alert):
             return self.push_wecom(alert)
         return False, ""
 
@@ -107,55 +107,87 @@ def render_markdown_alert(alert: Alert) -> str:
 
 
 LEVEL_CN = {
-    "early_alert": "顶部预警",
-    "short_signal": "下跌启动",
+    "early_alert": "见顶",
+    "short_signal": "做空",
     "fallback_alert": "回落兜底",
-    "long_signal": "做多观察",
+    "long_signal": "做多",
     "long_timeout": "做多超时",
 }
+
+PUSH_LEVELS = {"long_signal", "early_alert", "short_signal"}
+
+MODE_CN = {
+    "fast_dump": "快拉急跌",
+    "slow_distribution": "高位派发",
+    "long_entry": "做多启动",
+    "trend_watch": "趋势观察",
+    "risk_watch": "风险观察",
+    "completed": "已结束",
+}
+
+STATE_CN = {
+    "acceleration": "加速",
+    "trend_hold": "趋势保持",
+    "distribution": "派发",
+    "climax_risk": "冲顶风险",
+    "pullback_risk": "回落风险",
+    "breakdown": "破位",
+    "entry_watch": "入场观察",
+    "neutral_watch": "中性观察",
+}
+
+
+def should_push_wecom(alert: Alert) -> bool:
+    return alert.level in PUSH_LEVELS
 
 
 def render_wecom_markdown(alert: Alert) -> str:
     name = LEVEL_CN.get(alert.level, alert.level)
-    tier = next((e.split("=", 1)[1] for e in alert.evidence if e.startswith("置信=")), "")
-    score = next((e.split("=", 1)[1] for e in alert.evidence if e.startswith("ML") and "分=" in e), "")
-    hint = next((e.replace("经验", "") for e in alert.evidence if e.startswith("经验见底")), "")
-    tags = []
-    if alert.category and alert.category != "做多":
-        tags.append(alert.category)
-    if tier and tier != "普通":  # 做多普通观察也需要显式标出
-        tags.append(tier)
-    tag = f" [{'·'.join(tags)}]" if tags else ""
-    url = f"https://www.binance.com/zh-CN/futures/{alert.symbol}"
-    if alert.level.startswith("long_"):
-        from_entry = next((e.split("=", 1)[1] for e in alert.evidence if e.startswith("距入场=")), "")
-        metrics = f"现价 {alert.price}" + (f" · 距入场 {from_entry}" if from_entry else "") + f" · 止损 {alert.invalidation_price}"
-    else:
-        metrics = f"现价 {alert.price} · 距锚点 {alert.remaining_downside_pct:.1f}% · 量比 {alert.volume_ratio:.1f}x"
-        if hint:
-            metrics += f" · {hint}"
-    if score:
-        metrics += f" · ML分{score}"
     seq = f" 第{alert.occurrence}次" if alert.occurrence else ""
-    if alert.model_score:
-        metrics += f" | score {alert.model_score:.3f}/{alert.model_threshold:.3f}"
-    lifecycle_bits = []
-    if alert.signal_interval:
-        lifecycle_bits.append(alert.signal_interval)
-    if alert.lifecycle_mode:
-        lifecycle_bits.append(alert.lifecycle_mode)
-    if alert.behavior_state:
-        lifecycle_bits.append(alert.behavior_state)
-    if alert.model_name:
-        lifecycle_bits.append(alert.model_name)
-    lifecycle_line = " / ".join(lifecycle_bits)
-    if lifecycle_line:
-        metrics += f" | {lifecycle_line}"
+    confidence = confidence_text(alert)
+    mode = MODE_CN.get(alert.lifecycle_mode, alert.lifecycle_mode or alert.category or "-")
+    state = STATE_CN.get(alert.behavior_state, alert.behavior_state or "-")
+    interval = f"{alert.signal_interval} " if alert.signal_interval else ""
+    model = f" / {alert.model_name}" if alert.model_name else ""
     return "\n".join([
-        f"**{name}{seq} · {alert.symbol}{tag}**",
-        f"> {metrics}",
-        f"币安合约: {url}",
+        f"**{name}{seq} {alert.symbol}**",
+        f"> 价格 {fmt_price(alert.price)} | 失效 {fmt_price(alert.invalidation_price)}",
+        f"> 置信 {confidence}",
+        f"> 状态 {interval}{state} | 类型 {mode}{model}",
     ])
+
+
+def confidence_text(alert: Alert) -> str:
+    tier = evidence_value(alert.evidence, "tier") or evidence_value(alert.evidence, "置信")
+    tier = {"high": "高置信", "normal": "普通"}.get(tier, tier)
+    if alert.model_score:
+        parts = []
+        if tier:
+            parts.append(tier)
+        score = f"{alert.model_score:.3f}"
+        if alert.model_threshold:
+            score += f"/{alert.model_threshold:.3f}"
+        parts.append(score)
+        return " ".join(parts)
+    score = evidence_value(alert.evidence, "score")
+    threshold = evidence_value(alert.evidence, "threshold")
+    if score:
+        parts = []
+        if tier:
+            parts.append(tier)
+        parts.append(f"{score}/{threshold}" if threshold else score)
+        return " ".join(parts)
+    ml_score = next((e.split("=", 1)[1] for e in alert.evidence if e.startswith("ML") and "=" in e), "")
+    return f"{tier} {ml_score}".strip() or "-"
+
+
+def evidence_value(evidence: list[str], key: str) -> str:
+    prefix = f"{key}="
+    return next((e.split("=", 1)[1] for e in evidence if e.startswith(prefix)), "")
+
+
+def fmt_price(value: float) -> str:
+    return f"{value:.8g}"
 
 
 def export_day(alerts_dir: str | Path, day: str) -> Path:
