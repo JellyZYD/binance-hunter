@@ -355,7 +355,7 @@ class SignalEngine:
         high_thr = self.ml.lifecycle_long_threshold(high=True)
         tier = "high" if high_thr is not None and score >= high_thr else "normal"
         evidence = [
-            "strategy=lifecycle_expert",
+            f"strategy={self.strategy_version}",
             f"interval={self.long_interval}",
             "model=lifecycle_long_combo",
             f"score={score:.3f}",
@@ -899,7 +899,7 @@ class SignalEngine:
     ) -> Alert:
         pump.lifecycle_mode = best["mode"]
         evidence = [
-            "strategy=lifecycle_expert",
+            f"strategy={self.strategy_version}",
             f"interval={self.confirm_interval}",
             f"mode={best['mode']}",
             f"state={state}",

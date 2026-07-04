@@ -9,6 +9,7 @@ CLONE_DIR="${CLONE_DIR:-/opt/binance-hunter}"
 APP_DIR="${APP_DIR:-${CLONE_DIR}/frontend}"
 BACKEND_DIR="${BACKEND_DIR:-${CLONE_DIR}/backend}"
 INSTALL_FRONTEND="${INSTALL_FRONTEND:-1}"
+VERIFY_LIVE="${VERIFY_LIVE:-1}"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Run as root: sudo bash deploy/update.sh" >&2
@@ -35,7 +36,7 @@ if [ "$INSTALL_FRONTEND" = "1" ]; then
   npm run build
 fi
 
-echo "[4/4] Restart services"
+echo "[4/5] Restart services"
 systemctl daemon-reload
 systemctl restart binance-hunter-api.service
 systemctl restart binance-hunter-monitor.service
@@ -44,4 +45,9 @@ if [ "$INSTALL_FRONTEND" = "1" ] && systemctl list-unit-files binance-hunter-web
 fi
 
 systemctl --no-pager --failed || true
+if [ "$VERIFY_LIVE" = "1" ]; then
+  echo "[5/5] Verify live strategy"
+  cd "$CLONE_DIR"
+  "$BACKEND_DIR/.venv/bin/python" deploy/verify-live.py
+fi
 echo "Update complete"
