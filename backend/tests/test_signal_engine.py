@@ -199,6 +199,44 @@ class SignalEngineTests(unittest.TestCase):
         self.assertEqual(le.high_price, 0.0022)
         self.assertEqual(le.ret30_rank, 90)
 
+    def test_pump_watch_does_not_require_long_candidate(self):
+        settings = temp_settings()
+        settings["signals"]["long_enabled"] = True
+        engine = SignalEngine(settings)
+        record = LiquidityRecord(
+            symbol="NOMUSDT",
+            rank=1,
+            last_price=0.0020,
+            quote_volume_15m=100_000.0,
+            quote_volume_30m=220_000.0,
+            pct_15m=2.0,
+            pct_30m=12.0,
+            amp_15m=3.0,
+            amp_30m=14.0,
+            volume_ratio_15m=1.5,
+            volume_ratio_30m=2.2,
+            gain_rank_15m=20,
+            gain_rank_30m=2,
+            selected=True,
+            pump_qualified=True,
+            data_cutoff_time=20_000,
+            pct_4h=24.0,
+            pct_12h=28.0,
+            pct_1d=35.0,
+            qvol30_rank=2,
+            ret30_rank=2,
+            qvol30_rank_pct=0.02,
+            ret30_rank_pct=0.02,
+            long_candidate=False,
+        )
+
+        changed = engine.on_discovery([record], 20_000)
+
+        self.assertEqual(len(changed), 1)
+        self.assertIn("NOMUSDT", engine.events_by_symbol)
+        self.assertNotIn("NOMUSDT", engine.long_events_by_symbol)
+        self.assertEqual(engine.events_by_symbol["NOMUSDT"].status, "active")
+
     def test_existing_long_event_closes_when_pump_risk_signal_is_active(self):
         settings = temp_settings()
         settings["signals"]["long_enabled"] = True
