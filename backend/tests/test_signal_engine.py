@@ -55,7 +55,7 @@ class SignalEngineTests(unittest.TestCase):
         self.assertEqual(engine.long_events_by_symbol["PUMPUSDT"].status, "closed")
         self.assertEqual(engine.long_events_by_symbol["PUMPUSDT"].exit_reason, "下跌启动")
 
-    def test_pump_signal_uses_four_hour_cooldown(self):
+    def test_pump_signal_rearms_only_after_new_high_and_cooldown(self):
         settings = temp_settings()
         settings["signals"]["multi_signal_cooldown_hours"] = 4.0
         engine = SignalEngine(settings)
@@ -76,6 +76,8 @@ class SignalEngineTests(unittest.TestCase):
         engine._mark_pump_signal(pump, "short_signal", 10_000)
 
         self.assertFalse(engine._can_emit_pump_signal(pump, "short_signal", 10_000 + 4 * 3_600_000 - 1))
+        self.assertFalse(engine._can_emit_pump_signal(pump, "short_signal", 10_000 + 4 * 3_600_000))
+        pump.high_time = 20_000
         self.assertTrue(engine._can_emit_pump_signal(pump, "short_signal", 10_000 + 4 * 3_600_000))
         self.assertTrue(engine._can_emit_pump_signal(pump, "early_alert", 10_000))
 
@@ -233,10 +235,11 @@ class SignalEngineTests(unittest.TestCase):
         self.assertEqual(engine.long_events_by_symbol["NOMUSDT"].status, "closed")
         self.assertEqual(engine.long_events_by_symbol["NOMUSDT"].exit_reason, "pump_risk_conflict")
 
-    def test_lifecycle_short_suppresses_same_candle_early_alert(self):
+    def test_lifecycle_fast_route_warns_and_pullback_shorts(self):
         settings = temp_settings()
         settings["signals"]["mode"] = "ml"
         settings["signals"]["strategy_version"] = "lifecycle_expert"
+        settings["signals"]["lifecycle_route_confirm_bars"] = 1
         engine = SignalEngine(settings)
         engine.ml = DummyLifecycleScorer()
         pump = PumpEvent(
@@ -258,8 +261,106 @@ class SignalEngineTests(unittest.TestCase):
         with patch("pump_dump_hunter.engine.signal_engine.life.build_lifecycle_row", return_value={"behavior_state": "distribution", "f": 1.0}):
             alerts = engine._lifecycle_signals(pump, candle)
 
+        self.assertEqual([a.level for a in alerts], ["early_alert"])
+        self.assertEqual(alerts[0].model_name, "fast_top")
+
+        pump2 = PumpEvent(
+            event_id="NOMUSDT-2",
+            symbol="NOMUSDT",
+            first_seen=1,
+            last_seen=1,
+            expires_at=10_000_000,
+            trigger_window="1d",
+            anchor_price=0.0015,
+            high_price=0.0023,
+            high_time=1_000,
+            current_price=0.0020,
+            max_gain_pct=50.0,
+        )
+        with patch("pump_dump_hunter.engine.signal_engine.life.build_lifecycle_row", return_value={"behavior_state": "pullback_risk", "f": 1.0}):
+            alerts = engine._lifecycle_signals(pump2, candle)
+
         self.assertEqual([a.level for a in alerts], ["short_signal"])
         self.assertEqual(alerts[0].model_name, "fast_short")
+
+    def test_lifecycle_unknown_route_blocks_experts(self):
+        settings = temp_settings()
+        settings["signals"]["mode"] = "ml"
+        settings["signals"]["strategy_version"] = "lifecycle_router_expert"
+        settings["signals"]["lifecycle_route_confirm_bars"] = 1
+        engine = SignalEngine(settings)
+        engine.ml = DummyLifecycleScorer(probs={"fast_dump": 0.4, "slow_distribution": 0.3, "second_distribution": 0.1, "continuation": 0.2})
+        pump = PumpEvent(
+            event_id="NOMUSDT-1",
+            symbol="NOMUSDT",
+            first_seen=1,
+            last_seen=1,
+            expires_at=10_000_000,
+            trigger_window="1d",
+            anchor_price=0.0015,
+            high_price=0.0023,
+            high_time=1_000,
+            current_price=0.0020,
+            max_gain_pct=50.0,
+        )
+        candle = Candle("NOMUSDT", "15m", 2_000, 0.0020, 0.0022, 0.0019, 0.00205, 100.0, 901_999, 5000.0, 100)
+        engine._append_candle(candle)
+
+        with patch("pump_dump_hunter.engine.signal_engine.life.build_lifecycle_row", return_value={"behavior_state": "breakdown", "f": 1.0}):
+            alerts = engine._lifecycle_signals(pump, candle)
+
+        self.assertEqual(alerts, [])
+        self.assertEqual(pump.route_mode, "unknown")
+        self.assertEqual(pump.lifecycle_mode, "unknown_watch")
+
+    def test_lifecycle_slow_route_only_shorts_on_breakdown(self):
+        settings = temp_settings()
+        settings["signals"]["mode"] = "ml"
+        settings["signals"]["strategy_version"] = "lifecycle_router_expert"
+        settings["signals"]["lifecycle_route_confirm_bars"] = 1
+        engine = SignalEngine(settings)
+        engine.ml = DummyLifecycleScorer(probs={"fast_dump": 0.05, "slow_distribution": 0.82, "second_distribution": 0.04, "continuation": 0.02})
+        pump = PumpEvent(
+            event_id="NOMUSDT-1",
+            symbol="NOMUSDT",
+            first_seen=1,
+            last_seen=1,
+            expires_at=10_000_000,
+            trigger_window="1d",
+            anchor_price=0.0015,
+            high_price=0.0023,
+            high_time=1_000,
+            current_price=0.0020,
+            max_gain_pct=50.0,
+        )
+        candle = Candle("NOMUSDT", "15m", 2_000, 0.0020, 0.0022, 0.0019, 0.00205, 100.0, 901_999, 5000.0, 100)
+        engine._append_candle(candle)
+
+        with patch("pump_dump_hunter.engine.signal_engine.life.build_lifecycle_row", return_value={"behavior_state": "distribution", "f": 1.0}):
+            alerts = engine._lifecycle_signals(pump, candle)
+
+        self.assertEqual(alerts, [])
+        self.assertEqual(pump.lifecycle_mode, "distribution_warning")
+
+        pump2 = PumpEvent(
+            event_id="NOMUSDT-2",
+            symbol="NOMUSDT",
+            first_seen=1,
+            last_seen=1,
+            expires_at=10_000_000,
+            trigger_window="1d",
+            anchor_price=0.0015,
+            high_price=0.0023,
+            high_time=1_000,
+            current_price=0.0020,
+            max_gain_pct=50.0,
+        )
+        with patch("pump_dump_hunter.engine.signal_engine.life.build_lifecycle_row", return_value={"behavior_state": "breakdown", "f": 1.0}):
+            alerts = engine._lifecycle_signals(pump2, candle)
+
+        self.assertEqual([a.level for a in alerts], ["short_signal"])
+        self.assertEqual(alerts[0].model_name, "slow_short")
+        self.assertEqual(alerts[0].route_mode, "slow_distribution")
 
     def test_long_derived_pump_waits_until_mature_before_short_models(self):
         settings = temp_settings()
@@ -572,9 +673,22 @@ def dummy_alert(level: str, event_id: str, symbol: str, candle: Candle) -> Alert
 
 class DummyLifecycleScorer:
     lifecycle_ready = True
+    lifecycle_router_ready = True
+
+    def __init__(self, probs: dict[str, float] | None = None):
+        self.probs = probs or {
+            "normal_reversal": 0.02,
+            "slow_distribution": 0.02,
+            "fast_dump": 0.96,
+            "second_distribution": 0.0,
+            "continuation": 0.0,
+        }
 
     def lifecycle_columns(self, model_name: str) -> list[str]:
         return ["f"]
+
+    def lifecycle_probabilities(self, feat_row, model_name: str) -> dict[str, float]:
+        return self.probs
 
     def lifecycle_score(self, feat_row, model_name: str) -> float:
         return {

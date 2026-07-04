@@ -217,6 +217,13 @@ class PumpEvent:
     lifecycle_mode: str = ""
     behavior_state: str = ""
     lifecycle_updated_time: int | None = None
+    route_mode: str = "unknown"
+    route_candidate: str = ""
+    route_confidence: float = 0.0
+    route_margin: float = 0.0
+    route_streak: int = 0
+    route_probs: dict[str, float] = field(default_factory=dict)
+    route_updated_time: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()
@@ -273,6 +280,9 @@ class Alert:
     model_score: float = 0.0
     model_threshold: float = 0.0
     signal_interval: str = ""
+    route_mode: str = ""
+    route_confidence: float = 0.0
+    route_margin: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return self.__dict__.copy()

@@ -27,6 +27,10 @@ class SignalEngine:
         self.lifecycle_long_watch_min_gain_pct = float(self.signal_cfg.get("lifecycle_long_watch_min_gain_pct", 15.0))
         self.lifecycle_min_remaining_pct = float(self.signal_cfg.get("lifecycle_min_remaining_pct", 5.0))
         self.lifecycle_exhaustion_min_gain_pct = float(self.signal_cfg.get("lifecycle_exhaustion_min_gain_pct", 8.0))
+        self.lifecycle_route_confirm_bars = int(self.signal_cfg.get("lifecycle_route_confirm_bars", 2))
+        self.lifecycle_route_margin = float(self.signal_cfg.get("lifecycle_route_margin", life.DEFAULT_ROUTE_MARGIN))
+        self.lifecycle_dynamic_route_thresholds = bool(self.signal_cfg.get("lifecycle_dynamic_route_thresholds", True))
+        self.emit_distribution_warning_alerts = bool(self.signal_cfg.get("emit_distribution_warning_alerts", False))
         self.ml = None
         if self.mode == "ml":
             try:
@@ -47,7 +51,37 @@ class SignalEngine:
         self.buffer_times: dict[tuple[str, str], set[int]] = defaultdict(set)
 
     def _use_lifecycle(self) -> bool:
-        return self.mode == "ml" and self.strategy_version == "lifecycle_expert" and self.ml is not None and self.ml.lifecycle_ready
+        return (
+            self.mode == "ml"
+            and self.strategy_version in {"lifecycle_expert", "lifecycle_router_expert"}
+            and self.ml is not None
+            and self.ml.lifecycle_ready
+        )
+
+    def _route_thresholds(self, row: Any | None = None) -> dict[str, float]:
+        thresholds = {
+            "fast_dump": float(self.signal_cfg.get("lifecycle_route_fast_threshold", life.DEFAULT_ROUTE_THRESHOLDS["fast_dump"])),
+            "slow_distribution": float(self.signal_cfg.get("lifecycle_route_slow_threshold", life.DEFAULT_ROUTE_THRESHOLDS["slow_distribution"])),
+            "second_distribution": float(self.signal_cfg.get("lifecycle_route_second_threshold", life.DEFAULT_ROUTE_THRESHOLDS["second_distribution"])),
+            "continuation": float(self.signal_cfg.get("lifecycle_route_continuation_threshold", life.DEFAULT_ROUTE_THRESHOLDS["continuation"])),
+        }
+        if not self.lifecycle_dynamic_route_thresholds or row is None:
+            return thresholds
+        get = row.get if hasattr(row, "get") else (lambda k, d=None: row[k])
+        state = str(get("behavior_state", "neutral_watch") or "neutral_watch")
+        high = max(float(get("ctx_high_since_entry", 0.0) or 0.0), 0.0)
+        drawdown = max(-float(get("ctx_drawdown_from_entry_high", 0.0) or 0.0), 0.0)
+        hours = max(float(get("ctx_hours_since_entry", 0.0) or 0.0), 0.0)
+        if state in {"acceleration", "trend_hold"}:
+            thresholds["fast_dump"] = max(thresholds["fast_dump"], float(self.signal_cfg.get("lifecycle_route_fast_trend_threshold", 0.97)))
+            thresholds["slow_distribution"] = max(thresholds["slow_distribution"], float(self.signal_cfg.get("lifecycle_route_slow_trend_threshold", 0.82)))
+        if state in {"pullback_risk", "breakdown"} and high >= 0.14:
+            thresholds["fast_dump"] = min(thresholds["fast_dump"], float(self.signal_cfg.get("lifecycle_route_fast_break_threshold", thresholds["fast_dump"])))
+        if state == "breakdown" and high >= 0.16 and drawdown >= 0.08:
+            thresholds["slow_distribution"] = min(thresholds["slow_distribution"], float(self.signal_cfg.get("lifecycle_route_slow_break_threshold", thresholds["slow_distribution"])))
+        elif state == "distribution" and high >= 0.18 and hours >= 12:
+            thresholds["slow_distribution"] = min(thresholds["slow_distribution"], float(self.signal_cfg.get("lifecycle_route_slow_mature_threshold", thresholds["slow_distribution"])))
+        return thresholds
 
     def load_events(self, events: list[PumpEvent]) -> None:
         for event in events:
@@ -73,6 +107,10 @@ class SignalEngine:
         return None
 
     def _can_emit_pump_signal(self, pump: PumpEvent, level: str, decision_time: int) -> bool:
+        if level == "early_alert" and pump.early_alerted_after_high_time == pump.high_time:
+            return False
+        if level == "short_signal" and pump.short_alerted_after_high_time == pump.high_time:
+            return False
         last_time = self._pump_signal_last_time(pump, level)
         if last_time is None or self.multi_signal_cooldown_ms <= 0:
             return True
@@ -672,6 +710,7 @@ class SignalEngine:
         remaining = remaining_downside_pct(pump.anchor_price, candle.close)
         pump.behavior_state = state
         pump.lifecycle_updated_time = candle.close_time
+        route = self._update_lifecycle_route(pump, row, candle.close_time)
         if self._lifecycle_pump_exhausted(pump, row, remaining):
             pump.status = "closed"
             pump.lifecycle_mode = "completed"
@@ -686,13 +725,24 @@ class SignalEngine:
             if ready_reason and ready_reason not in pump.evidence:
                 pump.evidence = sorted(set(pump.evidence + [ready_reason]))
             return []
+        route_mode = pump.route_mode or "unknown"
+        if route_mode in {"unknown", "continuation", "second_distribution"}:
+            pump.lifecycle_mode = f"{route_mode}_watch"
+            return []
+
+        model_plan: list[tuple[str, str, str, set[str]]] = []
+        if route_mode == "fast_dump":
+            model_plan = [
+                ("fast_top", "early_alert", "fast_dump", life.FAST_TOP_GATE),
+                ("fast_short", "short_signal", "fast_dump", life.FAST_SHORT_GATE),
+            ]
+        elif route_mode == "slow_distribution":
+            model_plan = [
+                ("slow_warning", "distribution_warning", "slow_distribution", life.SLOW_TOP_GATE),
+                ("slow_short", "short_signal", "slow_distribution", life.SLOW_SHORT_GATE),
+            ]
         scored: list[dict[str, Any]] = []
-        for model_name, level, mode_name, gate in (
-            ("fast_top", "early_alert", "fast_dump", life.FAST_GATE),
-            ("slow_warning", "early_alert", "slow_distribution", life.SLOW_GATE),
-            ("fast_short", "short_signal", "fast_dump", life.FAST_GATE),
-            ("slow_short", "short_signal", "slow_distribution", life.SLOW_GATE),
-        ):
+        for model_name, level, mode_name, gate in model_plan:
             cols = self.ml.lifecycle_columns(model_name)
             if not cols or not life.finite_for(row, cols):
                 continue
@@ -711,12 +761,7 @@ class SignalEngine:
                     "ratio": float(score) / float(threshold),
                 }
             )
-        if state in ("acceleration", "trend_hold", "neutral_watch"):
-            pump.lifecycle_mode = "trend_watch"
-        elif scored:
-            pump.lifecycle_mode = max(scored, key=lambda x: x["ratio"])["mode"]
-        else:
-            pump.lifecycle_mode = "risk_watch"
+        pump.lifecycle_mode = route_mode if scored else f"{route_mode}_watch"
 
         short_ready = [
             item
@@ -737,6 +782,35 @@ class SignalEngine:
                     remaining,
                     state,
                     max(short_ready, key=lambda x: x["ratio"]),
+                )
+            ]
+
+        warning_ready = [
+            item
+            for item in scored
+            if item["level"] == "distribution_warning"
+            and state in item["gate"]
+            and item["score"] >= item["threshold"]
+        ]
+        if warning_ready:
+            best_warning = max(warning_ready, key=lambda x: x["ratio"])
+            pump.lifecycle_mode = "distribution_warning"
+            pump.evidence = sorted(set(pump.evidence + [
+                "route=slow_distribution",
+                f"distribution_warning_score={best_warning['score']:.3f}",
+                f"distribution_warning_state={state}",
+            ]))
+            if not self.emit_distribution_warning_alerts:
+                return []
+            return [
+                self._make_lifecycle_alert(
+                    "distribution_warning",
+                    pump,
+                    candle,
+                    vol_ratio,
+                    remaining,
+                    state,
+                    best_warning,
                 )
             ]
 
@@ -761,6 +835,58 @@ class SignalEngine:
             )
         ]
 
+    def _update_lifecycle_route(self, pump: PumpEvent, row: Any, decision_time: int) -> dict[str, Any]:
+        if self.ml is None or not getattr(self.ml, "lifecycle_router_ready", False):
+            pump.route_mode = "unknown"
+            pump.route_candidate = "unknown"
+            pump.route_confidence = 0.0
+            pump.route_margin = 0.0
+            pump.route_probs = {}
+            pump.route_updated_time = decision_time
+            pump.lifecycle_mode = "router_missing"
+            return {"mode": "unknown", "candidate": "unknown", "confidence": 0.0, "margin": 0.0, "probs": {}}
+        cols = self.ml.lifecycle_columns("family_router")
+        if not cols or not life.finite_for(row, cols):
+            pump.route_mode = "unknown"
+            pump.route_candidate = "unknown"
+            pump.route_confidence = 0.0
+            pump.route_margin = 0.0
+            pump.route_probs = {}
+            pump.route_updated_time = decision_time
+            return {"mode": "unknown", "candidate": "unknown", "confidence": 0.0, "margin": 0.0, "probs": {}}
+        probs = self.ml.lifecycle_probabilities(row, "family_router")
+        if not probs:
+            pump.route_mode = "unknown"
+            pump.route_candidate = "unknown"
+            pump.route_confidence = 0.0
+            pump.route_margin = 0.0
+            pump.route_probs = {}
+            pump.route_updated_time = decision_time
+            return {"mode": "unknown", "candidate": "unknown", "confidence": 0.0, "margin": 0.0, "probs": {}}
+        route = life.route_from_probabilities(
+            probs,
+            thresholds=self._route_thresholds(row),
+            margin_threshold=self.lifecycle_route_margin,
+        )
+        candidate = str(route["mode"] or "unknown")
+        previous = pump.route_candidate or "unknown"
+        if candidate == "unknown":
+            streak = 0
+            confirmed = "unknown"
+        else:
+            streak = pump.route_streak + 1 if previous == candidate else 1
+            confirmed = candidate if streak >= max(1, self.lifecycle_route_confirm_bars) else "unknown"
+        pump.route_candidate = candidate
+        pump.route_streak = streak
+        pump.route_mode = confirmed
+        pump.route_confidence = float(route["confidence"])
+        pump.route_margin = float(route["margin"])
+        pump.route_probs = dict(route["probs"])
+        pump.route_updated_time = decision_time
+        if confirmed != "unknown":
+            pump.lifecycle_mode = confirmed
+        return route
+
     def _make_lifecycle_alert(
         self,
         level: str,
@@ -777,6 +903,9 @@ class SignalEngine:
             f"interval={self.confirm_interval}",
             f"mode={best['mode']}",
             f"state={state}",
+            f"route={pump.route_mode}",
+            f"route_confidence={pump.route_confidence:.3f}",
+            f"route_margin={pump.route_margin:.3f}",
             f"model={best['model']}",
             f"score={best['score']:.3f}",
             f"threshold={best['threshold']:.3f}",
@@ -797,6 +926,9 @@ class SignalEngine:
             model_score=best["score"],
             model_threshold=best["threshold"],
             signal_interval=self.confirm_interval,
+            route_mode=pump.route_mode,
+            route_confidence=pump.route_confidence,
+            route_margin=pump.route_margin,
         )
 
     def _lifecycle_pump_signal_ready(self, pump: PumpEvent, row: Any) -> tuple[bool, str]:
@@ -989,6 +1121,9 @@ def make_alert(
     model_score: float = 0.0,
     model_threshold: float = 0.0,
     signal_interval: str = "",
+    route_mode: str = "",
+    route_confidence: float = 0.0,
+    route_margin: float = 0.0,
 ) -> Alert:
     buffer_pct = 1.0 + float(0.01 * 0.35)
     invalidation = max(pump.high_price, candle.high) * buffer_pct
@@ -1025,6 +1160,9 @@ def make_alert(
         model_score=model_score,
         model_threshold=model_threshold,
         signal_interval=signal_interval,
+        route_mode=route_mode,
+        route_confidence=route_confidence,
+        route_margin=route_margin,
     )
 
 

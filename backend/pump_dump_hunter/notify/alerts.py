@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Any
 from urllib.request import Request, urlopen
 
 from ..models import Alert
@@ -33,10 +32,7 @@ class AlertSink:
             fh.write(render_markdown_alert(alert) + "\n\n")
 
     def push_wecom(self, alert: Alert) -> tuple[bool, str]:
-        payload = {
-            "msgtype": "markdown",
-            "markdown": {"content": render_wecom_markdown(alert)},
-        }
+        payload = {"msgtype": "markdown", "markdown": {"content": render_wecom_markdown(alert)}}
         req = Request(
             self.webhook_url,
             data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
@@ -57,6 +53,47 @@ class AlertSink:
             return True, body
         except Exception as exc:
             return False, f"{type(exc).__name__}: {exc}"[:200]
+
+
+PUSH_LEVELS = {"long_signal", "early_alert", "short_signal"}
+
+LEVEL_CN = {
+    "long_signal": "做多",
+    "early_alert": "见顶",
+    "short_signal": "做空",
+    "distribution_warning": "派发预警",
+    "long_timeout": "做多超时",
+    "fallback_alert": "回落兜底",
+}
+
+MODE_CN = {
+    "fast_dump": "快拉急跌",
+    "slow_distribution": "高位派发",
+    "long_entry": "做多启动",
+    "trend_watch": "趋势观察",
+    "risk_watch": "风险观察",
+    "unknown_watch": "等待分型",
+    "continuation_watch": "继续上涨/禁空",
+    "second_distribution_watch": "二次高位观察",
+    "distribution_warning": "派发预警",
+    "completed": "已结束",
+    "router_missing": "路由缺失",
+}
+
+STATE_CN = {
+    "acceleration": "加速",
+    "trend_hold": "趋势保持",
+    "distribution": "派发",
+    "climax_risk": "冲顶风险",
+    "pullback_risk": "回落风险",
+    "breakdown": "破位",
+    "entry_watch": "入场观察",
+    "neutral_watch": "中性观察",
+}
+
+
+def should_push_wecom(alert: Alert) -> bool:
+    return alert.level in PUSH_LEVELS
 
 
 def render_console_alert(alert: Alert) -> str:
@@ -82,6 +119,10 @@ def render_lifecycle_inline(alert: Alert) -> str:
         parts.append(f"score={alert.model_score:.3f}")
     if alert.model_threshold:
         parts.append(f"thr={alert.model_threshold:.3f}")
+    if alert.route_mode:
+        parts.append(f"route={alert.route_mode}")
+    if alert.route_confidence:
+        parts.append(f"route_conf={alert.route_confidence:.3f}")
     return " " + " ".join(parts) if parts else ""
 
 
@@ -93,7 +134,7 @@ def render_markdown_alert(alert: Alert) -> str:
     seq = f" 第{alert.occurrence}次" if alert.occurrence else ""
     return "\n".join(
         [
-            f"### {alert.level}{seq} {alert.symbol}{cat} {iso_from_ms(alert.decision_time)}",
+            f"### {LEVEL_CN.get(alert.level, alert.level)}{seq} {alert.symbol}{cat} {iso_from_ms(alert.decision_time)}",
             f"- price: {alert.price}",
             f"- invalidation: {alert.invalidation_price}",
             f"- high/anchor: {alert.high_price} / {alert.anchor_price}",
@@ -106,41 +147,6 @@ def render_markdown_alert(alert: Alert) -> str:
     )
 
 
-LEVEL_CN = {
-    "early_alert": "见顶",
-    "short_signal": "做空",
-    "fallback_alert": "回落兜底",
-    "long_signal": "做多",
-    "long_timeout": "做多超时",
-}
-
-PUSH_LEVELS = {"long_signal", "early_alert", "short_signal"}
-
-MODE_CN = {
-    "fast_dump": "快拉急跌",
-    "slow_distribution": "高位派发",
-    "long_entry": "做多启动",
-    "trend_watch": "趋势观察",
-    "risk_watch": "风险观察",
-    "completed": "已结束",
-}
-
-STATE_CN = {
-    "acceleration": "加速",
-    "trend_hold": "趋势保持",
-    "distribution": "派发",
-    "climax_risk": "冲顶风险",
-    "pullback_risk": "回落风险",
-    "breakdown": "破位",
-    "entry_watch": "入场观察",
-    "neutral_watch": "中性观察",
-}
-
-
-def should_push_wecom(alert: Alert) -> bool:
-    return alert.level in PUSH_LEVELS
-
-
 def render_wecom_markdown(alert: Alert) -> str:
     name = LEVEL_CN.get(alert.level, alert.level)
     seq = f" 第{alert.occurrence}次" if alert.occurrence else ""
@@ -149,36 +155,42 @@ def render_wecom_markdown(alert: Alert) -> str:
     state = STATE_CN.get(alert.behavior_state, alert.behavior_state or "-")
     interval = f"{alert.signal_interval} " if alert.signal_interval else ""
     model = f" / {alert.model_name}" if alert.model_name else ""
-    return "\n".join([
-        f"**{name}{seq} {alert.symbol}**",
-        f"> 价格 {fmt_price(alert.price)} | 失效 {fmt_price(alert.invalidation_price)}",
-        f"> 置信 {confidence}",
-        f"> 状态 {interval}{state} | 类型 {mode}{model}",
-    ])
+    route = route_text(alert)
+    return "\n".join(
+        [
+            f"**{name}{seq} {alert.symbol}**",
+            f"> 价格 {fmt_price(alert.price)} | 失效 {fmt_price(alert.invalidation_price)}",
+            f"> 置信 {confidence}",
+            f"> 状态 {interval}{state} | 类型 {mode}{model}{route}",
+        ]
+    )
 
 
 def confidence_text(alert: Alert) -> str:
     tier = evidence_value(alert.evidence, "tier") or evidence_value(alert.evidence, "置信")
     tier = {"high": "高置信", "normal": "普通"}.get(tier, tier)
     if alert.model_score:
-        parts = []
-        if tier:
-            parts.append(tier)
         score = f"{alert.model_score:.3f}"
         if alert.model_threshold:
             score += f"/{alert.model_threshold:.3f}"
-        parts.append(score)
-        return " ".join(parts)
+        return f"{tier} {score}".strip()
     score = evidence_value(alert.evidence, "score")
     threshold = evidence_value(alert.evidence, "threshold")
     if score:
-        parts = []
-        if tier:
-            parts.append(tier)
-        parts.append(f"{score}/{threshold}" if threshold else score)
-        return " ".join(parts)
+        return f"{tier} {score}/{threshold}".strip() if threshold else f"{tier} {score}".strip()
     ml_score = next((e.split("=", 1)[1] for e in alert.evidence if e.startswith("ML") and "=" in e), "")
     return f"{tier} {ml_score}".strip() or "-"
+
+
+def route_text(alert: Alert) -> str:
+    if not alert.route_mode:
+        return ""
+    value = alert.route_mode
+    if alert.route_confidence:
+        value += f" {alert.route_confidence:.3f}"
+    if alert.route_margin:
+        value += f"/m{alert.route_margin:.3f}"
+    return f" | route {value}"
 
 
 def evidence_value(evidence: list[str], key: str) -> str:

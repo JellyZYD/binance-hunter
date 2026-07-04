@@ -561,6 +561,13 @@ td { color: #1d333a; }
   color: #137454 !important;
   background: rgba(22, 138, 99, 0.08) !important;
 }
+.route-chip {
+  border: 1px solid rgba(14, 116, 144, 0.22) !important;
+  color: #0e7490 !important;
+  background: rgba(14, 116, 144, 0.08) !important;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
 .lifecycle-inline {
   margin-top: 5px;
   font-size: 11px;

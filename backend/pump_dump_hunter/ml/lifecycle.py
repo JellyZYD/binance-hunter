@@ -6,7 +6,7 @@ the research pipeline used for the selected setup:
 - 5m native long-entry models;
 - 15m dense lifecycle fast/slow expert models;
 - dyn_big_pump_tolerant behavior router;
-- 2h repeated-signal cooldown configured in settings.
+- per-high signal arming with cooldown configured in settings.
 
 All inputs are closed candles only.
 """
@@ -33,8 +33,12 @@ BEHAVIOR_ORDER = [
     "trend_hold",
     "neutral_watch",
 ]
-FAST_GATE = {"distribution", "climax_risk", "pullback_risk"}
-SLOW_GATE = {"distribution", "climax_risk", "pullback_risk"}
+FAST_TOP_GATE = {"distribution", "climax_risk"}
+SLOW_TOP_GATE = {"distribution", "climax_risk"}
+FAST_SHORT_GATE = {"pullback_risk", "breakdown"}
+SLOW_SHORT_GATE = {"breakdown"}
+FAST_GATE = FAST_TOP_GATE
+SLOW_GATE = SLOW_TOP_GATE
 
 ENTRY_CONTEXT = [
     "ctx_bars_since_entry",
@@ -120,6 +124,59 @@ LONG_EXTRA = ["qv30_rank", "ret30_rank", "qv30_rank_pct", "ret30_rank_pct", "qv3
 LONG_FEATURES = FEATS + LONG_EXTRA
 FAST_FEATURES = FEATS + ENTRY_CONTEXT + [f"behavior_{x}" for x in BEHAVIOR_ORDER]
 SLOW_FEATURES = FAST_FEATURES + SLOW_DERIVED
+ROUTER_FEATURES = FEATS + ENTRY_CONTEXT
+
+FAMILY_ORDER = [
+    "normal_reversal",
+    "slow_distribution",
+    "fast_dump",
+    "second_distribution",
+    "continuation",
+]
+
+DEFAULT_ROUTE_THRESHOLDS = {
+    "fast_dump": 0.914496,
+    "slow_distribution": 0.701967,
+    "second_distribution": 0.72,
+    "continuation": 0.18,
+}
+DEFAULT_ROUTE_MARGIN = 0.12
+
+
+def route_from_probabilities(
+    probs: dict[str, float],
+    thresholds: dict[str, float] | None = None,
+    margin_threshold: float = DEFAULT_ROUTE_MARGIN,
+) -> dict[str, Any]:
+    """Convert family probabilities into an abstaining production route."""
+    thresholds = thresholds or DEFAULT_ROUTE_THRESHOLDS
+    p_fast = float(probs.get("fast_dump", 0.0) or 0.0)
+    p_slow = float(probs.get("slow_distribution", 0.0) or 0.0)
+    p_second = float(probs.get("second_distribution", 0.0) or 0.0)
+    p_cont = float(probs.get("continuation", 0.0) or 0.0)
+    candidates = [
+        ("fast_dump", p_fast, float(thresholds.get("fast_dump", DEFAULT_ROUTE_THRESHOLDS["fast_dump"]))),
+        ("slow_distribution", p_slow + p_second, float(thresholds.get("slow_distribution", DEFAULT_ROUTE_THRESHOLDS["slow_distribution"]))),
+        ("second_distribution", p_second, float(thresholds.get("second_distribution", DEFAULT_ROUTE_THRESHOLDS["second_distribution"]))),
+        ("continuation", p_cont, float(thresholds.get("continuation", DEFAULT_ROUTE_THRESHOLDS["continuation"]))),
+    ]
+    ranked = sorted(candidates, key=lambda item: item[1], reverse=True)
+    best_mode, best_score, best_threshold = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else 0.0
+    margin = best_score - second_score
+    mode = "unknown"
+    if best_score >= best_threshold and margin >= margin_threshold:
+        mode = best_mode
+    if mode == "slow_distribution" and p_second > p_slow and p_second >= float(thresholds.get("second_distribution", 0.72)):
+        mode = "second_distribution"
+        best_score = p_second
+    return {
+        "mode": mode,
+        "candidate": best_mode,
+        "confidence": float(best_score),
+        "margin": float(margin),
+        "probs": {k: float(probs.get(k, 0.0) or 0.0) for k in FAMILY_ORDER},
+    }
 
 
 def bars_15m_units(units: int | float, interval_ms: int) -> int:

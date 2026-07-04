@@ -172,6 +172,13 @@ class Store:
                     "lifecycle_mode": "TEXT NOT NULL DEFAULT ''",
                     "behavior_state": "TEXT NOT NULL DEFAULT ''",
                     "lifecycle_updated_time": "INTEGER",
+                    "route_mode": "TEXT NOT NULL DEFAULT 'unknown'",
+                    "route_candidate": "TEXT NOT NULL DEFAULT ''",
+                    "route_confidence": "REAL NOT NULL DEFAULT 0",
+                    "route_margin": "REAL NOT NULL DEFAULT 0",
+                    "route_streak": "INTEGER NOT NULL DEFAULT 0",
+                    "route_probs_json": "TEXT NOT NULL DEFAULT '{}'",
+                    "route_updated_time": "INTEGER",
                 },
             )
             ensure_columns(
@@ -197,6 +204,9 @@ class Store:
                     "model_score": "REAL NOT NULL DEFAULT 0",
                     "model_threshold": "REAL NOT NULL DEFAULT 0",
                     "signal_interval": "TEXT NOT NULL DEFAULT ''",
+                    "route_mode": "TEXT NOT NULL DEFAULT ''",
+                    "route_confidence": "REAL NOT NULL DEFAULT 0",
+                    "route_margin": "REAL NOT NULL DEFAULT 0",
                 },
             )
             conn.commit()
@@ -338,8 +348,10 @@ class Store:
                     status, evidence_json, early_alerted_after_high_time, short_alerted_after_high_time,
                     fallback_alerted_after_high_time, early_last_alert_time, short_last_alert_time,
                     fallback_last_alert_time, early_alert_seq, short_signal_seq, fallback_alert_seq,
-                    lifecycle_mode, behavior_state, lifecycle_updated_time
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    lifecycle_mode, behavior_state, lifecycle_updated_time,
+                    route_mode, route_candidate, route_confidence, route_margin, route_streak,
+                    route_probs_json, route_updated_time
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 [
                     (
                         e.event_id,
@@ -367,6 +379,13 @@ class Store:
                         e.lifecycle_mode,
                         e.behavior_state,
                         e.lifecycle_updated_time,
+                        e.route_mode,
+                        e.route_candidate,
+                        e.route_confidence,
+                        e.route_margin,
+                        e.route_streak,
+                        json.dumps(e.route_probs, ensure_ascii=False),
+                        e.route_updated_time,
                     )
                     for e in events
                 ],
@@ -478,8 +497,8 @@ class Store:
                     data_cutoff_time, price, invalidation_price, anchor_price, high_price,
                     remaining_downside_pct, volume_ratio, evidence_json, risks_json, pushed, push_error,
                     occurrence, category, lifecycle_mode, behavior_state, model_name, model_score,
-                    model_threshold, signal_interval
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    model_threshold, signal_interval, route_mode, route_confidence, route_margin
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     alert.alert_id,
                     alert.event_id,
@@ -506,6 +525,9 @@ class Store:
                     alert.model_score,
                     alert.model_threshold,
                     alert.signal_interval,
+                    alert.route_mode,
+                    alert.route_confidence,
+                    alert.route_margin,
                 ),
             )
             conn.commit()
@@ -695,6 +717,13 @@ def row_to_event(row: sqlite3.Row) -> PumpEvent:
         lifecycle_mode=str(row_get(row, "lifecycle_mode") or ""),
         behavior_state=str(row_get(row, "behavior_state") or ""),
         lifecycle_updated_time=row_get(row, "lifecycle_updated_time"),
+        route_mode=str(row_get(row, "route_mode") or "unknown"),
+        route_candidate=str(row_get(row, "route_candidate") or ""),
+        route_confidence=float(row_get(row, "route_confidence") or 0.0),
+        route_margin=float(row_get(row, "route_margin") or 0.0),
+        route_streak=int(row_get(row, "route_streak") or 0),
+        route_probs=json.loads(row_get(row, "route_probs_json") or "{}"),
+        route_updated_time=row_get(row, "route_updated_time"),
     )
 
 

@@ -89,6 +89,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "long_signal_cooldown_hours": signals.get("long_signal_cooldown_hours", 2.0),
             "lifecycle_long_watch_min_gain_pct": signals.get("lifecycle_long_watch_min_gain_pct", 15.0),
             "lifecycle_min_remaining_pct": signals.get("lifecycle_min_remaining_pct", 5.0),
+            "lifecycle_route_confirm_bars": signals.get("lifecycle_route_confirm_bars", 2),
+            "lifecycle_route_margin": signals.get("lifecycle_route_margin", 0.12),
+            "lifecycle_dynamic_route_thresholds": bool(signals.get("lifecycle_dynamic_route_thresholds", True)),
+            "lifecycle_route_fast_threshold": signals.get("lifecycle_route_fast_threshold", 0.914496),
+            "lifecycle_route_slow_threshold": signals.get("lifecycle_route_slow_threshold", 0.701967),
+            "lifecycle_route_fast_break_threshold": signals.get("lifecycle_route_fast_break_threshold", 0.914496),
+            "lifecycle_route_slow_break_threshold": signals.get("lifecycle_route_slow_break_threshold", 0.701967),
             "long_enabled": bool(signals.get("long_enabled", False)),
         }
         return data
@@ -154,6 +161,7 @@ def decode_pumps(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for row in rows:
         item = dict(row)
         item["evidence"] = decode_json_field(item.pop("evidence_json", "[]"), [])
+        item["route_probs"] = decode_json_field(item.pop("route_probs_json", "{}"), {})
         out.append(item)
     return out
 

@@ -21,6 +21,13 @@ type StrategyMeta = {
   long_signal_cooldown_hours?: number;
   lifecycle_long_watch_min_gain_pct?: number;
   lifecycle_min_remaining_pct?: number;
+  lifecycle_route_confirm_bars?: number;
+  lifecycle_route_margin?: number;
+  lifecycle_dynamic_route_thresholds?: boolean;
+  lifecycle_route_fast_threshold?: number;
+  lifecycle_route_slow_threshold?: number;
+  lifecycle_route_fast_break_threshold?: number;
+  lifecycle_route_slow_break_threshold?: number;
   long_enabled?: boolean;
 };
 
@@ -57,6 +64,12 @@ type PumpRow = {
   lifecycle_mode?: string;
   behavior_state?: string;
   lifecycle_updated_time?: number | null;
+  route_mode?: string;
+  route_candidate?: string;
+  route_confidence?: number;
+  route_margin?: number;
+  route_streak?: number;
+  route_probs?: Record<string, number>;
 };
 
 type Candle = {
@@ -85,6 +98,9 @@ type AlertRow = {
   model_score?: number;
   model_threshold?: number;
   signal_interval?: string;
+  route_mode?: string;
+  route_confidence?: number;
+  route_margin?: number;
 };
 
 type BacktestRow = {
@@ -225,6 +241,41 @@ function behaviorText(state?: string) {
   if (state === 'entry_watch') return '入场观察';
   if (state === 'neutral_watch') return '中性观察';
   return state || '等待阶段';
+}
+
+function routeModeText(mode?: string) {
+  if (mode === 'fast_dump') return 'fast 快拉急跌';
+  if (mode === 'slow_distribution') return 'slow 高位派发';
+  if (mode === 'second_distribution') return 'second 二次高位';
+  if (mode === 'continuation') return 'continuation 禁空';
+  if (mode === 'unknown') return 'unknown 观察';
+  return mode || 'unknown 观察';
+}
+
+function routeSummary(row?: Pick<PumpRow, 'route_mode' | 'route_candidate' | 'route_confidence' | 'route_margin' | 'route_streak' | 'route_probs'>) {
+  if (!row) return '';
+  const probs = row.route_probs || {};
+  const fast = Number(probs.fast_dump ?? 0);
+  const slow = Number(probs.slow_distribution ?? 0) + Number(probs.second_distribution ?? 0);
+  const conf = Number(row.route_confidence ?? 0);
+  const margin = Number(row.route_margin ?? 0);
+  const streak = Number(row.route_streak ?? 0);
+  return [
+    routeModeText(row.route_mode),
+    `cand ${row.route_candidate || '-'}`,
+    `streak ${streak}`,
+    `conf ${fmt(conf, 3)}`,
+    `m ${fmt(margin, 3)}`,
+    `fast ${fmt(fast, 3)}`,
+    `slow ${fmt(slow, 3)}`,
+  ].join(' / ');
+}
+
+function alertRouteSummary(alert?: AlertRow) {
+  if (!alert?.route_mode) return '';
+  const conf = Number(alert.route_confidence ?? 0);
+  const margin = Number(alert.route_margin ?? 0);
+  return `${routeModeText(alert.route_mode)} / conf ${fmt(conf, 3)} / m ${fmt(margin, 3)}`;
 }
 
 function modelScore(alert?: AlertRow) {
@@ -757,6 +808,7 @@ function MonitorContract({ row, cooldownHours, nowMs }: { row: MonitorRow; coold
           <strong>{row.symbol}</strong>
           <span>{row.trigger_window}</span>
           <span className="lifecycle-chip">{lifecycleModeText(row.lifecycle_mode)} / {behaviorText(row.behavior_state)}</span>
+          <span className="route-chip">{routeSummary(row)}</span>
           <span className="contract-actions">
             <button type="button" className="link-btn" onClick={toggleChart}>{open ? '收起K线' : '15m K线'}</button>
             <a className="trade-link" href={tradeUrl} target="_blank" rel="noreferrer">交易 ↗</a>

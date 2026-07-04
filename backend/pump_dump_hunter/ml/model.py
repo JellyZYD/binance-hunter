@@ -66,6 +66,10 @@ class MLScorer:
         required = {"long_pump_event", "long_start_quality", "fast_top", "fast_short", "slow_warning", "slow_short"}
         return self.lifecycle_meta is not None and required.issubset(self._lifecycle_boosters)
 
+    @property
+    def lifecycle_router_ready(self) -> bool:
+        return self.lifecycle_meta is not None and "family_router" in self._lifecycle_boosters
+
     def score(self, feat_row: Any, task: str) -> float | None:
         booster = self._boosters.get(task)
         if booster is None or self._np is None:
@@ -90,6 +94,23 @@ class MLScorer:
         x = self._np.array([[float(get(c, self._np.nan)) for c in cols]], dtype="float64")
         return float(booster.predict(x)[0])
 
+    def lifecycle_probabilities(self, feat_row: Any, model_name: str) -> dict[str, float] | None:
+        booster = self._lifecycle_boosters.get(model_name)
+        if booster is None or self._np is None or self.lifecycle_meta is None:
+            return None
+        model = self.lifecycle_meta.get("models", {}).get(model_name, {})
+        classes = list(model.get("classes") or [])
+        if not classes:
+            return None
+        cols = self.lifecycle_columns(model_name)
+        get = feat_row.get if hasattr(feat_row, "get") else (lambda k, d=None: feat_row[k])
+        x = self._np.array([[float(get(c, self._np.nan)) for c in cols]], dtype="float64")
+        pred = booster.predict(x)
+        arr = self._np.asarray(pred, dtype="float64").reshape(-1)
+        if len(arr) != len(classes):
+            return None
+        return {str(cls): float(arr[i]) for i, cls in enumerate(classes)}
+
     def lifecycle_columns(self, model_name: str) -> list[str]:
         if self.lifecycle_meta is None:
             return []
@@ -105,6 +126,7 @@ class MLScorer:
                 "long": lifecycle_features.LONG_FEATURES,
                 "fast": lifecycle_features.FAST_FEATURES,
                 "slow": lifecycle_features.SLOW_FEATURES,
+                "router": lifecycle_features.ROUTER_FEATURES,
             }
             return list(defaults.get(feature_set, []))
         except Exception:
@@ -145,4 +167,5 @@ class MLScorer:
             lite.pop("feature_sets", None)
             info["lifecycle"] = lite
             info["lifecycle_ready"] = self.lifecycle_ready
+            info["lifecycle_router_ready"] = self.lifecycle_router_ready
         return info

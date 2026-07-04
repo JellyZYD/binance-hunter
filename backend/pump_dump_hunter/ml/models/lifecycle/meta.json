@@ -1,6 +1,6 @@
 {
-  "strategy_version": "lifecycle_expert",
-  "router": "dyn_big_pump_tolerant",
+  "strategy_version": "lifecycle_router_expert",
+  "router": "family_probability_router_v1",
   "trained_data": {
     "source": "E:/2C2G/binance_klines",
     "symbols": 172,
@@ -13,7 +13,32 @@
     "long_interval": "5m",
     "expert_interval": "15m",
     "multi_signal_cooldown_hours": 2.0,
+    "route_confirm_bars": 2,
+    "route_margin": 0.12,
+    "dynamic_route_thresholds": true,
     "closed_candles_only": true
+  },
+  "route": {
+    "model": "family_router",
+    "feature_set": "router",
+    "interval": "15m",
+    "classes": ["normal_reversal", "slow_distribution", "fast_dump", "second_distribution", "continuation"],
+    "thresholds": {
+      "fast_dump": 0.914496,
+      "slow_distribution": 0.701967,
+      "second_distribution": 0.72,
+      "continuation": 0.18
+    },
+    "margin": 0.12,
+    "confirm_bars": 2,
+    "dynamic_thresholds": {
+      "fast_trend_threshold": 0.97,
+      "slow_trend_threshold": 0.82,
+      "fast_break_threshold": 0.914496,
+      "slow_break_threshold": 0.701967,
+      "slow_mature_threshold": 0.701967
+    },
+    "policy": "unknown/continuation/second_distribution do not call top-short experts; fast_dump calls fast experts; slow_distribution calls warning plus breakdown_short only"
   },
   "long_score": {
     "feature_set": "long",
@@ -45,6 +70,26 @@
       "interval": "5m",
       "target": "clean_long_start"
     },
+    "family_router": {
+      "feature_set": "router",
+      "interval": "15m",
+      "target": "lifecycle_family",
+      "objective": "multiclass",
+      "classes": ["normal_reversal", "slow_distribution", "fast_dump", "second_distribution", "continuation"],
+      "thresholds": {
+        "fast_dump": 0.914496,
+        "slow_distribution": 0.701967,
+        "second_distribution": 0.72,
+        "continuation": 0.18
+      },
+      "margin": 0.12,
+      "holdout": {
+        "fast_dump_auc": 0.7744,
+        "fast_dump_q95_precision": 0.903,
+        "slow_or_second_auc": 0.7400,
+        "slow_or_second_q95_precision": 0.570
+      }
+    },
     "fast_top": {
       "feature_set": "fast",
       "interval": "15m",
@@ -52,34 +97,37 @@
       "signal_level": "early_alert",
       "threshold": 0.523018,
       "threshold_quantile": 0.8,
-      "gate_states": ["distribution", "climax_risk", "pullback_risk"]
+      "gate_states": ["distribution", "climax_risk"]
     },
     "fast_short": {
       "feature_set": "fast",
       "interval": "15m",
       "mode": "fast_dump",
       "signal_level": "short_signal",
-      "threshold": 0.620131,
-      "threshold_quantile": 0.9,
-      "gate_states": ["distribution", "climax_risk", "pullback_risk"]
+      "threshold": 0.7,
+      "threshold_quantile": "production_strict",
+      "gate_states": ["pullback_risk", "breakdown"]
     },
     "slow_warning": {
       "feature_set": "slow",
       "interval": "15m",
       "mode": "slow_distribution",
-      "signal_level": "early_alert",
-      "threshold": 0.794619,
+      "signal_level": "distribution_warning",
+      "target": "distribution_warning_low_adverse",
+      "threshold": 0.897677,
       "threshold_quantile": 0.95,
-      "gate_states": ["distribution", "climax_risk", "pullback_risk"]
+      "push_enabled": false,
+      "gate_states": ["distribution", "climax_risk"]
     },
     "slow_short": {
       "feature_set": "slow",
       "interval": "15m",
       "mode": "slow_distribution",
       "signal_level": "short_signal",
-      "threshold": 0.534692,
+      "target": "breakdown_short_late_break",
+      "threshold": 0.589188,
       "threshold_quantile": 0.9,
-      "gate_states": ["distribution", "climax_risk", "pullback_risk"]
+      "gate_states": ["breakdown"]
     }
   },
   "holdout_backtest_15m_multi_2h": {
