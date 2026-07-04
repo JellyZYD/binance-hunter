@@ -40,7 +40,9 @@ def main(argv: list[str] | None = None) -> int:
 
     scores = score_all(test, scorer)
     replay = replay_router_strategy(test, scores, scorer, args.confirm_bars, args.cooldown_bars, args.margin, args)
-    report = build_report(test, replay, split, args)
+    high_replay = replay_high_pump_strategy(dense, test, scorer, args) if args.high_pump_enabled else pd.DataFrame()
+    combined = combine_signal_streams(replay, high_replay, args.cooldown_bars)
+    report = build_report(test, replay, high_replay, combined, split, args)
 
     out_json = out_dir / "lifecycle_router_replay.json"
     out_md = out_dir / "lifecycle_router_replay.md"
@@ -64,6 +66,8 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--fast-break-threshold", type=float, default=life.DEFAULT_ROUTE_THRESHOLDS["fast_dump"])
     parser.add_argument("--slow-break-threshold", type=float, default=life.DEFAULT_ROUTE_THRESHOLDS["slow_distribution"])
     parser.add_argument("--slow-mature-threshold", type=float, default=life.DEFAULT_ROUTE_THRESHOLDS["slow_distribution"])
+    parser.add_argument("--high-pump-enabled", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--high-pump-dense", default="backend/storage/ml/high_pump40_experts/high_pump_40_dense.parquet")
     return parser.parse_args(argv)
 
 
@@ -144,6 +148,20 @@ def score_all(rows: pd.DataFrame, scorer: MLScorer) -> dict[str, Any]:
             arr = np.asarray(pred, dtype="float64").reshape(-1)
             arr[~finite] = np.nan
             out[name] = pd.Series(arr, index=rows.index)
+    return out
+
+
+def score_high_pump(rows: pd.DataFrame, scorer: MLScorer) -> dict[str, pd.Series]:
+    out: dict[str, pd.Series] = {}
+    for name in ("high_top", "high_short"):
+        if name not in scorer._lifecycle_boosters:
+            continue
+        cols = scorer.lifecycle_columns(name)
+        x = rows[cols].to_numpy(dtype="float64", copy=True)
+        finite = np.isfinite(x).all(axis=1)
+        arr = np.asarray(scorer._lifecycle_boosters[name].predict(x), dtype="float64").reshape(-1)
+        arr[~finite] = np.nan
+        out[name] = pd.Series(arr, index=rows.index)
     return out
 
 
@@ -253,6 +271,116 @@ def replay_router_strategy(
     return pd.DataFrame(signals)
 
 
+def replay_high_pump_strategy(
+    dense: pd.DataFrame,
+    test: pd.DataFrame,
+    scorer: MLScorer,
+    args: argparse.Namespace,
+) -> pd.DataFrame:
+    high_path = resolve_path(args.high_pump_dense)
+    if not high_path.exists() or not {"high_top", "high_short"}.issubset(scorer._lifecycle_boosters):
+        return pd.DataFrame()
+    high = pd.read_parquet(high_path).copy()
+    if "source_life_id" not in high:
+        high["source_life_id"] = high["life_id"].astype(str).str.replace(r"\|high\d+$", "", regex=True)
+    high = high[high["source_life_id"].astype(str).isin(set(test["life_id"].astype(str)))].copy()
+    if high.empty:
+        return pd.DataFrame()
+    states = high.apply(life.assign_behavior_state, axis=1)
+    high["behavior_state"] = states
+    for behavior in life.BEHAVIOR_ORDER:
+        high[f"behavior_{behavior}"] = (states == behavior).astype("int8")
+    add_slow_features_vectorized(high)
+    high = high.dropna(subset=list(set(scorer.lifecycle_columns("high_top") + scorer.lifecycle_columns("high_short"))), how="any")
+    if high.empty:
+        return pd.DataFrame()
+    scores = score_high_pump(high, scorer)
+    top_thr = scorer.lifecycle_threshold("high_top") or 1.0
+    short_thr = scorer.lifecycle_threshold("high_short") or 1.0
+    signals: list[dict[str, Any]] = []
+    grouped = high.sort_values(["source_life_id", "decision_time"]).groupby("source_life_id", sort=False)
+    for life_id, group in grouped:
+        last_signal_bar: dict[str, int] = {}
+        emitted_once: set[str] = set()
+        for bar_ix, (idx, row) in enumerate(group.iterrows()):
+            state = str(row["behavior_state"])
+            emitted = None
+            model = ""
+            score = np.nan
+            threshold = np.nan
+            if (
+                state in life.HIGH_PUMP_SHORT_GATE
+                and life.high_pump_short_setup(row)
+                and "high_short" in scores
+                and float(scores["high_short"].loc[idx]) >= short_thr
+            ):
+                emitted = "short_signal"
+                model = "high_short"
+                score = float(scores["high_short"].loc[idx])
+                threshold = short_thr
+            elif (
+                state in life.HIGH_PUMP_TOP_GATE
+                and life.high_pump_top_setup(row)
+                and "high_top" in scores
+                and float(scores["high_top"].loc[idx]) >= top_thr
+            ):
+                emitted = "early_alert"
+                model = "high_top"
+                score = float(scores["high_top"].loc[idx])
+                threshold = top_thr
+            if emitted is None:
+                continue
+            if emitted in emitted_once:
+                continue
+            last = last_signal_bar.get(emitted)
+            if last is not None and bar_ix - last < args.cooldown_bars:
+                continue
+            last_signal_bar[emitted] = bar_ix
+            emitted_once.add(emitted)
+            signals.append(
+                signal_row(
+                    row,
+                    life_id,
+                    emitted,
+                    model,
+                    score,
+                    threshold,
+                    "high_pump",
+                    {"confidence": score, "margin": 0.0},
+                    1,
+                )
+            )
+    return pd.DataFrame(signals)
+
+
+def combine_signal_streams(router: pd.DataFrame, high_pump: pd.DataFrame, cooldown_bars: int) -> pd.DataFrame:
+    frames = []
+    if not high_pump.empty:
+        hp = high_pump.copy()
+        hp["stream_priority"] = 0
+        frames.append(hp)
+    if not router.empty:
+        rt = router.copy()
+        rt["stream_priority"] = 1
+        frames.append(rt)
+    if not frames:
+        return pd.DataFrame()
+    merged = pd.concat(frames, ignore_index=True, sort=False).sort_values(["life_id", "decision_time", "stream_priority"])
+    keep: list[pd.Series] = []
+    last_time: dict[tuple[str, str], int] = {}
+    cooldown_ms = int(cooldown_bars) * 15 * 60_000
+    for _, row in merged.iterrows():
+        key = (str(row["life_id"]), str(row["level"]))
+        previous = last_time.get(key)
+        if previous is not None and int(row["decision_time"]) - previous < cooldown_ms:
+            continue
+        last_time[key] = int(row["decision_time"])
+        keep.append(row)
+    if not keep:
+        return pd.DataFrame()
+    return pd.DataFrame(keep).drop(columns=["stream_priority"], errors="ignore").reset_index(drop=True)
+
+
 def signal_row(
     row: pd.Series,
     life_id: Any,
@@ -289,11 +417,19 @@ def signal_row(
     return out
 
 
-def build_report(test: pd.DataFrame, signals: pd.DataFrame, split: dict[str, int], args: argparse.Namespace) -> dict[str, Any]:
+def build_report(
+    test: pd.DataFrame,
+    router_signals: pd.DataFrame,
+    high_signals: pd.DataFrame,
+    combined_signals: pd.DataFrame,
+    split: dict[str, int],
+    args: argparse.Namespace,
+) -> dict[str, Any]:
+    signals = combined_signals
     signal_summary = summarize_signals(signals)
     first = first_per_lifecycle(signals)
     return {
-        "strategy": "lifecycle_router_expert",
+        "strategy": "lifecycle_router_expert_high_pump",
         "dense_rows_test": int(len(test)),
         "lifecycles_test": int(test["life_id"].nunique()),
         "split": split,
@@ -312,7 +448,13 @@ def build_report(test: pd.DataFrame, signals: pd.DataFrame, split: dict[str, int
             "router_thresholds": life.DEFAULT_ROUTE_THRESHOLDS,
             "slow_short_gate": sorted(life.SLOW_SHORT_GATE),
             "fast_short_gate": sorted(life.FAST_SHORT_GATE),
+            "high_pump_enabled": args.high_pump_enabled,
+            "high_pump_dense": args.high_pump_dense,
+            "high_pump_top_gate": sorted(life.HIGH_PUMP_TOP_GATE),
+            "high_pump_short_gate": sorted(life.HIGH_PUMP_SHORT_GATE),
         },
+        "signals_router_only": summarize_signals(router_signals),
+        "signals_high_pump_only": summarize_signals(high_signals),
         "signals_all": signal_summary,
         "signals_first_per_lifecycle_level": summarize_signals(first),
         "route_counts": signals["route_mode"].value_counts().to_dict() if len(signals) else {},
@@ -383,12 +525,17 @@ def render_markdown(report: dict[str, Any]) -> str:
         f"- Test lifecycles: {report['lifecycles_test']}",
         f"- Confirm bars: {report['settings']['confirm_bars']}",
         f"- Cooldown bars: {report['settings']['cooldown_bars']}",
+        f"- High-pump enabled: {report['settings']['high_pump_enabled']}",
         f"- Slow short gate: {report['settings']['slow_short_gate']}",
         "",
         "## Signal Summary",
         "",
     ]
     lines.extend(render_summary_table(report["signals_first_per_lifecycle_level"]))
+    lines += ["", "## High Pump Only", ""]
+    lines.extend(render_summary_table(report["signals_high_pump_only"]))
+    lines += ["", "## Router Only", ""]
+    lines.extend(render_summary_table(report["signals_router_only"]))
     lines += ["", "## All Signals", ""]
     lines.extend(render_summary_table(report["signals_all"]))
     lines += ["", "## Route Counts", "", "```json", json.dumps(report["route_counts"], ensure_ascii=False, indent=2), "```"]

@@ -25,6 +25,9 @@ class SignalEngine:
         self.long_signal_cooldown_hours = float(self.signal_cfg.get("long_signal_cooldown_hours", 2.0))
         self.long_signal_cooldown_ms = int(max(0.0, self.long_signal_cooldown_hours) * 3_600_000)
         self.lifecycle_long_watch_min_gain_pct = float(self.signal_cfg.get("lifecycle_long_watch_min_gain_pct", 15.0))
+        self.lifecycle_pump_signal_min_gain_pct = float(self.signal_cfg.get("lifecycle_pump_signal_min_gain_pct", 0.0))
+        self.lifecycle_high_pump_enabled = bool(self.signal_cfg.get("lifecycle_high_pump_enabled", False))
+        self.lifecycle_high_pump_min_gain_pct = float(self.signal_cfg.get("lifecycle_high_pump_min_gain_pct", 40.0))
         self.lifecycle_min_remaining_pct = float(self.signal_cfg.get("lifecycle_min_remaining_pct", 5.0))
         self.lifecycle_exhaustion_min_gain_pct = float(self.signal_cfg.get("lifecycle_exhaustion_min_gain_pct", 8.0))
         self.lifecycle_route_confirm_bars = int(self.signal_cfg.get("lifecycle_route_confirm_bars", 2))
@@ -725,6 +728,18 @@ class SignalEngine:
             if ready_reason and ready_reason not in pump.evidence:
                 pump.evidence = sorted(set(pump.evidence + [ready_reason]))
             return []
+
+        high_pump_alerts = self._high_pump_lifecycle_signals(
+            pump,
+            candle,
+            candles,
+            interval_ms,
+            vol_ratio,
+            remaining,
+        )
+        if high_pump_alerts:
+            return high_pump_alerts
+
         route_mode = pump.route_mode or "unknown"
         if route_mode in {"unknown", "continuation", "second_distribution"}:
             pump.lifecycle_mode = f"{route_mode}_watch"
@@ -835,6 +850,86 @@ class SignalEngine:
             )
         ]
 
+    def _high_pump_lifecycle_signals(
+        self,
+        pump: PumpEvent,
+        candle: Candle,
+        candles: list[Candle],
+        interval_ms: int,
+        vol_ratio: float,
+        remaining: float,
+    ) -> list[Alert]:
+        if not self.lifecycle_high_pump_enabled or self.ml is None:
+            return []
+        row = life.build_high_pump_row(
+            candles,
+            pump.first_seen,
+            pump.anchor_price,
+            self.lifecycle_high_pump_min_gain_pct,
+            interval_ms,
+        )
+        if row is None:
+            return []
+        if "high_pump_short_emitted" in pump.evidence:
+            return []
+        state = str(row.get("behavior_state", "neutral_watch") or "neutral_watch")
+        plan = [
+            ("high_short", "short_signal", "high_pump_short", life.HIGH_PUMP_SHORT_GATE, life.high_pump_short_setup),
+            ("high_top", "early_alert", "high_pump_top", life.HIGH_PUMP_TOP_GATE, life.high_pump_top_setup),
+        ]
+        ready: list[dict[str, Any]] = []
+        for model_name, level, mode_name, gate, setup_fn in plan:
+            if level == "early_alert" and "high_pump_top_emitted" in pump.evidence:
+                continue
+            if level == "short_signal" and "high_pump_short_emitted" in pump.evidence:
+                continue
+            if state not in gate or not setup_fn(row):
+                continue
+            if not self._can_emit_pump_signal(pump, level, candle.close_time):
+                continue
+            cols = self.ml.lifecycle_columns(model_name)
+            if not cols or not life.finite_for(row, cols):
+                continue
+            score = self.ml.lifecycle_score(row, model_name)
+            threshold = self.ml.lifecycle_threshold(model_name)
+            if score is None or threshold is None or threshold <= 0 or score < threshold:
+                continue
+            ready.append(
+                {
+                    "model": model_name,
+                    "level": level,
+                    "mode": mode_name,
+                    "gate": gate,
+                    "score": float(score),
+                    "threshold": float(threshold),
+                    "ratio": float(score) / float(threshold),
+                }
+            )
+        if not ready:
+            return []
+        best = max(ready, key=lambda x: (x["level"] == "short_signal", x["ratio"]))
+        alert = self._make_lifecycle_alert(
+            best["level"],
+            pump,
+            candle,
+            vol_ratio,
+            remaining,
+            state,
+            best,
+        )
+        alert.evidence = sorted(
+            set(
+                alert.evidence
+                + [
+                    f"high_pump_min_gain={self.lifecycle_high_pump_min_gain_pct:g}%",
+                    "route_policy=high_pump_before_family_router",
+                ]
+            )
+        )
+        flag = "high_pump_short_emitted" if best["level"] == "short_signal" else "high_pump_top_emitted"
+        pump.evidence = sorted(set(pump.evidence + [flag]))
+        return [alert]
+
     def _update_lifecycle_route(self, pump: PumpEvent, row: Any, decision_time: int) -> dict[str, Any]:
         if self.ml is None or not getattr(self.ml, "lifecycle_router_ready", False):
             pump.route_mode = "unknown"
@@ -933,6 +1028,12 @@ class SignalEngine:
 
     def _lifecycle_pump_signal_ready(self, pump: PumpEvent, row: Any) -> tuple[bool, str]:
         if not is_long_derived_pump(pump):
+            high_gain = self._lifecycle_high_gain_pct(pump, row)
+            if high_gain < self.lifecycle_pump_signal_min_gain_pct:
+                return (
+                    False,
+                    f"pump_watch_not_mature=high_gain{high_gain:.2f}%<min{self.lifecycle_pump_signal_min_gain_pct:g}%",
+                )
             return True, ""
         high_gain = self._lifecycle_high_gain_pct(pump, row)
         if high_gain < self.lifecycle_long_watch_min_gain_pct:

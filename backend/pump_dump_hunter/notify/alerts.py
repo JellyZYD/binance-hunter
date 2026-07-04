@@ -67,6 +67,8 @@ LEVEL_CN = {
 }
 
 MODE_CN = {
+    "high_pump_top": "40%妖币见顶",
+    "high_pump_short": "40%妖币做空",
     "fast_dump": "快拉急跌",
     "slow_distribution": "高位派发",
     "long_entry": "做多启动",

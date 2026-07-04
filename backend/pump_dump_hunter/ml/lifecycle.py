@@ -69,6 +69,18 @@ SLOW_DERIVED = [
     "slow_maturity",
 ]
 
+HIGH_PUMP_ORIG_CONTEXT = [
+    "orig_ctx_ret_since_entry",
+    "orig_ctx_high_since_entry",
+    "orig_ctx_low_since_entry",
+    "orig_ctx_drawdown_from_entry_high",
+    "orig_ctx_hours_since_entry",
+    "high40_cross_orig_gain",
+]
+
+HIGH_PUMP_TOP_GATE = {"acceleration", "trend_hold", "climax_risk", "distribution"}
+HIGH_PUMP_SHORT_GATE = {"pullback_risk", "breakdown", "distribution", "climax_risk"}
+
 
 @dataclass(frozen=True)
 class RouterConfig:
@@ -125,6 +137,7 @@ LONG_FEATURES = FEATS + LONG_EXTRA
 FAST_FEATURES = FEATS + ENTRY_CONTEXT + [f"behavior_{x}" for x in BEHAVIOR_ORDER]
 SLOW_FEATURES = FAST_FEATURES + SLOW_DERIVED
 ROUTER_FEATURES = FEATS + ENTRY_CONTEXT
+HIGH_PUMP_FEATURES = FAST_FEATURES + SLOW_DERIVED + HIGH_PUMP_ORIG_CONTEXT
 
 FAMILY_ORDER = [
     "normal_reversal",
@@ -329,6 +342,96 @@ def build_lifecycle_row(candles: list[Any], entry_time: int, entry_price: float,
     for behavior in BEHAVIOR_ORDER:
         row[f"behavior_{behavior}"] = 1.0 if state == behavior else 0.0
     return add_slow_features(row)
+
+
+def build_high_pump_row(
+    candles: list[Any],
+    entry_time: int,
+    anchor_price: float,
+    min_gain_pct: float,
+    interval_ms: int,
+) -> pd.Series | None:
+    """Build a lifecycle row reset from the first high-pump threshold crossing.
+
+    The original PumpWatch context is retained as ``orig_*`` features, while the
+    normal ``ctx_*`` features are recomputed from the first closed candle whose
+    high reaches ``anchor_price * (1 + min_gain_pct)``. This mirrors the
+    high-pump expert training set and uses only closed candles available at the
+    decision point.
+    """
+    frame = candles_to_frame(candles)
+    required = bars_15m_units(LOOKBACK_UNITS, interval_ms) + 2
+    if len(frame) < required or anchor_price <= 0:
+        return None
+    features = compute_features(frame, interval_ms)
+    if features.iloc[-1][FEATS].isna().any():
+        return None
+    ix = len(frame) - 1
+    original_entry_ix = find_entry_index(frame, entry_time)
+    cross_ix = find_high_pump_crossing_index(frame, original_entry_ix, anchor_price, min_gain_pct)
+    if cross_ix is None or cross_ix > ix:
+        return None
+    close = frame["close"].to_numpy(dtype=float)
+    high = frame["high"].to_numpy(dtype=float)
+    reset_entry_price = float(close[cross_ix])
+    if not np.isfinite(reset_entry_price) or reset_entry_price <= 0:
+        return None
+
+    row = features.iloc[ix][FEATS].copy()
+    original_context = context_since_entry(frame, original_entry_ix, ix, interval_ms, anchor_price)
+    reset_context = context_since_entry(frame, cross_ix, ix, interval_ms, reset_entry_price)
+    for key, value in original_context.items():
+        row[f"orig_{key}"] = value
+    row["high40_cross_orig_gain"] = float(np.max(high[original_entry_ix : cross_ix + 1]) / anchor_price - 1.0)
+    for key, value in reset_context.items():
+        row[key] = value
+
+    state = assign_behavior_state(row)
+    row["behavior_state"] = state
+    for behavior in BEHAVIOR_ORDER:
+        row[f"behavior_{behavior}"] = 1.0 if state == behavior else 0.0
+    return add_slow_features(row)
+
+
+def find_high_pump_crossing_index(
+    frame: pd.DataFrame,
+    original_entry_ix: int,
+    anchor_price: float,
+    min_gain_pct: float,
+) -> int | None:
+    if anchor_price <= 0:
+        return None
+    high = frame["high"].to_numpy(dtype=float)
+    threshold = anchor_price * (1.0 + float(min_gain_pct) / 100.0)
+    candidates = np.flatnonzero(high[original_entry_ix:] >= threshold)
+    if len(candidates) == 0:
+        return None
+    return int(original_entry_ix + candidates[0])
+
+
+def high_pump_top_setup(row: pd.Series) -> bool:
+    drawdown = max(-f(row, "ctx_drawdown_from_entry_high"), 0.0)
+    orig_drawdown = max(-f(row, "orig_ctx_drawdown_from_entry_high"), 0.0)
+    state = str(row.get("behavior_state", "neutral_watch") or "neutral_watch")
+    return bool(
+        state in HIGH_PUMP_TOP_GATE
+        and drawdown <= 0.12
+        and f(row, "ctx_ret_since_entry") >= -0.08
+        and f(row, "ret_3") >= -0.06
+        and orig_drawdown <= 0.22
+    )
+
+
+def high_pump_short_setup(row: pd.Series) -> bool:
+    drawdown = max(-f(row, "ctx_drawdown_from_entry_high"), 0.0)
+    orig_drawdown = max(-f(row, "orig_ctx_drawdown_from_entry_high"), 0.0)
+    state = str(row.get("behavior_state", "neutral_watch") or "neutral_watch")
+    weak = f(row, "ret_3") <= -0.025 or f(row, "ret_6") <= -0.040 or f(row, "dist_ema21") <= -0.020
+    return bool(
+        state in HIGH_PUMP_SHORT_GATE
+        and ((drawdown >= 0.035) or (orig_drawdown >= 0.06))
+        and weak
+    )
 
 
 def add_slow_features(row: pd.Series) -> pd.Series:

@@ -18,6 +18,11 @@ curl -s http://127.0.0.1:8787/api/model | head
 
 `/api/model` 应包含 `lifecycle_ready: true`。如果企业微信配置了 `WECOM_WEBHOOK_URL`，推送内容会带 `interval/mode/state/model/score`。
 
+High-pump production add-on:
+- `/api/summary` strategy should show `lifecycle_high_pump_enabled=true`.
+- `/api/model` lifecycle runtime should show `high_pump_enabled=true`, `high_pump_min_gain_pct=40`, and `pump_signal_min_gain_pct=40`.
+- `high_top` is a 40% pump top / flat-long warning and emits at most once per PumpWatch lifecycle; `short_signal` still requires strict breakdown-style confirmation.
+
 # Deployment
 
 目标服务器：Ubuntu，2 核 2G 可运行。可以选择整站部署在服务器，或后端在服务器、前端放 Vercel。

@@ -391,6 +391,80 @@ class SignalEngineTests(unittest.TestCase):
         ready, _reason = engine._lifecycle_pump_signal_ready(pump, {"ctx_high_since_entry": 0.16})
         self.assertTrue(ready)
 
+    def test_non_long_pump_waits_until_signal_min_gain(self):
+        settings = temp_settings()
+        settings["signals"]["lifecycle_pump_signal_min_gain_pct"] = 40.0
+        engine = SignalEngine(settings)
+        pump = PumpEvent(
+            event_id="PUMPUSDT-1",
+            symbol="PUMPUSDT",
+            first_seen=1,
+            last_seen=1,
+            expires_at=100_000_000,
+            trigger_window="1d",
+            anchor_price=100.0,
+            high_price=125.0,
+            high_time=1_000,
+            current_price=120.0,
+            max_gain_pct=25.0,
+        )
+
+        ready, reason = engine._lifecycle_pump_signal_ready(pump, {"ctx_high_since_entry": 0.25})
+
+        self.assertFalse(ready)
+        self.assertIn("pump_watch_not_mature", reason)
+
+        pump.high_price = 145.0
+        pump.max_gain_pct = 45.0
+        ready, _reason = engine._lifecycle_pump_signal_ready(pump, {"ctx_high_since_entry": 0.45})
+        self.assertTrue(ready)
+
+    def test_high_pump_top_bypasses_unknown_route_once(self):
+        settings = temp_settings()
+        settings["signals"]["mode"] = "ml"
+        settings["signals"]["strategy_version"] = "lifecycle_router_expert"
+        settings["signals"]["lifecycle_high_pump_enabled"] = True
+        settings["signals"]["lifecycle_pump_signal_min_gain_pct"] = 40.0
+        settings["signals"]["lifecycle_route_confirm_bars"] = 1
+        engine = SignalEngine(settings)
+        engine.ml = DummyLifecycleScorer(probs={"fast_dump": 0.2, "slow_distribution": 0.2, "second_distribution": 0.1, "continuation": 0.2})
+        pump = PumpEvent(
+            event_id="PUMPUSDT-1",
+            symbol="PUMPUSDT",
+            first_seen=1,
+            last_seen=1,
+            expires_at=10_000_000,
+            trigger_window="1d",
+            anchor_price=100.0,
+            high_price=150.0,
+            high_time=1_000,
+            current_price=145.0,
+            max_gain_pct=50.0,
+        )
+        candle = Candle("PUMPUSDT", "15m", 2_000, 145.0, 150.0, 140.0, 145.0, 100.0, 901_999, 5000.0, 100)
+        engine._append_candle(candle)
+        base_row = {"behavior_state": "acceleration", "ctx_high_since_entry": 0.50, "f": 1.0}
+        high_row = {
+            "behavior_state": "acceleration",
+            "ctx_drawdown_from_entry_high": -0.02,
+            "orig_ctx_drawdown_from_entry_high": -0.05,
+            "ctx_ret_since_entry": 0.10,
+            "ret_3": 0.01,
+            "f": 1.0,
+        }
+
+        with (
+            patch("pump_dump_hunter.engine.signal_engine.life.build_lifecycle_row", return_value=base_row),
+            patch("pump_dump_hunter.engine.signal_engine.life.build_high_pump_row", return_value=high_row),
+        ):
+            first = engine._lifecycle_signals(pump, candle)
+            second = engine._lifecycle_signals(pump, candle)
+
+        self.assertEqual([a.level for a in first], ["early_alert"])
+        self.assertEqual(first[0].model_name, "high_top")
+        self.assertEqual(first[0].lifecycle_mode, "high_pump_top")
+        self.assertEqual(second, [])
+
     def test_pump_exhausted_when_price_returns_to_anchor_zone(self):
         settings = temp_settings()
         settings["signals"]["lifecycle_min_remaining_pct"] = 5.0
@@ -696,6 +770,8 @@ class DummyLifecycleScorer:
             "slow_warning": 0.8,
             "fast_short": 0.95,
             "slow_short": 0.7,
+            "high_top": 0.9,
+            "high_short": 0.1,
         }[model_name]
 
     def lifecycle_threshold(self, model_name: str) -> float:

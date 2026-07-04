@@ -7,6 +7,7 @@ This document describes the current production strategy upgrade.
 The previous lifecycle expert called `fast_top`, `slow_warning`, `fast_short`, and `slow_short` on the same PumpWatch row, using only heuristic `behavior_state` gates. That made top/short alerts appear during rising or sideways phases.
 
 V2 adds a learned family-probability route before any top/short expert is allowed to run.
+The current upgrade also adds a stricter high-pump pre-router expert for coins that have already reached a 40% pump.
 
 ## Production Flow
 
@@ -15,15 +16,16 @@ V2 adds a learned family-probability route before any top/short expert is allowe
    - long entry uses closed `5m` candles;
    - top/short lifecycle experts use closed `15m` candles.
 3. Every active PumpWatch builds one lifecycle row from past data only.
-4. `family_router` scores:
+4. If the PumpWatch has reached the high-pump threshold, `high_top` / `high_short` rebuild context from the first 40% crossing and may emit one lifecycle-level signal before the family router confirms.
+5. `family_router` scores:
    - `fast_dump`
    - `slow_distribution`
    - `second_distribution`
    - `continuation`
    - `normal_reversal`
-5. `route_from_probabilities` converts those probabilities into an abstaining production route.
-6. The same non-unknown route must hold for 2 consecutive 15m bars.
-7. Only then can the corresponding expert run.
+6. `route_from_probabilities` converts those probabilities into an abstaining production route.
+7. The same non-unknown route must hold for 2 consecutive 15m bars.
+8. Only then can the corresponding expert run.
 
 ## Route Policy
 
@@ -45,6 +47,10 @@ V2 adds a learned family-probability route before any top/short expert is allowe
 | `fast_dump` route threshold | `0.914496` |
 | `slow_distribution` route threshold | `0.701967` |
 | `second_distribution` route threshold | `0.72` |
+| PumpWatch top/short signal min gain | `40%` |
+| high-pump reset threshold | `40%` |
+| `high_top` threshold | `0.216917` |
+| `high_short` threshold | `0.595417` |
 | `fast_top` threshold | `0.523018` |
 | `fast_short` threshold | `0.700000` |
 | `slow_warning` threshold | `0.897677` |
@@ -94,6 +100,44 @@ Three route-threshold modes were replayed:
 
 The selected production version is intentionally sparse. The goal is to stop rising/sideways false shorts first; more coverage should only be added after a new expert proves low adverse movement in replay.
 
+## High-Pump Expert Experiment
+
+The high-pump experiment rebuilds every lifecycle from the first time it reaches a 40% gain. This directly targets the issue where the family router confirms too late and misses the real top.
+
+Training command:
+
+```bash
+PYTHONPATH=backend python backend/ml_experiments/train_high_pump40_experts.py
+```
+
+Dataset:
+
+- Source dense rows: `backend/storage/ml/dense_lifecycle/dense_15m.parquet`
+- High-pump reset rows: `42,335`
+- High-pump lifecycles: `160`
+- Holdout uses closed 15m rows only.
+
+Selected production settings:
+
+| Expert | Role | Threshold | Production Policy |
+| --- | --- | ---: | --- |
+| `high_top` | 40% pump top / long-risk alert | `0.216917` | Emits at most once per PumpWatch lifecycle. It is a top/flat-long warning, not an automatic short. |
+| `high_short` | 40% pump breakdown short candidate | `0.595417` | Strict model is packaged but currently sparse in production replay; normal `slow_short` remains the main short signal. |
+
+Production replay with high-pump q85:
+
+| Segment | Signals | Median Up24 | Median Drop6 | Median Drop24 | Median Short Adv24 | Clean Short24 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| `early_alert / high_top` | 4 | 29.8% | 12.5% | 19.5% | 7.3% | 50.0% |
+| `early_alert / fast_top` | 3 | 7.6% | 22.2% | 26.2% | 7.6% | 33.3% |
+| `short_signal / slow_short` | 2 | 2.6% | 4.9% | 12.2% | 2.6% | 50.0% |
+
+Why q85:
+
+- q80 covers one more lifecycle but is too early and noisier.
+- q90 is cleaner but only emits one high-pump signal in the current production replay.
+- q85 is the current compromise; it should be treated as a risk/flat-long signal, while actual short remains tied to breakdown-style signals.
+
 ## Push And UI
 
 WeCom pushes only:
@@ -112,3 +156,4 @@ The dashboard active contract card shows:
 - route candidate/streak;
 - route confidence/margin;
 - fast/slow route probabilities.
+- high-pump enabled/min-gain and PumpWatch signal min-gain in the strategy/model bars.

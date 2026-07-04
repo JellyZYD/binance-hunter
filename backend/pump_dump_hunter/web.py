@@ -96,6 +96,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "lifecycle_route_slow_threshold": signals.get("lifecycle_route_slow_threshold", 0.701967),
             "lifecycle_route_fast_break_threshold": signals.get("lifecycle_route_fast_break_threshold", 0.914496),
             "lifecycle_route_slow_break_threshold": signals.get("lifecycle_route_slow_break_threshold", 0.701967),
+            "lifecycle_pump_signal_min_gain_pct": signals.get("lifecycle_pump_signal_min_gain_pct", 0.0),
+            "lifecycle_high_pump_enabled": bool(signals.get("lifecycle_high_pump_enabled", False)),
+            "lifecycle_high_pump_min_gain_pct": signals.get("lifecycle_high_pump_min_gain_pct", 40.0),
             "long_enabled": bool(signals.get("long_enabled", False)),
         }
         return data

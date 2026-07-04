@@ -44,8 +44,15 @@ def main() -> int:
     lifecycle_strategy = lifecycle.get("strategy_version")
     router_meta = lifecycle.get("route") or {}
     router_model = router_meta.get("model")
+    summary_strategy = summary.get("strategy") or {}
+    runtime = lifecycle.get("runtime") or {}
+    high_pump = lifecycle.get("high_pump") or {}
 
-    print(f"live strategy={strategy} lifecycle_model={lifecycle_strategy} router={router_model}")
+    print(
+        "live "
+        f"strategy={strategy} lifecycle_model={lifecycle_strategy} router={router_model} "
+        f"high_pump={runtime.get('high_pump_enabled')} min_gain={runtime.get('high_pump_min_gain_pct')}"
+    )
     if strategy != EXPECTED_STRATEGY:
         print(f"live verify failed: expected strategy_version={EXPECTED_STRATEGY}, got {strategy}", file=sys.stderr)
         return 1
@@ -57,6 +64,15 @@ def main() -> int:
         return 1
     if router_model != "family_router":
         print(f"live verify failed: family router model missing: {router_meta}", file=sys.stderr)
+        return 1
+    if summary_strategy.get("lifecycle_high_pump_enabled") is not True:
+        print(f"live verify failed: high-pump not enabled in summary strategy: {summary_strategy}", file=sys.stderr)
+        return 1
+    if runtime.get("high_pump_enabled") is not True or float(runtime.get("high_pump_min_gain_pct", 0) or 0) < 40:
+        print(f"live verify failed: high-pump runtime missing: {runtime}", file=sys.stderr)
+        return 1
+    if not high_pump or "high_top" not in (lifecycle.get("models") or {}):
+        print(f"live verify failed: high-pump model metadata missing: {high_pump}", file=sys.stderr)
         return 1
     return 0
 

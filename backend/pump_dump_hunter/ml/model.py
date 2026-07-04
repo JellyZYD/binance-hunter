@@ -127,6 +127,7 @@ class MLScorer:
                 "fast": lifecycle_features.FAST_FEATURES,
                 "slow": lifecycle_features.SLOW_FEATURES,
                 "router": lifecycle_features.ROUTER_FEATURES,
+                "high_pump": lifecycle_features.HIGH_PUMP_FEATURES,
             }
             return list(defaults.get(feature_set, []))
         except Exception:

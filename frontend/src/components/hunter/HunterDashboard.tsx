@@ -28,6 +28,9 @@ type StrategyMeta = {
   lifecycle_route_slow_threshold?: number;
   lifecycle_route_fast_break_threshold?: number;
   lifecycle_route_slow_break_threshold?: number;
+  lifecycle_pump_signal_min_gain_pct?: number;
+  lifecycle_high_pump_enabled?: boolean;
+  lifecycle_high_pump_min_gain_pct?: number;
   long_enabled?: boolean;
 };
 
@@ -156,6 +159,9 @@ type ModelMeta = {
       long_interval?: string;
       expert_interval?: string;
       multi_signal_cooldown_hours?: number;
+      pump_signal_min_gain_pct?: number;
+      high_pump_enabled?: boolean;
+      high_pump_min_gain_pct?: number;
     };
     long_score?: {
       threshold?: number;
@@ -223,6 +229,8 @@ function signalLabel(level?: string) {
 }
 
 function lifecycleModeText(mode?: string) {
+  if (mode === 'high_pump_top') return 'high-pump 40% top';
+  if (mode === 'high_pump_short') return 'high-pump 40% short';
   if (mode === 'fast_dump') return '快拉急跌';
   if (mode === 'slow_distribution') return '高位派发';
   if (mode === 'long_entry') return '做多启动';
@@ -623,6 +631,8 @@ function LifecycleStrategyBar({ strategy }: { strategy?: StrategyMeta }) {
       <span>顶部/做空：{strategy?.confirm_interval || '15m'} 收线</span>
       <span>同类信号冷却：{fmt(cooldown, 1)}h</span>
       <span>做多重复冷却：{fmt(strategy?.long_signal_cooldown_hours ?? 2, 1)}h</span>
+      <span>PumpWatch top/short 门槛：涨过 {fmt(strategy?.lifecycle_pump_signal_min_gain_pct ?? 0, 1)}%</span>
+      <span>high-pump：{strategy?.lifecycle_high_pump_enabled ? 'on' : 'off'} / {fmt(strategy?.lifecycle_high_pump_min_gain_pct ?? 40, 1)}%</span>
       <span>long 派生做空门槛：涨过 {fmt(strategy?.lifecycle_long_watch_min_gain_pct ?? 15, 1)}%</span>
       <span>回到起涨区踢出：空间 &lt; {fmt(strategy?.lifecycle_min_remaining_pct ?? 5, 1)}%</span>
       <span>{strategy?.long_enabled ? '做多监测开启' : '仅做空监测'}</span>
@@ -640,6 +650,9 @@ function LifecycleModelBar({ model }: { model: ModelMeta | null }) {
       </span>
       <span className="mb-item">
         数据 {dayStr(lifecycle.trained_data?.data_start)} ~ {dayStr(lifecycle.trained_data?.data_end)} | symbols {lifecycle.trained_data?.symbols ?? '-'} | long q90 {fmt(lifecycle.long_score?.threshold, 3)} q95 {fmt(lifecycle.long_score?.threshold_high, 3)}
+      </span>
+      <span className="mb-item">
+        high-pump {lifecycle.runtime?.high_pump_enabled ? 'on' : 'off'} / {fmt(lifecycle.runtime?.high_pump_min_gain_pct ?? 40, 1)}% | PumpWatch signal min {fmt(lifecycle.runtime?.pump_signal_min_gain_pct ?? 0, 1)}%
       </span>
       <span className="mb-item">专家 {Object.keys(lifecycle.models || {}).join(' / ')}</span>
     </div>
