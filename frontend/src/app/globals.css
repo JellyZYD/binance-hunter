@@ -118,7 +118,7 @@ h2 { margin: 0; font-size: 18px; line-height: 1.25; }
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(148px, 1fr));
   gap: 10px;
   margin-top: 12px;
 }
@@ -206,6 +206,7 @@ h2 { margin: 0; font-size: 18px; line-height: 1.25; }
 .symbol-line {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   min-height: 30px;
 }
@@ -565,8 +566,19 @@ td { color: #1d333a; }
   border: 1px solid rgba(14, 116, 144, 0.22) !important;
   color: #0e7490 !important;
   background: rgba(14, 116, 144, 0.08) !important;
-  max-width: 100%;
-  overflow-wrap: anywhere;
+  max-width: 180px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stage-chip {
+  border: 1px solid rgba(86, 117, 128, 0.18) !important;
+  color: #567580 !important;
+  background: rgba(248, 252, 252, 0.72) !important;
+  max-width: 110px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .lifecycle-inline {
   margin-top: 5px;

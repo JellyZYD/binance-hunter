@@ -51,6 +51,7 @@ def main() -> int:
     print(
         "live "
         f"strategy={strategy} lifecycle_model={lifecycle_strategy} router={router_model} "
+        f"pump_min_gain={runtime.get('pump_signal_min_gain_pct')} "
         f"high_pump={runtime.get('high_pump_enabled')} min_gain={runtime.get('high_pump_min_gain_pct')}"
     )
     if strategy != EXPECTED_STRATEGY:
@@ -67,6 +68,12 @@ def main() -> int:
         return 1
     if summary_strategy.get("lifecycle_high_pump_enabled") is not True:
         print(f"live verify failed: high-pump not enabled in summary strategy: {summary_strategy}", file=sys.stderr)
+        return 1
+    if abs(float(summary_strategy.get("lifecycle_pump_signal_min_gain_pct", 0) or 0) - 25.0) > 0.01:
+        print(f"live verify failed: formal PumpWatch min gain is not 25% in summary: {summary_strategy}", file=sys.stderr)
+        return 1
+    if abs(float(runtime.get("pump_signal_min_gain_pct", 0) or 0) - 25.0) > 0.01:
+        print(f"live verify failed: lifecycle runtime PumpWatch min gain is not 25%: {runtime}", file=sys.stderr)
         return 1
     if runtime.get("high_pump_enabled") is not True or float(runtime.get("high_pump_min_gain_pct", 0) or 0) < 40:
         print(f"live verify failed: high-pump runtime missing: {runtime}", file=sys.stderr)

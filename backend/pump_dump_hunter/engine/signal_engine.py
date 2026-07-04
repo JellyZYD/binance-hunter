@@ -724,9 +724,10 @@ class SignalEngine:
             return []
         ready, ready_reason = self._lifecycle_pump_signal_ready(pump, row)
         if not ready:
-            pump.lifecycle_mode = "long_watch" if is_long_derived_pump(pump) else "trend_watch"
-            if ready_reason and ready_reason not in pump.evidence:
-                pump.evidence = sorted(set(pump.evidence + [ready_reason]))
+            pump.lifecycle_mode = "long_watch" if is_long_derived_pump(pump) else "shadow_watch"
+            if ready_reason:
+                prefix = ready_reason.split("=", 1)[0] + "="
+                pump.evidence = sorted(set([e for e in pump.evidence if not e.startswith(prefix)] + [ready_reason]))
             return []
 
         high_pump_alerts = self._high_pump_lifecycle_signals(

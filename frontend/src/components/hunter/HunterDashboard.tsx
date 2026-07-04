@@ -5,6 +5,8 @@ import { useEffect, useMemo, useState } from 'react';
 type Summary = {
   tables?: Record<string, number>;
   active_pump_events?: number;
+  raw_active_pump_events?: number;
+  shadow_pump_events?: number;
   latest_snapshot_time_iso?: string | null;
   latest_data_cutoff_time_iso?: string | null;
   latest_alert_time_iso?: string | null;
@@ -29,6 +31,7 @@ type StrategyMeta = {
   lifecycle_route_fast_break_threshold?: number;
   lifecycle_route_slow_break_threshold?: number;
   lifecycle_pump_signal_min_gain_pct?: number;
+  lifecycle_formal_watch_min_gain_pct?: number;
   lifecycle_high_pump_enabled?: boolean;
   lifecycle_high_pump_min_gain_pct?: number;
   long_enabled?: boolean;
@@ -73,6 +76,11 @@ type PumpRow = {
   route_margin?: number;
   route_streak?: number;
   route_probs?: Record<string, number>;
+  is_formal_watch?: boolean;
+  monitor_stage?: string;
+  monitor_stage_label?: string;
+  formal_watch_min_gain_pct?: number;
+  long_derived_watch?: boolean;
 };
 
 type Candle = {
@@ -234,6 +242,7 @@ function lifecycleModeText(mode?: string) {
   if (mode === 'fast_dump') return '快拉急跌';
   if (mode === 'slow_distribution') return '高位派发';
   if (mode === 'long_entry') return '做多启动';
+  if (mode === 'shadow_watch') return '影子观察';
   if (mode === 'trend_watch') return '趋势观察';
   if (mode === 'risk_watch') return '风险观察';
   return mode || '未分型';
@@ -277,6 +286,12 @@ function routeSummary(row?: Pick<PumpRow, 'route_mode' | 'route_candidate' | 'ro
     `fast ${fmt(fast, 3)}`,
     `slow ${fmt(slow, 3)}`,
   ].join(' / ');
+}
+
+function routeCompact(row?: Pick<PumpRow, 'route_mode' | 'route_confidence'>) {
+  if (!row?.route_mode || row.route_mode === 'unknown') return '';
+  const conf = Number(row.route_confidence ?? 0);
+  return `${routeModeText(row.route_mode)} ${fmt(conf, 2)}`;
 }
 
 function alertRouteSummary(alert?: AlertRow) {
@@ -458,7 +473,8 @@ export default function HunterDashboard() {
     const tables = summary.tables || {};
     const activeSignals = monitorRows.filter((row) => row.latestAlert).length;
     return [
-      { label: '监控合约', value: summary.active_pump_events ?? monitorRows.length, tone: 'cyan' },
+      { label: '正式监管', value: summary.active_pump_events ?? monitorRows.length, tone: 'cyan' },
+      { label: '影子观察', value: summary.shadow_pump_events ?? 0, tone: 'neutral' },
       { label: '带信号', value: activeSignals, tone: 'red' },
       { label: '报警记录', value: tables.alerts ?? 0, tone: 'amber' },
       { label: 'K线库存', value: fmt(tables.candles ?? 0, 0), tone: 'green' },
@@ -795,6 +811,8 @@ function MonitorContract({ row, cooldownHours, nowMs }: { row: MonitorRow; coold
   const [candles, setCandles] = useState<Candle[] | null>(null);
   const [loading, setLoading] = useState(false);
   const tradeUrl = `https://www.binance.com/zh-CN/futures/${row.symbol}`;
+  const routeText = routeCompact(row);
+  const routeDetail = routeSummary(row);
 
   async function toggleChart() {
     const next = !open;
@@ -821,7 +839,9 @@ function MonitorContract({ row, cooldownHours, nowMs }: { row: MonitorRow; coold
           <strong>{row.symbol}</strong>
           <span>{row.trigger_window}</span>
           <span className="lifecycle-chip">{lifecycleModeText(row.lifecycle_mode)} / {behaviorText(row.behavior_state)}</span>
-          <span className="route-chip">{routeSummary(row)}</span>
+          {row.long_derived_watch ? <span className="stage-chip">Long派生</span> : null}
+          {row.is_formal_watch === false ? <span className="stage-chip stage-shadow">影子观察</span> : null}
+          {routeText ? <span className="route-chip" title={routeDetail}>{routeText}</span> : null}
           <span className="contract-actions">
             <button type="button" className="link-btn" onClick={toggleChart}>{open ? '收起K线' : '15m K线'}</button>
             <a className="trade-link" href={tradeUrl} target="_blank" rel="noreferrer">交易 ↗</a>

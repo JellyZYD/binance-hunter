@@ -46,9 +46,27 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/liquidity":
                 self.write_json({"rows": self.store.latest_liquidity(limit=int_param(query, "limit", 100))})
             elif parsed.path == "/api/pumps":
-                self.write_json({"rows": decode_pumps(self.store.active_pump_rows(utc_ms(), limit=int_param(query, "limit", 100)))})
+                limit = int_param(query, "limit", 100)
+                include_shadow = bool_param(query, "include_shadow", False)
+                min_gain = formal_pump_min_gain(self.settings)
+                long_min_gain = long_pump_min_gain(self.settings)
+                rows = annotate_pumps(
+                    decode_pumps(self.store.active_pump_rows(utc_ms(), limit=max(300, limit * 4))),
+                    min_gain,
+                    long_min_gain,
+                )
+                shadow_count = sum(1 for row in rows if not row.get("is_formal_watch"))
+                if not include_shadow:
+                    rows = [row for row in rows if row.get("is_formal_watch")]
+                self.write_json({"rows": rows[:limit], "shadow_count": shadow_count, "formal_min_gain_pct": min_gain})
             elif parsed.path == "/api/pump-history":
-                self.write_json({"rows": decode_pumps(self.store.pump_event_rows(limit=int_param(query, "limit", 300)))})
+                self.write_json({
+                    "rows": annotate_pumps(
+                        decode_pumps(self.store.pump_event_rows(limit=int_param(query, "limit", 300))),
+                        formal_pump_min_gain(self.settings),
+                        long_pump_min_gain(self.settings),
+                    )
+                })
             elif parsed.path == "/api/long":
                 self.write_json({"rows": self.store.active_long_rows(utc_ms(), limit=int_param(query, "limit", 100))})
             elif parsed.path == "/api/long-history":
@@ -75,6 +93,16 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
     def api_summary(self) -> dict[str, Any]:
         data = self.store.dashboard_summary(utc_ms())
+        min_gain = formal_pump_min_gain(self.settings)
+        active_pumps = annotate_pumps(
+            decode_pumps(self.store.active_pump_rows(utc_ms(), limit=2000)),
+            min_gain,
+            long_pump_min_gain(self.settings),
+        )
+        formal_count = sum(1 for row in active_pumps if row.get("is_formal_watch"))
+        data["raw_active_pump_events"] = data.get("active_pump_events", 0)
+        data["active_pump_events"] = formal_count
+        data["shadow_pump_events"] = max(0, len(active_pumps) - formal_count)
         for key in ("latest_snapshot_time", "latest_data_cutoff_time", "latest_alert_time"):
             value = data.get(key)
             data[f"{key}_iso"] = iso_from_ms(int(value)) if value else None
@@ -97,6 +125,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "lifecycle_route_fast_break_threshold": signals.get("lifecycle_route_fast_break_threshold", 0.914496),
             "lifecycle_route_slow_break_threshold": signals.get("lifecycle_route_slow_break_threshold", 0.701967),
             "lifecycle_pump_signal_min_gain_pct": signals.get("lifecycle_pump_signal_min_gain_pct", 0.0),
+            "lifecycle_formal_watch_min_gain_pct": min_gain,
             "lifecycle_high_pump_enabled": bool(signals.get("lifecycle_high_pump_enabled", False)),
             "lifecycle_high_pump_min_gain_pct": signals.get("lifecycle_high_pump_min_gain_pct", 40.0),
             "long_enabled": bool(signals.get("long_enabled", False)),
@@ -142,6 +171,25 @@ def int_param(query: dict[str, list[str]], key: str, default: int) -> int:
         return default
 
 
+def bool_param(query: dict[str, list[str]], key: str, default: bool) -> bool:
+    raw = str(query.get(key, [str(int(default))])[0]).strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def formal_pump_min_gain(settings: dict[str, Any]) -> float:
+    try:
+        return float((settings.get("signals") or {}).get("lifecycle_pump_signal_min_gain_pct", 0.0) or 0.0)
+    except Exception:
+        return 0.0
+
+
+def long_pump_min_gain(settings: dict[str, Any]) -> float:
+    try:
+        return float((settings.get("signals") or {}).get("lifecycle_long_watch_min_gain_pct", 15.0) or 15.0)
+    except Exception:
+        return 15.0
+
+
 def decode_json_field(value: Any, fallback: Any) -> Any:
     try:
         return json.loads(value) if isinstance(value, str) else fallback
@@ -165,6 +213,27 @@ def decode_pumps(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         item = dict(row)
         item["evidence"] = decode_json_field(item.pop("evidence_json", "[]"), [])
         item["route_probs"] = decode_json_field(item.pop("route_probs_json", "{}"), {})
+        out.append(item)
+    return out
+
+
+def annotate_pumps(rows: list[dict[str, Any]], formal_min_gain_pct: float, long_min_gain_pct: float) -> list[dict[str, Any]]:
+    out = []
+    for row in rows:
+        item = dict(row)
+        try:
+            max_gain = float(item.get("max_gain_pct", 0.0) or 0.0)
+        except Exception:
+            max_gain = 0.0
+        evidence = item.get("evidence") or []
+        long_derived = any(str(e).startswith("source=long_signal_pump_watch") for e in evidence)
+        required_gain = long_min_gain_pct if long_derived else formal_min_gain_pct
+        formal = required_gain <= 0 or max_gain >= required_gain
+        item["is_formal_watch"] = formal
+        item["formal_watch_min_gain_pct"] = required_gain
+        item["monitor_stage"] = "formal" if formal else "shadow"
+        item["monitor_stage_label"] = "formal_watch" if formal else "shadow_watch"
+        item["long_derived_watch"] = long_derived
         out.append(item)
     return out
 

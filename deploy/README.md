@@ -20,7 +20,8 @@ curl -s http://127.0.0.1:8787/api/model | head
 
 High-pump production add-on:
 - `/api/summary` strategy should show `lifecycle_high_pump_enabled=true`.
-- `/api/model` lifecycle runtime should show `high_pump_enabled=true`, `high_pump_min_gain_pct=40`, and `pump_signal_min_gain_pct=40`.
+- `/api/model` lifecycle runtime should show `high_pump_enabled=true`, `high_pump_min_gain_pct=40`, and `pump_signal_min_gain_pct=25`.
+- Broad discovery is a shadow watch pool. Formal PumpWatch, top/short experts, and the main active-contract board only arm after lifecycle max gain reaches 25%; long-signal-derived PumpWatch keeps the 15% flat-long/turn-short maturity rule.
 - `high_top` is a 40% pump top / flat-long warning and emits at most once per PumpWatch lifecycle; `short_signal` still requires strict breakdown-style confirmation.
 
 # Deployment
@@ -116,7 +117,8 @@ sudo bash deploy/update.sh
 
 1. **扫描池** `--broad-top`：按 24h 成交额取前 N 个币进入扫描。
 2. **监控池** `--top`：扫描后按 15m/30m 流动性排序取前 N 个，这些才会被 WebSocket 盯盘，也才有资格成为妖币。
-3. **妖币池** `backend/config/settings.json` 的 `params.*` 阈值：监控池中满足拉升幅度的进入活跃妖币池。
+3. **影子妖币池** `backend/config/settings.json` 的 `params.*` 阈值：监控池中满足拉升幅度的进入 PumpWatch 影子观察，用于持续更新锚点和高点。
+4. **正式监管池** `signals.lifecycle_pump_signal_min_gain_pct`：生命周期最高涨幅达到 25% 后，才显示在主监控面板，并允许 top/short 专家模型发信号。
 
 改监控规模（`top`/`broad-top`）——编辑 systemd 后重启（survive 重启与 `update.sh`）：
 

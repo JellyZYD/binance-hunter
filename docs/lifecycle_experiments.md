@@ -7,7 +7,7 @@
 不要把做多、见顶、做空信号混在一个大模型里。当前结构是：
 
 1. `LongWatch`：扫描可能启动上涨的币，5m 收线后由做多启动模型给出做多观察信号。
-2. `PumpWatch`：所有已经明显拉升的币进入顶部/做空监管，即使没有触发做多信号也要监管。
+2. `PumpWatch`：所有已经明显拉升的币先进入影子观察，即使没有触发做多信号也要跟踪；生命周期最高涨幅达到正式门槛后才进入顶部/做空监管。
 3. 生命周期路由：用已收线 K 线动态判断 `acceleration / trend_hold / distribution / climax_risk / pullback_risk / breakdown`。
 4. 专家模型：不同阶段使用 `fast_dump` 或 `slow_distribution` 的 top/short 专家。
 
@@ -17,6 +17,9 @@
 - 顶部/做空信号：`15m` 已收线，生命周期专家模型。
 - 同一 PumpWatch 同类 top/short 信号冷却：`2h`。
 - 同一 LongWatch 做多信号冷却：`2h`，避免 5m 每根 K 线重复刷屏。
+- 普通 PumpWatch 正式监管门槛：生命周期最高涨幅至少 `25%`；低于该值只做 `shadow_watch`，不显示在主监控面板，也不调用 top/short 专家。
+- 做多信号派生的 PumpWatch 仍使用 `15%` 门槛，用于做多后的平多/转空监控。
+- high-pump 特殊专家门槛：生命周期最高涨幅至少 `40%`。
 - 由做多信号派生的 PumpWatch，必须自做多监管价起至少涨过 `15%`，才允许进入 top/short 专家模型。
 - PumpWatch 跌回起涨区后踢出监管池：当 `remaining_to_anchor < 5%` 且该事件曾经涨过至少 `8%`，标记 `status=closed`、`lifecycle_mode=completed`，从活跃监控和下一轮 WebSocket 订阅中移除。
 
@@ -59,7 +62,7 @@
 - 做多和做空监控分离：做多信号不是进入做空监管的唯一入口。
 - `long_signal -> PumpWatch` 只是为了后续生命周期跟踪；没涨够前不允许触发 top/short。
 - 已经跌回起涨区的 PumpWatch 直接踢出监管池，防止已经打完的旧事件在冷却后继续发空。
-- 前端 `/api/pumps` 只展示 active 监管；`/api/pump-history` 和 `/api/long-history` 展示历史监管记录。
+- 前端 `/api/pumps` 默认只展示正式 active 监管；`/api/pumps?include_shadow=1` 可排查影子观察池；`/api/pump-history` 和 `/api/long-history` 展示历史监管记录。
 
 ## 工程落地
 

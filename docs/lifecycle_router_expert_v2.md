@@ -7,7 +7,7 @@ This document describes the current production strategy upgrade.
 The previous lifecycle expert called `fast_top`, `slow_warning`, `fast_short`, and `slow_short` on the same PumpWatch row, using only heuristic `behavior_state` gates. That made top/short alerts appear during rising or sideways phases.
 
 V2 adds a learned family-probability route before any top/short expert is allowed to run.
-The current upgrade also adds a stricter high-pump pre-router expert for coins that have already reached a 40% pump.
+The current upgrade also separates broad discovery from formal PumpWatch. Broad REST discovery is kept as a shadow watch pool so the system can keep updating highs, but top/short experts and the main active dashboard only arm after lifecycle max gain reaches 25%. A stricter high-pump pre-router expert is still reserved for coins that have already reached a 40% pump.
 
 ## Production Flow
 
@@ -16,16 +16,17 @@ The current upgrade also adds a stricter high-pump pre-router expert for coins t
    - long entry uses closed `5m` candles;
    - top/short lifecycle experts use closed `15m` candles.
 3. Every active PumpWatch builds one lifecycle row from past data only.
-4. If the PumpWatch has reached the high-pump threshold, `high_top` / `high_short` rebuild context from the first 40% crossing and may emit one lifecycle-level signal before the family router confirms.
-5. `family_router` scores:
+4. PumpWatch entries below 25% lifecycle max gain stay in `shadow_watch`: they update highs and history, but do not call top/short experts and are hidden from the main active-contract board by default.
+5. If the PumpWatch has reached the high-pump threshold, `high_top` / `high_short` rebuild context from the first 40% crossing and may emit one lifecycle-level signal before the family router confirms.
+6. `family_router` scores:
    - `fast_dump`
    - `slow_distribution`
    - `second_distribution`
    - `continuation`
    - `normal_reversal`
-6. `route_from_probabilities` converts those probabilities into an abstaining production route.
-7. The same non-unknown route must hold for 2 consecutive 15m bars.
-8. Only then can the corresponding expert run.
+7. `route_from_probabilities` converts those probabilities into an abstaining production route.
+8. The same non-unknown route must hold for 2 consecutive 15m bars.
+9. Only then can the corresponding expert run.
 
 ## Route Policy
 
@@ -47,7 +48,7 @@ The current upgrade also adds a stricter high-pump pre-router expert for coins t
 | `fast_dump` route threshold | `0.914496` |
 | `slow_distribution` route threshold | `0.701967` |
 | `second_distribution` route threshold | `0.72` |
-| PumpWatch top/short signal min gain | `40%` |
+| Formal PumpWatch top/short signal min gain | `25%` |
 | high-pump reset threshold | `40%` |
 | `high_top` threshold | `0.216917` |
 | `high_short` threshold | `0.595417` |
@@ -57,6 +58,29 @@ The current upgrade also adds a stricter high-pump pre-router expert for coins t
 | `slow_short` threshold | `0.589188` |
 
 Dynamic thresholds are conservative. Trend-hold and acceleration states raise route thresholds; production does not lower route thresholds in breakdown because replay showed that lowered thresholds increased short adverse movement.
+
+## Pump Admission Experiment
+
+The latest admission experiment compared current broad discovery against stricter lifecycle max-gain gates. The 40% gate was too narrow and missed too many test lifecycles; window-only rules around 25% were still too broad because they can be triggered by normal rolling-window noise.
+
+Selected production policy:
+
+- Broad discovery remains unchanged enough to keep the watch anchor and high updated.
+- Formal PumpWatch starts at lifecycle max gain `>=25%`.
+- PumpWatch derived from a fired long signal keeps the existing `15%` maturity rule, because it is used for flat-long / turn-short monitoring after an actual long alert.
+- Main `/api/pumps` and the active-contract board show formal PumpWatch only by default.
+- `include_shadow=1` on `/api/pumps` can still be used for diagnostics.
+- The 40% high-pump expert remains a separate special case.
+
+Experiment summary (`backend/storage/ml/pump_admission_optimization_exact_life25`):
+
+| Rule | All Admission | Test Admission | Retained Test Short | Median Short Drop24 | Median Short Adv24 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Current proxy | 87.0% | 88.9% | 1 | 17.0% | 4.4% |
+| Lifecycle high >=25% | 71.2% | 72.2% | 1 | 17.0% | 4.4% |
+| Lifecycle high >=40% | 44.6% | 41.7% | 1 | 17.0% | 4.4% |
+
+This reduces formal monitoring clutter while retaining the sparse clean short observed in the holdout replay.
 
 ## Replay Result
 
@@ -152,8 +176,6 @@ The dashboard active contract card shows:
 
 - lifecycle mode;
 - behavior state;
-- confirmed route;
-- route candidate/streak;
-- route confidence/margin;
-- fast/slow route probabilities.
+- confirmed route as a compact tag;
+- candidate/streak/confidence/margin/probabilities only in hover/debug detail, not as visible card text;
 - high-pump enabled/min-gain and PumpWatch signal min-gain in the strategy/model bars.
