@@ -149,7 +149,7 @@ class SignalEngineTests(unittest.TestCase):
         self.assertEqual(changed, [])
         self.assertNotIn("NOMUSDT", engine.long_events_by_symbol)
 
-    def test_discovery_closes_long_event_when_candidate_lost(self):
+    def test_discovery_keeps_long_event_when_candidate_lost(self):
         settings = temp_settings()
         settings["signals"]["long_enabled"] = True
         engine = SignalEngine(settings)
@@ -191,8 +191,13 @@ class SignalEngineTests(unittest.TestCase):
 
         engine.on_discovery([record], 20_000)
 
-        self.assertEqual(engine.long_events_by_symbol["NOMUSDT"].status, "closed")
-        self.assertEqual(engine.long_events_by_symbol["NOMUSDT"].exit_reason, "long_candidate_lost")
+        le = engine.long_events_by_symbol["NOMUSDT"]
+        self.assertEqual(le.status, "active")
+        self.assertEqual(le.exit_reason, "")
+        self.assertEqual(le.last_seen, 20_000)
+        self.assertEqual(le.current_price, 0.0020)
+        self.assertEqual(le.high_price, 0.0022)
+        self.assertEqual(le.ret30_rank, 90)
 
     def test_existing_long_event_closes_when_pump_risk_signal_is_active(self):
         settings = temp_settings()

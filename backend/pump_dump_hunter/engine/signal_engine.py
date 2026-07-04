@@ -147,9 +147,14 @@ class SignalEngine:
         for record in records:
             if self.long_enabled:
                 le = self.long_events_by_symbol.get(record.symbol)
-                if le and le.status == "active" and record.selected and not record.long_candidate:
-                    le.status = "closed"
-                    le.exit_reason = "long_candidate_lost"
+                if le and le.status == "active" and record.selected:
+                    # long_candidate is a trigger into monitoring, not a condition that must
+                    # remain true on every discovery pass. Keep the watch alive until the
+                    # long engine closes it by timeout, trend break, or pump-risk conflict.
+                    le.last_seen = decision_time
+                    le.current_price = record.last_price
+                    le.high_price = max(le.high_price, record.last_price)
+                    self._copy_long_rank_fields(le, record)
                 if record.long_candidate and self._long_blocked_by_pump_risk(record.symbol, decision_time):
                     le = self.long_events_by_symbol.get(record.symbol)
                     if le and le.status == "active":
