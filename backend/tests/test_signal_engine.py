@@ -100,6 +100,49 @@ class SignalEngineTests(unittest.TestCase):
         self.assertFalse(engine._can_emit_long_signal(le, 10_000 + 2 * 3_600_000 - 1))
         self.assertTrue(engine._can_emit_long_signal(le, 10_000 + 2 * 3_600_000))
 
+    def test_long_signal_freshness_blocks_repeats_stale_and_extended_entries(self):
+        settings = temp_settings()
+        settings["signals"]["long_emit_once_per_event"] = True
+        settings["signals"]["long_max_signal_delay_hours"] = 2.0
+        settings["signals"]["long_max_signal_gain_pct"] = 10.0
+        engine = SignalEngine(settings)
+        candle = Candle("LONGUSDT", "5m", 1_000, 100.0, 112.0, 99.0, 111.0, 100.0, 1_000 + 5 * 60_000 - 1, 5000.0, 100)
+
+        already = LongEvent("LONGUSDT-L-1", "LONGUSDT", 1_000, 1_000, 100_000_000, 100.0, 105.0, 104.0, long_signal_seq=1)
+        self.assertEqual(engine._long_entry_signal_block_reason(already, candle), "already_signaled")
+
+        stale = LongEvent("LONGUSDT-L-2", "LONGUSDT", 1_000, 1_000, 100_000_000, 100.0, 105.0, 104.0)
+        late_candle = Candle("LONGUSDT", "5m", 8_000_000, 105.0, 106.0, 104.0, 105.0, 100.0, 8_299_999, 5000.0, 100)
+        self.assertEqual(engine._long_entry_signal_block_reason(stale, late_candle), "long_signal_stale")
+
+        fresh = LongEvent("LONGUSDT-L-3", "LONGUSDT", 1_000, 1_000, 100_000_000, 100.0, 105.0, 104.0)
+        self.assertEqual(engine._long_entry_signal_block_reason(fresh, candle), "long_signal_extended")
+
+    def test_process_long_closes_stale_unsignaled_watch(self):
+        settings = temp_settings()
+        settings["signals"]["mode"] = "ml"
+        settings["signals"]["long_enabled"] = True
+        settings["signals"]["long_max_signal_delay_hours"] = 2.0
+        engine = SignalEngine(settings)
+        le = LongEvent(
+            event_id="LONGUSDT-L-1",
+            symbol="LONGUSDT",
+            first_seen=1_000,
+            last_seen=1_000,
+            expires_at=100_000_000,
+            entry_price=100.0,
+            high_price=105.0,
+            current_price=104.0,
+        )
+        engine.load_long_events([le])
+        candle = Candle("LONGUSDT", "5m", 8_000_000, 105.0, 106.0, 104.0, 105.0, 100.0, 8_299_999, 5000.0, 100)
+
+        alerts = engine._process_long(candle)
+
+        self.assertEqual(alerts, [])
+        self.assertEqual(engine.long_events_by_symbol["LONGUSDT"].status, "closed")
+        self.assertEqual(engine.long_events_by_symbol["LONGUSDT"].exit_reason, "long_signal_stale")
+
     def test_discovery_does_not_create_long_after_pump_short_signal(self):
         settings = temp_settings()
         settings["signals"]["long_enabled"] = True

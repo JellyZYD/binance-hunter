@@ -24,6 +24,10 @@ class SignalEngine:
         self.multi_signal_cooldown_ms = int(max(0.0, self.multi_signal_cooldown_hours) * 3_600_000)
         self.long_signal_cooldown_hours = float(self.signal_cfg.get("long_signal_cooldown_hours", 2.0))
         self.long_signal_cooldown_ms = int(max(0.0, self.long_signal_cooldown_hours) * 3_600_000)
+        self.long_emit_once_per_event = bool(self.signal_cfg.get("long_emit_once_per_event", True))
+        self.long_max_signal_gain_pct = float(self.signal_cfg.get("long_max_signal_gain_pct", 10.0))
+        self.long_max_signal_delay_hours = float(self.signal_cfg.get("long_max_signal_delay_hours", 2.0))
+        self.long_max_signal_delay_ms = int(max(0.0, self.long_max_signal_delay_hours) * 3_600_000)
         self.lifecycle_long_watch_min_gain_pct = float(self.signal_cfg.get("lifecycle_long_watch_min_gain_pct", 15.0))
         self.lifecycle_pump_signal_min_gain_pct = float(self.signal_cfg.get("lifecycle_pump_signal_min_gain_pct", 0.0))
         self.lifecycle_high_pump_enabled = bool(self.signal_cfg.get("lifecycle_high_pump_enabled", False))
@@ -134,6 +138,15 @@ class SignalEngine:
         if le.long_last_signal_time is None or self.long_signal_cooldown_ms <= 0:
             return True
         return decision_time - int(le.long_last_signal_time) >= self.long_signal_cooldown_ms
+
+    def _long_entry_signal_block_reason(self, le: LongEvent, candle: Candle) -> str:
+        if self.long_emit_once_per_event and le.long_signal_seq > 0:
+            return "already_signaled"
+        if self.long_max_signal_delay_ms > 0 and candle.close_time - le.first_seen > self.long_max_signal_delay_ms:
+            return "long_signal_stale"
+        if self.long_max_signal_gain_pct > 0 and pct_change(le.entry_price, candle.close) > self.long_max_signal_gain_pct:
+            return "long_signal_extended"
+        return ""
 
     def _long_blocked_by_pump_risk(self, symbol: str, decision_time: int) -> bool:
         pump = self.events_by_symbol.get(symbol)
@@ -269,6 +282,12 @@ class SignalEngine:
         exit_alerts = self._long_exit_signals(le, candle)
         if exit_alerts:
             return exit_alerts
+        block_reason = self._long_entry_signal_block_reason(le, candle)
+        if block_reason:
+            if block_reason != "already_signaled":
+                le.status = "closed"
+                le.exit_reason = block_reason
+            return []
         return self._long_signals(le, candle)
 
     def _long_exit_signals(self, le: LongEvent, candle: Candle) -> list[Alert]:
@@ -374,6 +393,8 @@ class SignalEngine:
             f"qv30_rank={le.qv30_rank}",
             f"ret30_rank={le.ret30_rank}",
             f"long_cooldown={self.long_signal_cooldown_hours:g}h",
+            f"max_signal_gain={self.long_max_signal_gain_pct:g}%",
+            f"max_signal_delay={self.long_max_signal_delay_hours:g}h",
         ]
         le.long_last_signal_time = candle.close_time
         self._ensure_pump_watch_from_long(le, candle, evidence)
