@@ -247,11 +247,35 @@ def cmd_web(args) -> int:
     run_web(settings, host=args.host, port=args.port)
     return 0
 
+def cmd_collect_micro(args) -> int:
+    from .micro_collector import collect_micro
+
+    settings = load_settings(args.config or args.settings)
+    asyncio.run(collect_micro(
+        settings,
+        broad_top=args.broad_top,
+        oi_interval=args.oi_interval,
+        depth_top=args.depth_top,
+        depth_interval=args.depth_interval,
+        retention_days=args.retention_days,
+    ))
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Binance pump-dump short signal hunter")
     parser.add_argument("--settings", default=None)
     parser.add_argument("--config", default=None)
     sub = parser.add_subparsers(dest="command", required=True)
+
+    micro = sub.add_parser("collect-micro", help="collect OI / liquidation / hot-pool depth micro data")
+    micro.add_argument("--config", default=None)
+    micro.add_argument("--broad-top", type=int, default=450)
+    micro.add_argument("--oi-interval", type=int, default=60)
+    micro.add_argument("--depth-top", type=int, default=30)
+    micro.add_argument("--depth-interval", type=int, default=30)
+    micro.add_argument("--retention-days", type=int, default=90)
+    micro.set_defaults(func=cmd_collect_micro)
 
     discover = sub.add_parser("discover")
     discover.add_argument("--config", default=None)
