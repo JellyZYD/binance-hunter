@@ -87,10 +87,14 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 rows = self.store.waterfall_position_rows(
                     status=query.get("status", [""])[0],
                     limit=int_param(query, "limit", 200),
+                    strategy=query.get("strategy", [""])[0],
                 )
                 self.write_json({"rows": enrich_waterfall_positions(self.store, rows)})
             elif parsed.path == "/api/waterfall/signals":
-                self.write_json({"rows": self.store.waterfall_signal_rows(limit=int_param(query, "limit", 200))})
+                self.write_json({"rows": self.store.waterfall_signal_rows(
+                    limit=int_param(query, "limit", 200),
+                    strategy=query.get("strategy", [""])[0],
+                )})
             elif parsed.path == "/api/waterfall/shadow":
                 self.write_json({
                     "summary": self.store.waterfall_shadow_summary(),
@@ -157,8 +161,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
         return data
 
     def api_waterfall_summary(self) -> dict[str, Any]:
+        from .board_waterfall import STRATEGY_NAME as CLAUDE_STRATEGY
+        from .board_waterfall import board_waterfall_settings
+        from .waterfall import strategy_label
+
         cfg = waterfall_settings(self.settings)
         out = self.store.waterfall_summary(float(cfg.get("paper_initial_balance_usdt") or 0.0))
+        board_cfg = board_waterfall_settings(self.settings)
+        accounts = []
+        for strat in self.store.waterfall_strategies() or []:
+            init = (
+                float(board_cfg.get("paper_initial_balance_usdt") or 0.0)
+                if strat == CLAUDE_STRATEGY
+                else float(cfg.get("paper_initial_balance_usdt") or 0.0)
+            )
+            acc = self.store.waterfall_summary(init, strategy=strat)
+            acc["strategy"] = strat
+            acc["strategy_label"] = strategy_label(strat)
+            accounts.append(acc)
+        out["accounts"] = accounts
         runtime = self.settings.get("runtime", {})
         out["active_strategy"] = runtime.get("active_strategy", "waterfall_quant")
         out["config"] = {

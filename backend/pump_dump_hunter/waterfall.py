@@ -824,6 +824,14 @@ async def waterfall_monitor(
     engine = WaterfallEngine(settings)
     engine.load_positions(store.active_waterfall_positions())
     engine.load_recent_state(store.waterfall_position_rows(limit=1000), store.waterfall_signal_rows(limit=1000))
+    extra_engines: list[Any] = []
+    from .board_waterfall import BoardWaterfallEngine, board_waterfall_settings
+
+    if bool(board_waterfall_settings(settings).get("enabled", True)):
+        board_engine = BoardWaterfallEngine(settings)
+        board_engine.load_positions(store.active_waterfall_positions())
+        board_engine.load_recent_state(store.waterfall_position_rows(limit=1000), store.waterfall_signal_rows(limit=1000))
+        extra_engines.append(board_engine)
     cfg = waterfall_settings(settings)
     top = int(broad_top or cfg["broad_top"])
     interval = str(cfg["watch_interval"])
@@ -832,7 +840,7 @@ async def waterfall_monitor(
     every = parse_duration_seconds(discover_every or str(cfg["discover_every"]))
     workers = int(max_workers or cfg["max_workers"])
     processed = 0
-    symbols = refresh_waterfall_universe(client, store, engine, settings, top, workers)
+    symbols = refresh_waterfall_universe(client, store, engine, settings, top, workers, extra_engines=extra_engines)
     micro_streams = [str(x) for x in cfg.get("micro_streams", ["aggTrade"]) if str(x)]
     source = WebSocketMarketSource(settings, symbols, ["1m"], micro_streams=micro_streams)
     agen = source.market_events()
@@ -846,7 +854,7 @@ async def waterfall_monitor(
             except asyncio.TimeoutError:
                 await source.close()
                 await agen.aclose()
-                symbols = refresh_waterfall_universe(client, store, engine, settings, top, workers)
+                symbols = refresh_waterfall_universe(client, store, engine, settings, top, workers, extra_engines=extra_engines)
                 source = WebSocketMarketSource(settings, symbols, ["1m"], micro_streams=micro_streams)
                 agen = source.market_events()
                 next_discovery = utc_ms() + every * 1000
@@ -862,6 +870,10 @@ async def waterfall_monitor(
                 continue
             store.save_candles([event.candle])
             watch, positions, signals = engine.on_kline(event)
+            for eng in extra_engines:
+                _w2, p2, s2 = eng.on_kline(event)
+                positions = [*positions, *p2]
+                signals = [*signals, *s2]
             store.upsert_waterfall_watch(watch)
             for pos in positions:
                 store.upsert_waterfall_position(pos.to_dict())
@@ -963,13 +975,14 @@ def refresh_waterfall_universe(
     settings: dict[str, Any],
     broad_top: int,
     max_workers: int,
+    extra_engines: list[Any] | None = None,
 ) -> list[str]:
     rows = build_broad_universe(client, settings, broad_top=broad_top)
     symbols = [str(r["symbol"]) for r in rows]
     active = [str(r["symbol"]) for r in store.active_waterfall_positions()]
     symbols = sorted(set(symbols) | set(active))
     print(f"[{local_stamp()}] waterfall universe symbols={len(symbols)} broad_top={broad_top}", flush=True)
-    prewarm_waterfall_symbols(client, store, engine, symbols, int(engine.cfg["prewarm_limit"]), max_workers)
+    prewarm_waterfall_symbols(client, store, engine, symbols, int(engine.cfg["prewarm_limit"]), max_workers, extra_engines=extra_engines)
     return symbols
 
 
@@ -980,6 +993,7 @@ def prewarm_waterfall_symbols(
     symbols: list[str],
     limit: int,
     max_workers: int,
+    extra_engines: list[Any] | None = None,
 ) -> None:
     cutoff = closed_candle_cutoff_ms(utc_ms(), "1m")
     changed: list[dict[str, Any]] = []
@@ -999,6 +1013,8 @@ def prewarm_waterfall_symbols(
                 total += len(candles)
                 store.save_candles(candles)
                 changed.extend(engine.prime_candles(candles))
+                for eng in extra_engines or []:
+                    eng.prime_candles(candles)
             except Exception as exc:
                 errors.append(f"{symbol}={type(exc).__name__}: {exc}"[:160])
     store.upsert_waterfall_watch(changed)
@@ -1107,6 +1123,15 @@ def render_waterfall_markdown(signal: WaterfallSignal) -> str:
     )
 
 
+STRATEGY_LABELS = {
+    "claude_board_wf_1m": "Claude·冠军标签",
+}
+
+
+def strategy_label(strategy: str) -> str:
+    return STRATEGY_LABELS.get(strategy, "Codex·core5_agg")
+
+
 def render_waterfall_wecom(signal: WaterfallSignal) -> str:
     action_cn = {
         "open_short": "瀑布开空",
@@ -1115,7 +1140,7 @@ def render_waterfall_wecom(signal: WaterfallSignal) -> str:
         "timeout_exit": "瀑布超时离场",
     }.get(signal.action, signal.action)
     lines = [
-        f"**{action_cn} {signal.symbol}**",
+        f"**[{strategy_label(signal.strategy)}] {action_cn} {signal.symbol}**",
         f"> 价格 {signal.price:.8g} | 止损 {signal.stop_price:.8g}",
         f"> 档位 {signal.tier} | 置信 {signal.confidence:.3f}",
         f"> 类型 {signal.family} | 规则 {signal.rule}",

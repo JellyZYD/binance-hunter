@@ -913,53 +913,78 @@ class Store:
         finally:
             conn.close()
 
-    def waterfall_position_rows(self, status: str = "", limit: int = 200) -> list[dict[str, Any]]:
+    def waterfall_position_rows(self, status: str = "", limit: int = 200, strategy: str = "") -> list[dict[str, Any]]:
         conn = self.connect()
         try:
+            clauses = []
+            params: list[Any] = []
             if status:
+                clauses.append("status=?")
+                params.append(status)
+            if strategy:
+                clauses.append("strategy=?")
+                params.append(strategy)
+            where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+            rows = conn.execute(
+                f"SELECT * FROM waterfall_positions {where} ORDER BY updated_time DESC LIMIT ?",
+                (*params, int(limit)),
+            ).fetchall()
+            return [decode_waterfall_row(dict(r)) for r in rows]
+        finally:
+            conn.close()
+
+    def waterfall_signal_rows(self, limit: int = 200, strategy: str = "") -> list[dict[str, Any]]:
+        conn = self.connect()
+        try:
+            if strategy:
                 rows = conn.execute(
-                    "SELECT * FROM waterfall_positions WHERE status=? ORDER BY updated_time DESC LIMIT ?",
-                    (status, int(limit)),
+                    "SELECT * FROM waterfall_signals WHERE strategy=? ORDER BY decision_time DESC LIMIT ?",
+                    (strategy, int(limit)),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    "SELECT * FROM waterfall_positions ORDER BY updated_time DESC LIMIT ?",
+                    "SELECT * FROM waterfall_signals ORDER BY decision_time DESC LIMIT ?",
                     (int(limit),),
                 ).fetchall()
             return [decode_waterfall_row(dict(r)) for r in rows]
         finally:
             conn.close()
 
-    def waterfall_signal_rows(self, limit: int = 200) -> list[dict[str, Any]]:
+    def waterfall_strategies(self) -> list[str]:
         conn = self.connect()
         try:
-            rows = conn.execute(
-                "SELECT * FROM waterfall_signals ORDER BY decision_time DESC LIMIT ?",
-                (int(limit),),
-            ).fetchall()
-            return [decode_waterfall_row(dict(r)) for r in rows]
+            rows = conn.execute("SELECT DISTINCT strategy FROM waterfall_positions").fetchall()
+            return sorted({str(r["strategy"]) for r in rows if r["strategy"]})
         finally:
             conn.close()
 
-    def waterfall_summary(self, initial_balance_usdt: float = 0.0) -> dict[str, Any]:
+    def waterfall_summary(self, initial_balance_usdt: float = 0.0, strategy: str = "") -> dict[str, Any]:
         conn = self.connect()
         try:
-            open_count = conn.execute("SELECT COUNT(*) AS n FROM waterfall_positions WHERE status='open'").fetchone()["n"]
-            closed = conn.execute("SELECT COUNT(*) AS n FROM waterfall_positions WHERE status='closed'").fetchone()["n"]
+            sfilter = " AND strategy=?" if strategy else ""
+            sargs: tuple = (strategy,) if strategy else ()
+            open_count = conn.execute(f"SELECT COUNT(*) AS n FROM waterfall_positions WHERE status='open'{sfilter}", sargs).fetchone()["n"]
+            closed = conn.execute(f"SELECT COUNT(*) AS n FROM waterfall_positions WHERE status='closed'{sfilter}", sargs).fetchone()["n"]
             watch = conn.execute("SELECT COUNT(*) AS n FROM waterfall_watch").fetchone()["n"]
-            signals = conn.execute("SELECT COUNT(*) AS n FROM waterfall_signals").fetchone()["n"]
+            if strategy:
+                signals = conn.execute("SELECT COUNT(*) AS n FROM waterfall_signals WHERE strategy=?", (strategy,)).fetchone()["n"]
+            else:
+                signals = conn.execute("SELECT COUNT(*) AS n FROM waterfall_signals").fetchone()["n"]
             pnl = conn.execute(
-                "SELECT SUM(pnl_usdt) AS pnl_usdt, AVG(pnl_pct) AS avg_pnl_pct FROM waterfall_positions WHERE status='closed'"
+                f"SELECT SUM(pnl_usdt) AS pnl_usdt, AVG(pnl_pct) AS avg_pnl_pct FROM waterfall_positions WHERE status='closed'{sfilter}",
+                sargs,
             ).fetchone()
             wins = conn.execute(
-                "SELECT COUNT(*) AS n FROM waterfall_positions WHERE status='closed' AND pnl_pct>0"
+                f"SELECT COUNT(*) AS n FROM waterfall_positions WHERE status='closed' AND pnl_pct>0{sfilter}",
+                sargs,
             ).fetchone()["n"]
             open_rows = conn.execute(
-                """SELECT p.symbol, p.entry_price, p.notional_usdt, p.margin_usdt, p.fee_rate,
+                f"""SELECT p.symbol, p.entry_price, p.notional_usdt, p.margin_usdt, p.fee_rate,
                           COALESCE(w.last_price, p.entry_price) AS mark_price
                    FROM waterfall_positions p
                    LEFT JOIN waterfall_watch w ON w.symbol=p.symbol
-                   WHERE p.status='open'"""
+                   WHERE p.status='open'{sfilter.replace('strategy', 'p.strategy')}""",
+                sargs,
             ).fetchall()
             unrealized = 0.0
             used_margin = 0.0

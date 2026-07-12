@@ -3,6 +3,21 @@
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 
+type StrategyAccount = {
+  strategy: string;
+  strategy_label: string;
+  open_positions: number;
+  closed_positions: number;
+  signals: number;
+  win_rate: number;
+  avg_pnl_pct: number;
+  paper_initial_balance_usdt?: number;
+  paper_realized_pnl_usdt?: number;
+  paper_unrealized_pnl_usdt?: number;
+  paper_equity_usdt?: number;
+  paper_used_margin_usdt?: number;
+};
+
 type WaterfallSummary = {
   watch: number;
   open_positions: number;
@@ -18,6 +33,7 @@ type WaterfallSummary = {
   avg_pnl_pct: number;
   win_rate: number;
   active_strategy?: string;
+  accounts?: StrategyAccount[];
   config?: Record<string, unknown>;
 };
 
@@ -193,6 +209,11 @@ function replayModeText(row: ReplayResult) {
   return row.mode || '-';
 }
 
+function strategyTag(strategy?: string) {
+  if (!strategy) return '';
+  return strategy === 'claude_board_wf_1m' ? 'Claude·冠军标签' : 'Codex·core5_agg';
+}
+
 export default function WaterfallDashboard() {
   const [summary, setSummary] = useState<WaterfallSummary | null>(null);
   const [watch, setWatch] = useState<WatchRow[]>([]);
@@ -292,6 +313,28 @@ export default function WaterfallDashboard() {
         <Metric label="纸面胜率" value={pct(summary?.win_rate ?? 0)} tone="green" />
       </section>
 
+      {(summary?.accounts?.length ?? 0) > 0 ? (
+        <section className="waterfall-grid">
+          {(summary?.accounts ?? []).map((acc) => {
+            const accEquity = acc.paper_equity_usdt ?? acc.paper_initial_balance_usdt ?? 0;
+            const accRealized = acc.paper_realized_pnl_usdt ?? 0;
+            const accUnrealized = acc.paper_unrealized_pnl_usdt ?? 0;
+            return (
+              <Panel title={`独立账户 · ${acc.strategy_label || strategyTag(acc.strategy)}`} count={acc.closed_positions} key={acc.strategy}>
+                <div className="waterfall-metrics">
+                  <Metric label="账户权益" value={usdt(accEquity)} tone="cyan" sub={`初始 ${usdt(acc.paper_initial_balance_usdt ?? 0)}`} />
+                  <Metric label="已实现 PnL" value={usdt(accRealized)} tone={accRealized >= 0 ? 'green' : 'red'} />
+                  <Metric label="未实现 PnL" value={usdt(accUnrealized)} tone={accUnrealized >= 0 ? 'green' : 'red'} />
+                  <Metric label="持仓中" value={acc.open_positions} tone="red" />
+                  <Metric label="已平仓" value={acc.closed_positions} tone="neutral" />
+                  <Metric label="胜率" value={pct(acc.win_rate ?? 0)} tone="green" sub={`均值 ${pct(acc.avg_pnl_pct ?? 0)}`} />
+                </div>
+              </Panel>
+            );
+          })}
+        </section>
+      ) : null}
+
       <section className="waterfall-grid">
         <Panel title="当前纸面持仓" count={openPositions.length}>
           {openPositions.length ? (
@@ -303,7 +346,7 @@ export default function WaterfallDashboard() {
                   <article className="wf-position-card" key={p.position_id}>
                     <div className="wf-card-head">
                       <strong>{p.symbol}</strong>
-                      <span>{familyText(p.family)}</span>
+                      <span>{strategyTag(p.strategy)} · {familyText(p.family)}</span>
                     </div>
                     <div className="wf-card-main">
                       <b>{fmt(p.mark_price ?? p.entry_price, 8)}</b>
@@ -334,7 +377,7 @@ export default function WaterfallDashboard() {
                   <strong>{actionText(s.action)} {s.symbol}</strong>
                   <span>{date(s.decision_time)}</span>
                 </div>
-                <p>价格 {fmt(s.price, 8)} / 止损 {fmt(s.stop_price, 8)}</p>
+                <p>【{strategyTag(s.strategy)}】价格 {fmt(s.price, 8)} / 止损 {fmt(s.stop_price, 8)}</p>
                 <p>{familyText(s.family)} / {s.rule}</p>
                 <p>档位 {s.tier || 'normal'} / 保证金 {usdt(s.margin_usdt ?? 0)} / 名义 {usdt(s.notional_usdt ?? 0)}</p>
                 {s.action !== 'open_short'
