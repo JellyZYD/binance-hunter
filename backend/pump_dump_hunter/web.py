@@ -102,6 +102,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 })
             elif parsed.path == "/api/waterfall/replay-results":
                 self.write_json(read_waterfall_replay_results(limit=int_param(query, "limit", 20)))
+            elif parsed.path == "/api/system":
+                self.write_json(self.api_system())
             elif parsed.path == "/api/candles":
                 symbol = (query.get("symbol", [""])[0] or "").upper()
                 interval = query.get("interval", ["15m"])[0]
@@ -159,6 +161,15 @@ class DashboardHandler(BaseHTTPRequestHandler):
             "long_enabled": bool(signals.get("long_enabled", False)),
         }
         return data
+
+    def api_system(self) -> dict[str, Any]:
+        from . import sysmon
+
+        try:
+            candle_stat = self.store.candle_stat_1m()
+        except Exception:
+            candle_stat = None
+        return sysmon.collect(self.store.db_path, candle_stat)
 
     def api_waterfall_summary(self) -> dict[str, Any]:
         from .board_waterfall import STRATEGY_NAME as CLAUDE_STRATEGY

@@ -3,6 +3,16 @@
 import type { ReactNode } from 'react';
 import { useEffect, useMemo, useState } from 'react';
 
+type SystemStat = {
+  ts: number;
+  cpu: { percent: number; cores: number; load1: number; load5: number; load15: number };
+  memory: { total_mb: number; used_mb: number; percent: number; swap_used_mb: number };
+  disk: { total_gb: number; used_gb: number; free_gb: number; percent: number };
+  network: { rx_kbps: number; tx_kbps: number; rx_total_gb: number; tx_total_gb: number };
+  binance: { connected: boolean; last_candle_age_sec: number | null; candles_1m: number; candle_span_days?: number };
+  data: { db_mb: number; micro: { mb: number; files: number; span_hours: number } };
+};
+
 type StrategyAccount = {
   strategy: string;
   strategy_label: string;
@@ -221,18 +231,20 @@ export default function WaterfallDashboard() {
   const [closedPositions, setClosedPositions] = useState<PositionRow[]>([]);
   const [signals, setSignals] = useState<SignalRow[]>([]);
   const [replays, setReplays] = useState<ReplayResult[]>([]);
+  const [system, setSystem] = useState<SystemStat | null>(null);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [error, setError] = useState('');
 
   async function refresh() {
     try {
-      const [summaryRes, watchRes, openRes, closedRes, signalRes, replayRes] = await Promise.all([
+      const [summaryRes, watchRes, openRes, closedRes, signalRes, replayRes, systemRes] = await Promise.all([
         api<WaterfallSummary>('/api/hunter/waterfall/summary'),
         api<{ rows: WatchRow[] }>('/api/hunter/waterfall/watch?limit=450'),
         api<{ rows: PositionRow[] }>('/api/hunter/waterfall/positions?status=open&limit=100'),
         api<{ rows: PositionRow[] }>('/api/hunter/waterfall/positions?status=closed&limit=160'),
         api<{ rows: SignalRow[] }>('/api/hunter/waterfall/signals?limit=180'),
         api<{ rows: ReplayResult[] }>('/api/hunter/waterfall/replay-results?limit=12'),
+        api<SystemStat>('/api/hunter/system').catch(() => null),
       ]);
       setSummary(summaryRes);
       setWatch(watchRes.rows || []);
@@ -240,6 +252,7 @@ export default function WaterfallDashboard() {
       setClosedPositions(closedRes.rows || []);
       setSignals(signalRes.rows || []);
       setReplays(replayRes.rows || []);
+      setSystem(systemRes);
       setUpdatedAt(new Date());
       setError('');
     } catch (err) {
@@ -301,6 +314,59 @@ export default function WaterfallDashboard() {
         <span>agg过滤：sell {fmt(cfg.agg_sell_ratio_min, 2)} / low {fmt(cfg.agg_low_time_frac_min, 2)}</span>
         <span>实盘下单：{cfg.real_order_enabled ? '已开启' : '关闭'}</span>
       </section>
+
+      {system ? (
+        <section className="waterfall-metrics">
+          <Metric
+            label="币安连接"
+            value={system.binance.connected ? '正常' : '断流'}
+            tone={system.binance.connected ? 'green' : 'red'}
+            sub={system.binance.last_candle_age_sec != null ? `1m延迟 ${system.binance.last_candle_age_sec}s` : '无数据'}
+          />
+          <Metric
+            label="CPU"
+            value={`${fmt(system.cpu.percent, 0)}%`}
+            tone={system.cpu.percent > 85 ? 'red' : 'cyan'}
+            sub={`${system.cpu.cores}核 · 负载 ${fmt(system.cpu.load1, 2)}`}
+          />
+          <Metric
+            label="内存"
+            value={`${fmt(system.memory.percent, 0)}%`}
+            tone={system.memory.percent > 88 ? 'red' : 'cyan'}
+            sub={`${fmt(system.memory.used_mb / 1024, 1)}/${fmt(system.memory.total_mb / 1024, 1)}G · swap ${fmt(system.memory.swap_used_mb, 0)}M`}
+          />
+          <Metric
+            label="磁盘"
+            value={`${fmt(system.disk.percent, 0)}%`}
+            tone={system.disk.percent > 85 ? 'red' : 'green'}
+            sub={`剩 ${fmt(system.disk.free_gb, 1)}G / 共 ${fmt(system.disk.total_gb, 0)}G`}
+          />
+          <Metric
+            label="网络"
+            value={`↓${fmt(system.network.rx_kbps, 0)} ↑${fmt(system.network.tx_kbps, 0)} KB/s`}
+            tone="neutral"
+            sub={`累计 ↓${fmt(system.network.rx_total_gb, 1)}G ↑${fmt(system.network.tx_total_gb, 1)}G`}
+          />
+          <Metric
+            label="K线数据"
+            value={`${fmt(system.binance.candles_1m / 10000, 0)}万根`}
+            tone="cyan"
+            sub={`1m · 跨 ${fmt(system.binance.candle_span_days ?? 0, 1)} 天`}
+          />
+          <Metric
+            label="数据库"
+            value={`${fmt(system.data.db_mb, 0)}M`}
+            tone="neutral"
+            sub="SQLite"
+          />
+          <Metric
+            label="采集数据"
+            value={`${fmt(system.data.micro.mb, 1)}M`}
+            tone="neutral"
+            sub={`${system.data.micro.files}文件 · ${fmt(system.data.micro.span_hours, 1)}h`}
+          />
+        </section>
+      ) : null}
 
       <section className="waterfall-metrics">
         <Metric label="账户权益" value={usdt(equity)} tone="cyan" sub={`初始 ${usdt(summary?.paper_initial_balance_usdt ?? 0)}`} />

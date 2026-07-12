@@ -950,6 +950,22 @@ class Store:
         finally:
             conn.close()
 
+    def candle_stat_1m(self) -> dict[str, Any]:
+        conn = self.connect()
+        try:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n, MIN(close_time) AS lo, MAX(close_time) AS hi FROM candles WHERE interval='1m'"
+            ).fetchone()
+            lo = int(row["lo"]) if row and row["lo"] else 0
+            hi = int(row["hi"]) if row and row["hi"] else 0
+            return {
+                "count": int(row["n"]) if row and row["n"] else 0,
+                "last_close_ms": hi,
+                "span_days": round((hi - lo) / 86_400_000, 1) if (lo and hi) else 0.0,
+            }
+        finally:
+            conn.close()
+
     def waterfall_strategies(self) -> list[str]:
         conn = self.connect()
         try:
