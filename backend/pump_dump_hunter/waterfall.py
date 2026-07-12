@@ -1012,8 +1012,22 @@ def prewarm_waterfall_symbols(
     errors: list[str] = []
 
     def fetch(symbol: str) -> tuple[str, list[Candle]]:
-        candles = [c for c in client.klines(symbol, "1m", limit=limit) if c.close_time <= cutoff]
-        return symbol, candles
+        # DB-first prewarm: candles persisted by the previous run cover most
+        # of the window, so a quick restart only needs the missing tail from
+        # REST (weight ~1/symbol instead of ~10) and cannot trigger IP bans.
+        cached = [
+            c
+            for c in store.load_candles(symbol, "1m", start_time=cutoff - limit * 60_000)
+            if c.close_time <= cutoff
+        ]
+        last_close = cached[-1].close_time if cached else 0
+        gap_min = int((cutoff - last_close) / 60_000) if last_close else limit
+        if gap_min <= 0:
+            return symbol, cached
+        fetch_limit = max(2, min(limit, gap_min + 2))
+        fresh = [c for c in client.klines(symbol, "1m", limit=fetch_limit) if c.close_time <= cutoff]
+        merged = {c.open_time: c for c in [*cached, *fresh]}
+        return symbol, [merged[k] for k in sorted(merged)]
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futs = {pool.submit(fetch, s): s for s in symbols}
