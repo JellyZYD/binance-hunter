@@ -54,4 +54,6 @@ ls -lh /opt/binance-hunter/backend/storage/micro/   # 应有 oi_/liq_/depth_ 三
 - 三路轮询**错峰启动**：OI 延后 90s、盘口延后 120s，避免与 monitor 开机预热同时冲击币安权重；爆仓流 websocket 不占 REST 权重，立即启动。
 - **与 monitor 同机共享 IP 权重**：重启大量服务时注意别让采集器和 monitor 全量预热同时发生（见 `deploy/README.md` 的"限流与重启"一节）。
 
+写文件格式：优先 parquet（需 pyarrow，已在 requirements）；**缺 parquet 引擎时自动降级 `*.csv.gz`**，采集器不会因缺依赖而崩溃循环（2026-07-12 踩过：venv 无 pyarrow，to_parquet 每 5min 崩一次）。
+
 已本地实测：75 秒三路正常落盘；服务器 2026-07-12 上线，DB-first 预热 + 错峰后无封禁。

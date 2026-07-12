@@ -44,6 +44,40 @@ curl -s https://pixia.cc/api/hunter/waterfall/summary | python3 -m json.tool | g
 
 微观数据采集器（OI/爆仓流/盘口）的完整说明见 [`../docs/micro-collector.md`](../docs/micro-collector.md)。
 
+### 内存与防死机（2026-07-12 加固，2G 机器必读）
+
+这台 2G 机器曾因内存爆连环假死（前端 npm 构建 OOM、双引擎 K 线翻倍）。已建三道防线，正常运行监控进程内存 ~150-250MB：
+
+1. **K 线内存降 90%**：①`Candle` 用 `@dataclass(slots=True)`（600→136 字节/对象，slots 不改任何逻辑、属性访问略快）；②Claude/Codex 两引擎**共享同一份 K 线字典**（board 引擎不再存第二份）。合计监控进程 K 线内存 ~700MB→~80MB。
+2. **systemd 内存硬限（cgroup 兜底）**：超限只重启该服务、**绝不触发系统级 OOM 拖垮 sshd**。一次性配置：
+   ```bash
+   mkdir -p /etc/systemd/system/binance-hunter-monitor.service.d
+   printf '[Service]\nMemoryHigh=850M\nMemoryMax=1000M\n' > /etc/systemd/system/binance-hunter-monitor.service.d/limit.conf
+   mkdir -p /etc/systemd/system/binance-hunter-micro.service.d
+   printf '[Service]\nMemoryMax=350M\n' > /etc/systemd/system/binance-hunter-micro.service.d/limit.conf
+   systemctl daemon-reload && systemctl restart binance-hunter-monitor binance-hunter-micro
+   ```
+3. **崩溃保护 + 执行优先**：事件循环 per-event try/except（单币坏数据/慢 webhook 不再崩全局）；纸面持仓先落库、企微推送 best-effort 在后（慢/失败推送不丢单）。
+
+**监控进程健康自报**：监控进程每 ~30s 把 RSS/事件数/持仓/币数写 `storage/monitor_health.json`，`/api/system` 读出，`/waterfall` 页"监控进程"卡显示监控 RSS + 存活。`waterfall_quant.rss_soft_limit_mb`（默认 1100）超限日志告警。
+
+## 前端部署：Vercel（推荐，2G 机器免构建）
+
+2G 机器构建 Next.js 易 OOM。前端已可完全托管在 Vercel，服务器只跑后端：
+
+1. Vercel → Add New Project → Import `JellyZYD/binance-hunter`。
+2. **Root Directory 设为 `frontend`**（前端在子目录）。
+3. 环境变量：`HUNTER_API_BASE_URL = https://pixia.cc/hunter-api`（Nginx 已把 `/hunter-api/` 代理到后端根，route.ts 通配转发，零代码改动）。
+4. Deploy。之后 `git push` 到 main，Vercel 自动重新构建部署。
+
+服务器侧：`systemctl stop binance-hunter-web && systemctl disable binance-hunter-web`（停本地前端省内存）。代价：`pixia.cc/` 首页 502（`location /` 指向已停的本地前端，预期），改用 Vercel 网址；`pixia.cc/hunter-api/` 照常给 Vercel 供数据。**数据经 /hunter-api/ 公开无鉴权**（纸面/行情，不敏感；需要时可加 token）。
+
+用 Vercel 后更新只需后端轻量三连（无 npm）：
+```bash
+cd /opt/binance-hunter && git fetch origin && git reset --hard origin/main
+systemctl restart binance-hunter-monitor binance-hunter-api
+```
+
 ---
 
 ## Lifecycle Expert Production Version（历史，已非默认）
@@ -189,9 +223,11 @@ journalctl -u binance-hunter-monitor.service -f
 # 双策略账户（各 100U，从开机即显示）
 curl -s https://pixia.cc/api/hunter/waterfall/summary | python3 -m json.tool | grep -A6 strategy_label
 
-# K 线是否实时进库（第二个时间应离当前 UTC < 2min）
-sqlite3 /opt/binance-hunter/backend/storage/hunter.db \
-  "SELECT COUNT(*), MAX(datetime(close_time/1000,'unixepoch')) FROM candles WHERE interval='1m';"
+# 系统 + 监控进程健康（CPU/内存/磁盘/网络/币安连接/监控RSS，一站看全）
+curl -s http://127.0.0.1:8787/api/system | python3 -m json.tool
+
+# 监控进程内存（防死机核心指标，正常 150-250MB）
+grep VmRSS /proc/$(pgrep -f 'run.py monitor')/status
 
 # 采集器三路数据（启动 ~5min 后才有文件）
 ls -lh /opt/binance-hunter/backend/storage/micro/

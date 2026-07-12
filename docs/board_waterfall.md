@@ -88,6 +88,11 @@ exits; +2h relay tested −0.14% over 1471 samples).
 - Turn off with `"enabled": false` and restart monitor.
 - Paper-only: shares the same `WaterfallExecutionAdapter`, never places live
   orders.
+- **Memory**: this engine shares the codex engine's candle deques by reference
+  (`shared_candles=engine.candles`) instead of keeping a second copy — with
+  `Candle(slots=True)` the whole monitor's candle store is ~80MB, not ~700MB.
+  When shared, its `_append`/`prime_candles` are no-ops (codex populates the
+  dict before board reads each tick).
 
 ## Where it shows
 

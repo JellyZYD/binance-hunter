@@ -892,19 +892,20 @@ async def waterfall_monitor(
                     positions = [*positions, *p2]
                     signals = [*signals, *s2]
                 store.upsert_waterfall_watch(watch)
+                # Execution first: the paper position is persisted here, BEFORE
+                # the WeCom push, so a slow/failed webhook can never lose the
+                # trade record. The signal row is written once (save_* is
+                # INSERT OR IGNORE) with the real push status; the push itself
+                # is best-effort and cannot raise out of this loop.
                 for pos in positions:
                     store.upsert_waterfall_position(pos.to_dict())
-                # Execution first: record the paper position/signal to the DB
-                # (durable) before the WeCom push, so a slow/failed webhook can
-                # never lose the trade record. The push is best-effort.
                 for signal in signals:
                     executor.handle_signal(signal)
-                    store.save_waterfall_signal(signal.to_dict(), pushed=False, push_error="pending")
                     try:
                         pushed, msg = sink.emit(signal)
-                        store.save_waterfall_signal(signal.to_dict(), pushed=pushed, push_error="" if pushed else msg)
                     except Exception as pexc:
-                        print(f"[{local_stamp()}] waterfall push error {getattr(signal, 'symbol', '')}: {pexc}", flush=True)
+                        pushed, msg = False, f"{type(pexc).__name__}: {pexc}"
+                    store.save_waterfall_signal(signal.to_dict(), pushed=pushed, push_error="" if pushed else msg)
             except Exception as exc:
                 print(f"[{local_stamp()}] waterfall event error {getattr(event, 'symbol', '')}: {type(exc).__name__}: {exc}", flush=True)
             if processed % int(settings.get("websocket", {}).get("heartbeat_events", 250)) == 0:

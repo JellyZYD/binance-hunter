@@ -179,4 +179,15 @@ PYTHONPATH=backend python backend/run.py waterfall-monitor --broad-top 450 --dis
 Dashboard:
 
 - `/` production waterfall dashboard;
-- `/waterfall` same waterfall dashboard.
+- `/waterfall` same waterfall dashboard;
+- frontend can run on Vercel (see `../deploy/README.md`), calling the server
+  API via `HUNTER_API_BASE_URL=https://pixia.cc/hunter-api`.
+
+## Health & Memory (2G box)
+
+- `/api/system` exposes CPU/mem/disk/network, Binance stream health (1m candle
+  freshness), data sizes, and the monitor process's own RSS/heartbeat; shown on
+  the `/waterfall` metrics row.
+- Candle memory is kept small by `Candle(slots=True)` + a single candle store
+  shared between both engines (~80MB total). systemd `MemoryMax` is the hard
+  OOM backstop. See `../deploy/README.md` → 内存与防死机.
