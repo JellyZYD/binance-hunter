@@ -4,8 +4,12 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Candle:
+    # slots=True: ~600K live candle objects across 393 symbols; __slots__ cuts
+    # per-instance memory ~2/3 (no __dict__) and is the main OOM safeguard on
+    # the 2G box. Candle is frozen and only serialized via to_dict(), so no code
+    # relies on a mutable __dict__.
     symbol: str
     interval: str
     open_time: int

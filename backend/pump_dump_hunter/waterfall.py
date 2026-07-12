@@ -15,6 +15,7 @@ from .data.rest_client import BinanceRestClient
 from .data.store import Store
 from .data.websocket_source import WebSocketMarketSource
 from .discovery import build_broad_universe
+from .sysmon import read_self_rss_mb, write_monitor_health
 from .models import Candle, KlineClosed
 from .timeutils import closed_candle_cutoff_ms, iso_from_ms, local_day_from_ms, local_stamp, parse_duration_seconds, utc_ms
 
@@ -144,6 +145,7 @@ def waterfall_settings(settings: dict[str, Any]) -> dict[str, Any]:
     cfg.setdefault("discover_every", "15m")
     cfg.setdefault("prewarm_limit", 1500)
     cfg.setdefault("max_workers", 8)
+    cfg.setdefault("rss_soft_limit_mb", 1100)  # log a warning above this; systemd MemoryMax is the hard backstop
     cfg.setdefault("watch_interval", "1m")
     cfg.setdefault("notional_usdt", 100.0)
     cfg.setdefault("paper_initial_balance_usdt", 100.0)
@@ -879,21 +881,42 @@ async def waterfall_monitor(
                 if processed % int(settings.get("websocket", {}).get("heartbeat_events", 250)) == 0:
                     print(f"[{local_stamp()}] waterfall events={processed} last={event.get('symbol')} open_positions={len(engine.positions)}", flush=True)
                 continue
-            store.save_candles([event.candle])
-            watch, positions, signals = engine.on_kline(event)
-            for eng in extra_engines:
-                _w2, p2, s2 = eng.on_kline(event)
-                positions = [*positions, *p2]
-                signals = [*signals, *s2]
-            store.upsert_waterfall_watch(watch)
-            for pos in positions:
-                store.upsert_waterfall_position(pos.to_dict())
-            for signal in signals:
-                executor.handle_signal(signal)
-                pushed, msg = sink.emit(signal)
-                store.save_waterfall_signal(signal.to_dict(), pushed=pushed, push_error="" if pushed else msg)
+            # One symbol's bad data / transient error must never crash the whole
+            # monitor — log and move on. Position + signal writes stay atomic per
+            # symbol so a failure can't leave a half-open paper trade.
+            try:
+                store.save_candles([event.candle])
+                watch, positions, signals = engine.on_kline(event)
+                for eng in extra_engines:
+                    _w2, p2, s2 = eng.on_kline(event)
+                    positions = [*positions, *p2]
+                    signals = [*signals, *s2]
+                store.upsert_waterfall_watch(watch)
+                for pos in positions:
+                    store.upsert_waterfall_position(pos.to_dict())
+                # Execution first: record the paper position/signal to the DB
+                # (durable) before the WeCom push, so a slow/failed webhook can
+                # never lose the trade record. The push is best-effort.
+                for signal in signals:
+                    executor.handle_signal(signal)
+                    store.save_waterfall_signal(signal.to_dict(), pushed=False, push_error="pending")
+                    try:
+                        pushed, msg = sink.emit(signal)
+                        store.save_waterfall_signal(signal.to_dict(), pushed=pushed, push_error="" if pushed else msg)
+                    except Exception as pexc:
+                        print(f"[{local_stamp()}] waterfall push error {getattr(signal, 'symbol', '')}: {pexc}", flush=True)
+            except Exception as exc:
+                print(f"[{local_stamp()}] waterfall event error {getattr(event, 'symbol', '')}: {type(exc).__name__}: {exc}", flush=True)
             if processed % int(settings.get("websocket", {}).get("heartbeat_events", 250)) == 0:
-                print(f"[{local_stamp()}] waterfall events={processed} last={event.symbol} open_positions={len(engine.positions)}", flush=True)
+                rss = read_self_rss_mb()
+                open_n = len(engine.positions) + sum(len(e.positions) for e in extra_engines)
+                print(f"[{local_stamp()}] waterfall events={processed} last={event.symbol} open_positions={open_n} rss={rss:.0f}MB", flush=True)
+                write_monitor_health(Path(dirs["db"]).parent, {
+                    "events": processed, "open_positions": open_n,
+                    "universe": len(symbols), "watch_symbols": len(engine.candles),
+                })
+                if rss > float(cfg.get("rss_soft_limit_mb", 1100)):
+                    print(f"[{local_stamp()}] WARNING waterfall rss {rss:.0f}MB over soft limit; systemd MemoryMax will restart cleanly if it climbs further", flush=True)
     finally:
         await source.close()
         await agen.aclose()

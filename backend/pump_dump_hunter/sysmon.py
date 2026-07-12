@@ -7,6 +7,7 @@ module level so the stateless HTTP handler still gets real rates.
 """
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import time
@@ -14,6 +15,46 @@ from pathlib import Path
 from typing import Any
 
 _prev: dict[str, Any] = {"t": 0.0, "cpu": None, "net": None}
+
+
+def read_self_rss_mb() -> float:
+    """Resident memory of the CURRENT process (the monitor), pure /proc."""
+    try:
+        with open("/proc/self/status", "r") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return round(int(line.split()[1]) / 1024, 1)  # kB -> MB
+    except Exception:
+        pass
+    return 0.0
+
+
+def write_monitor_health(root: Path, stats: dict[str, Any]) -> None:
+    """Monitor process writes its health so the (separate) API process can show
+    it on the dashboard: RSS, events processed, open positions, universe size."""
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        payload = {**stats, "rss_mb": read_self_rss_mb(), "ts": int(time.time() * 1000)}
+        p = root / "monitor_health.json"
+        tmp = p.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(payload))
+        tmp.replace(p)
+    except Exception:
+        pass
+
+
+def read_monitor_health(root: Path) -> dict[str, Any] | None:
+    try:
+        p = root / "monitor_health.json"
+        if not p.exists():
+            return None
+        data = json.loads(p.read_text())
+        age = time.time() - int(data.get("ts", 0)) / 1000
+        data["age_sec"] = int(age)
+        data["alive"] = age < 120  # heartbeat within 2min = monitor healthy
+        return data
+    except Exception:
+        return None
 
 
 def _read_cpu_times() -> tuple[int, int] | None:
@@ -146,4 +187,5 @@ def collect(db_path: Path, candle_stat: dict[str, Any] | None = None) -> dict[st
                     "tx_total_gb": round(tx_total / 1_073_741_824, 2)},
         "binance": binance,
         "data": {"db_mb": db_mb, "micro": _dir_stats(micro_dir)},
+        "monitor": read_monitor_health(storage_root),
     }

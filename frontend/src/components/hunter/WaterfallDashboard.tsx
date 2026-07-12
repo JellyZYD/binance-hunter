@@ -11,6 +11,7 @@ type SystemStat = {
   network: { rx_kbps: number; tx_kbps: number; rx_total_gb: number; tx_total_gb: number };
   binance: { connected: boolean; last_candle_age_sec: number | null; candles_1m: number; candle_span_days?: number };
   data: { db_mb: number; micro: { mb: number; files: number; span_hours: number } };
+  monitor?: { rss_mb?: number; events?: number; open_positions?: number; universe?: number; watch_symbols?: number; age_sec?: number; alive?: boolean } | null;
 };
 
 type StrategyAccount = {
@@ -364,6 +365,14 @@ export default function WaterfallDashboard() {
             value={`${fmt(system.data.micro.mb, 1)}M`}
             tone="neutral"
             sub={`${system.data.micro.files}文件 · ${fmt(system.data.micro.span_hours, 1)}h`}
+          />
+          <Metric
+            label="监控进程"
+            value={system.monitor?.alive ? `${fmt(system.monitor?.rss_mb ?? 0, 0)}M` : '离线'}
+            tone={system.monitor?.alive ? ((system.monitor?.rss_mb ?? 0) > 1100 ? 'red' : 'green') : 'red'}
+            sub={system.monitor?.alive
+              ? `内存 · ${fmt(system.monitor?.watch_symbols ?? 0, 0)}/${fmt(system.monitor?.universe ?? 0, 0)}币`
+              : `${fmt(system.monitor?.age_sec ?? 0, 0)}s无心跳`}
           />
         </section>
       ) : null}
