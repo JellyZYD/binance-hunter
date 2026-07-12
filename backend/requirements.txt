@@ -3,3 +3,5 @@ websockets>=12.0
 numpy>=1.26
 pandas>=2.0
 lightgbm>=4.0
+# 微观采集器写 parquet(缺失会自动降级 csv.gz, 但 parquet 更省空间)
+pyarrow>=14.0

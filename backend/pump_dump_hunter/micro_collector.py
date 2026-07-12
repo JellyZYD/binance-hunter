@@ -45,8 +45,25 @@ def _get_json(url: str, timeout: int = 15) -> Any:
         return json.loads(resp.read())
 
 
+def _detect_format() -> str:
+    # Prefer parquet (compact, fast to analyze); fall back to gzipped CSV if no
+    # parquet engine is installed, so a missing optional dep never crash-loops
+    # the collector. The reader side handles both.
+    try:
+        import pyarrow  # noqa: F401
+
+        return "parquet"
+    except Exception:
+        try:
+            import fastparquet  # noqa: F401
+
+            return "parquet"
+        except Exception:
+            return "csv"
+
+
 class MicroWriter:
-    """Buffered writer: hourly parquet files per stream, atomic replace."""
+    """Buffered writer: hourly files per stream, atomic replace."""
 
     def __init__(self, root: Path, retention_days: int):
         self.root = root
@@ -55,6 +72,10 @@ class MicroWriter:
         self.buffers: dict[str, list[dict[str, Any]]] = {}
         self.last_flush = time.time()
         self.last_cleanup = 0.0
+        self.fmt = _detect_format()
+        self.ext = "parquet" if self.fmt == "parquet" else "csv.gz"
+        if self.fmt == "csv":
+            print(f"[{local_stamp()}] micro writer: no parquet engine, writing {self.ext} (pip install pyarrow for parquet)", flush=True)
 
     def add(self, stream: str, row: dict[str, Any]) -> None:
         self.buffers.setdefault(stream, []).append(row)
@@ -68,26 +89,34 @@ class MicroWriter:
         for stream, rows in self.buffers.items():
             if not rows:
                 continue
-            path = self.root / f"{stream}_{hour}.parquet"
+            path = self.root / f"{stream}_{hour}.{self.ext}"
             df = pd.DataFrame(rows)
-            if path.exists():
-                df = pd.concat([pd.read_parquet(path), df], ignore_index=True)
-            tmp = path.with_suffix(".parquet.tmp")
-            df.to_parquet(tmp)
-            tmp.replace(path)
-            rows.clear()
+            try:
+                if path.exists():
+                    prev = pd.read_parquet(path) if self.fmt == "parquet" else pd.read_csv(path)
+                    df = pd.concat([prev, df], ignore_index=True)
+                tmp = path.with_suffix(path.suffix + ".tmp")
+                if self.fmt == "parquet":
+                    df.to_parquet(tmp)
+                else:
+                    df.to_csv(tmp, index=False, compression="gzip")
+                tmp.replace(path)
+                rows.clear()
+            except Exception as exc:
+                print(f"[{local_stamp()}] micro flush {stream} failed: {exc}", flush=True)
         self.last_flush = time.time()
         if time.time() - self.last_cleanup > 86400:
             self.cleanup()
 
     def cleanup(self) -> None:
         cutoff = time.time() - self.retention_days * 86400
-        for p in self.root.glob("*.parquet"):
-            try:
-                if p.stat().st_mtime < cutoff:
-                    p.unlink()
-            except OSError:
-                pass
+        for pattern in ("*.parquet", "*.csv.gz"):
+            for p in self.root.glob(pattern):
+                try:
+                    if p.stat().st_mtime < cutoff:
+                        p.unlink()
+                except OSError:
+                    pass
         self.last_cleanup = time.time()
 
 
