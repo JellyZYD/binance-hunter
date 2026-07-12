@@ -92,6 +92,8 @@ class MicroWriter:
 
 
 async def poll_oi(writer: MicroWriter, symbols_ref: dict[str, list[str]], interval: int) -> None:
+    import urllib.error
+
     while True:
         symbols = symbols_ref["all"]
         started = time.time()
@@ -101,6 +103,12 @@ async def poll_oi(writer: MicroWriter, symbols_ref: dict[str, list[str]], interv
                 data = await asyncio.to_thread(_get_json, f"{FAPI}/fapi/v1/openInterest?symbol={sym}")
                 writer.add("oi", {"ts": int(data.get("time") or utc_ms()), "symbol": sym,
                                   "oi": float(data["openInterest"])})
+            except urllib.error.HTTPError as exc:
+                if exc.code in (418, 429):
+                    # Rate-limited/banned: keep polling would extend the ban.
+                    print(f"[{local_stamp()}] micro OI rate-limited ({exc.code}); backoff 200s", flush=True)
+                    await asyncio.sleep(200)
+                    break
             except Exception:
                 pass
             await asyncio.sleep(pace)
@@ -109,6 +117,8 @@ async def poll_oi(writer: MicroWriter, symbols_ref: dict[str, list[str]], interv
 
 
 async def poll_depth(writer: MicroWriter, symbols_ref: dict[str, list[str]], interval: int) -> None:
+    import urllib.error
+
     while True:
         for sym in list(symbols_ref["hot"]):
             try:
@@ -125,6 +135,11 @@ async def poll_depth(writer: MicroWriter, symbols_ref: dict[str, list[str]], int
                     row[f"b{i + 1}p"], row[f"b{i + 1}q"] = bids[i]
                     row[f"a{i + 1}p"], row[f"a{i + 1}q"] = asks[i]
                 writer.add("depth", row)
+            except urllib.error.HTTPError as exc:
+                if exc.code in (418, 429):
+                    print(f"[{local_stamp()}] micro depth rate-limited ({exc.code}); backoff 200s", flush=True)
+                    await asyncio.sleep(200)
+                    break
             except Exception:
                 pass
             await asyncio.sleep(0.2)
@@ -182,10 +197,17 @@ async def collect_micro(settings: dict[str, Any], broad_top: int = 450, oi_inter
     client = BinanceRestClient(settings)
     symbols_ref: dict[str, list[str]] = {"all": [], "hot": []}
     print(f"[{local_stamp()}] micro collector start -> {root} (retention {retention_days}d)", flush=True)
+
+    async def _delayed(coro_factory, delay: float):
+        # Stagger REST pollers so a co-boot with monitor prewarm can't spike
+        # weight; the liquidation websocket carries no REST weight and starts now.
+        await asyncio.sleep(delay)
+        await coro_factory()
+
     tasks = [
-        refresh_pools(client, settings, symbols_ref, broad_top, depth_top),
-        poll_oi(writer, symbols_ref, oi_interval),
-        poll_depth(writer, symbols_ref, depth_interval),
+        _delayed(lambda: refresh_pools(client, settings, symbols_ref, broad_top, depth_top), 0.0),
+        _delayed(lambda: poll_oi(writer, symbols_ref, oi_interval), 90.0),
+        _delayed(lambda: poll_depth(writer, symbols_ref, depth_interval), 120.0),
         listen_liquidations(writer, settings),
     ]
     try:
