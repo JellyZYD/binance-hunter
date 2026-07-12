@@ -842,6 +842,7 @@ async def waterfall_monitor(
     every = parse_duration_seconds(discover_every or str(cfg["discover_every"]))
     workers = int(max_workers or cfg["max_workers"])
     processed = 0
+    last_health_ms = 0
     while True:
         try:
             symbols = refresh_waterfall_universe(client, store, engine, settings, top, workers, extra_engines=extra_engines)
@@ -874,6 +875,21 @@ async def waterfall_monitor(
                 print(f"waterfall websocket symbols={len(symbols)} streams={len(source.stream_names())}", flush=True)
                 continue
             processed += 1
+            # Health heartbeat is TIME-based (every 30s), independent of event
+            # type: aggTrade micro events vastly outnumber 1m candles, so an
+            # event-count heartbeat almost never lands on a candle. Write here so
+            # the dashboard "监控进程" card updates regardless of stream mix.
+            now_ms = utc_ms()
+            if now_ms - last_health_ms >= 30_000:
+                last_health_ms = now_ms
+                rss = read_self_rss_mb()
+                open_n = len(engine.positions) + sum(len(e.positions) for e in extra_engines)
+                write_monitor_health(Path(dirs["db"]).parent, {
+                    "events": processed, "open_positions": open_n,
+                    "universe": len(symbols), "watch_symbols": len(engine.candles),
+                })
+                if rss > float(cfg.get("rss_soft_limit_mb", 1100)):
+                    print(f"[{local_stamp()}] WARNING waterfall rss {rss:.0f}MB over soft limit; systemd MemoryMax will restart cleanly if it climbs further", flush=True)
             if isinstance(event, dict):
                 engine.on_micro(event)
                 if bool(cfg.get("store_micro_events", False)):
@@ -909,15 +925,8 @@ async def waterfall_monitor(
             except Exception as exc:
                 print(f"[{local_stamp()}] waterfall event error {getattr(event, 'symbol', '')}: {type(exc).__name__}: {exc}", flush=True)
             if processed % int(settings.get("websocket", {}).get("heartbeat_events", 250)) == 0:
-                rss = read_self_rss_mb()
                 open_n = len(engine.positions) + sum(len(e.positions) for e in extra_engines)
-                print(f"[{local_stamp()}] waterfall events={processed} last={event.symbol} open_positions={open_n} rss={rss:.0f}MB", flush=True)
-                write_monitor_health(Path(dirs["db"]).parent, {
-                    "events": processed, "open_positions": open_n,
-                    "universe": len(symbols), "watch_symbols": len(engine.candles),
-                })
-                if rss > float(cfg.get("rss_soft_limit_mb", 1100)):
-                    print(f"[{local_stamp()}] WARNING waterfall rss {rss:.0f}MB over soft limit; systemd MemoryMax will restart cleanly if it climbs further", flush=True)
+                print(f"[{local_stamp()}] waterfall events={processed} last={event.symbol} open_positions={open_n} rss={read_self_rss_mb():.0f}MB", flush=True)
     finally:
         await source.close()
         await agen.aclose()
