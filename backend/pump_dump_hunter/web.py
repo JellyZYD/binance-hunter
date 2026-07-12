@@ -169,7 +169,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
         out = self.store.waterfall_summary(float(cfg.get("paper_initial_balance_usdt") or 0.0))
         board_cfg = board_waterfall_settings(self.settings)
         accounts = []
-        for strat in self.store.waterfall_strategies() or []:
+        known = [f"waterfall_{cfg.get('variant', 'core5_agg')}_1m"]
+        if bool(board_cfg.get("enabled", True)):
+            known.append(CLAUDE_STRATEGY)
+        strategies = list(dict.fromkeys([*known, *(self.store.waterfall_strategies() or [])]))
+        for strat in strategies:
             init = (
                 float(board_cfg.get("paper_initial_balance_usdt") or 0.0)
                 if strat == CLAUDE_STRATEGY
