@@ -17,6 +17,7 @@ from .live import emit_alerts, monitor
 from .models import KlineClosed, SignalParams
 from .notify.alerts import AlertSink, export_day
 from .timeutils import interval_to_ms, iso_now, parse_duration_seconds, utc_ms
+from .waterfall import WaterfallEngine, waterfall_monitor, waterfall_shadow_collect
 from .web import run_web
 
 
@@ -79,6 +80,18 @@ def print_discovery_sections(selected, pumps) -> None:
 
 def cmd_monitor(args) -> int:
     settings = load_settings(args.config or args.settings)
+    active_strategy = str((settings.get("runtime") or {}).get("active_strategy", "waterfall_quant")).lower()
+    if active_strategy in {"waterfall", "waterfall_quant", "waterfall_core", "waterfall_high_pf"}:
+        asyncio.run(
+            waterfall_monitor(
+                settings,
+                broad_top=args.broad_top,
+                discover_every=args.discover_every,
+                samples=args.samples,
+                max_workers=args.max_workers,
+            )
+        )
+        return 0
     asyncio.run(
         monitor(
             settings,
@@ -105,6 +118,121 @@ def cmd_backfill(args) -> int:
             total += backfill_symbol(client, store, symbol, interval, start, end)
             print(f"backfilled {symbol} {interval} total={total}", flush=True)
     return 0
+
+
+def cmd_waterfall_monitor(args) -> int:
+    settings = load_settings(args.config or args.settings)
+    asyncio.run(
+        waterfall_monitor(
+            settings,
+            broad_top=args.broad_top,
+            discover_every=args.discover_every,
+            samples=args.samples,
+            max_workers=args.max_workers,
+        )
+    )
+    return 0
+
+
+def cmd_waterfall_download(args) -> int:
+    settings, store, client = make_context(args)
+    if args.symbols:
+        symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+    else:
+        broad = build_broad_universe(client, settings, broad_top=args.broad_top)
+        symbols = [str(r["symbol"]) for r in broad]
+        if args.max_symbols > 0:
+            symbols = symbols[: args.max_symbols]
+    end = utc_ms()
+    start = end - int(args.days) * 86_400_000
+    total = 0
+    for symbol in symbols:
+        saved = backfill_symbol(client, store, symbol, "1m", start, end)
+        total += saved
+        print(f"waterfall downloaded {symbol} 1m saved={saved} total={total}", flush=True)
+    print(json.dumps({"symbols": len(symbols), "candles": total, "days": args.days}, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_waterfall_replay(args) -> int:
+    settings, store, _client = make_context(args)
+    engine = WaterfallEngine(settings)
+    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()] if args.symbols else store.candle_symbols("1m")
+    if args.max_symbols > 0:
+        symbols = symbols[: args.max_symbols]
+    end = store.max_candle_close_time("1m", symbols=symbols)
+    start = end - int(args.days) * 86_400_000 if args.days > 0 and end else None
+    signals = []
+    closed_positions = []
+    processed = 0
+    for symbol in symbols:
+        candles = store.load_candles(symbol, "1m", start_time=start)
+        for candle in candles:
+            processed += 1
+            watch, positions, emitted = engine.on_kline(KlineClosed(symbol, "1m", candle))
+            signals.extend(emitted)
+            for pos in positions:
+                if pos.status == "closed":
+                    closed_positions.append(pos)
+            if args.save:
+                store.upsert_waterfall_watch(watch)
+                for pos in positions:
+                    store.upsert_waterfall_position(pos.to_dict())
+                for sig in emitted:
+                    store.save_waterfall_signal(sig.to_dict())
+        if args.progress_every and len(closed_positions) and len(closed_positions) % args.progress_every == 0:
+            print(f"waterfall replay {symbol} processed={processed} trades={len(closed_positions)}", flush=True)
+    metrics = summarize_waterfall_replay(closed_positions, signals, processed, len(symbols), args.days)
+    print(json.dumps(metrics, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_waterfall_shadow(args) -> int:
+    settings = load_settings(args.config or args.settings)
+    symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()] if args.symbols else None
+    asyncio.run(
+        waterfall_shadow_collect(
+            settings,
+            symbols=symbols,
+            broad_top=args.broad_top,
+            seconds=args.seconds,
+            max_events=args.max_events,
+        )
+    )
+    return 0
+
+
+def summarize_waterfall_replay(closed_positions, signals, processed: int, symbols: int, days: int) -> dict[str, Any]:
+    trades = list(closed_positions)
+    gross_profit = sum(max(0.0, p.pnl_pct) for p in trades)
+    gross_loss = -sum(min(0.0, p.pnl_pct) for p in trades)
+    wins = sum(1 for p in trades if p.pnl_pct > 0)
+    avg = sum((p.pnl_pct for p in trades), 0.0) / len(trades) if trades else 0.0
+    avg_mfe = sum(((p.entry_price / p.best_price - 1.0) for p in trades if p.best_price > 0), 0.0) / len(trades) if trades else 0.0
+    avg_mae = sum(((p.worst_price / p.entry_price - 1.0) for p in trades if p.entry_price > 0), 0.0) / len(trades) if trades else 0.0
+    return {
+        "strategy": "waterfall_quant",
+        "symbols": symbols,
+        "days": days,
+        "candles_processed": processed,
+        "signals": len(signals),
+        "trades": len(trades),
+        "trades_per_day": len(trades) / max(1, days),
+        "win_rate": wins / len(trades) if trades else 0.0,
+        "avg_pnl_pct": avg,
+        "profit_factor": gross_profit / gross_loss if gross_loss > 0 else None,
+        "avg_mfe_pct": avg_mfe,
+        "avg_mae_pct": avg_mae,
+        "total_pnl_pct_units": sum((p.pnl_pct for p in trades), 0.0),
+        "by_exit_reason": exit_reason_counts(trades),
+    }
+
+
+def exit_reason_counts(positions) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for pos in positions:
+        out[pos.exit_reason] = out.get(pos.exit_reason, 0) + 1
+    return out
 
 
 def cmd_import_bb_data(args) -> int:
@@ -293,6 +421,39 @@ def build_parser() -> argparse.ArgumentParser:
     mon.add_argument("--samples", type=int, default=0)
     mon.add_argument("--max-workers", type=int, default=12)
     mon.set_defaults(func=cmd_monitor)
+
+    wfmon = sub.add_parser("waterfall-monitor")
+    wfmon.add_argument("--config", default=None)
+    wfmon.add_argument("--broad-top", type=int, default=None)
+    wfmon.add_argument("--discover-every", default=None)
+    wfmon.add_argument("--samples", type=int, default=0)
+    wfmon.add_argument("--max-workers", type=int, default=None)
+    wfmon.set_defaults(func=cmd_waterfall_monitor)
+
+    wfdown = sub.add_parser("waterfall-download")
+    wfdown.add_argument("--config", default=None)
+    wfdown.add_argument("--days", type=int, default=7)
+    wfdown.add_argument("--broad-top", type=int, default=450)
+    wfdown.add_argument("--max-symbols", type=int, default=80)
+    wfdown.add_argument("--symbols", default="")
+    wfdown.set_defaults(func=cmd_waterfall_download)
+
+    wfreplay = sub.add_parser("waterfall-replay")
+    wfreplay.add_argument("--config", default=None)
+    wfreplay.add_argument("--days", type=int, default=14)
+    wfreplay.add_argument("--symbols", default="")
+    wfreplay.add_argument("--max-symbols", type=int, default=0)
+    wfreplay.add_argument("--save", action="store_true")
+    wfreplay.add_argument("--progress-every", type=int, default=100)
+    wfreplay.set_defaults(func=cmd_waterfall_replay)
+
+    wfshadow = sub.add_parser("waterfall-shadow")
+    wfshadow.add_argument("--config", default=None)
+    wfshadow.add_argument("--symbols", default="")
+    wfshadow.add_argument("--broad-top", type=int, default=80)
+    wfshadow.add_argument("--seconds", type=int, default=600)
+    wfshadow.add_argument("--max-events", type=int, default=0)
+    wfshadow.set_defaults(func=cmd_waterfall_shadow)
 
     bf = sub.add_parser("backfill")
     bf.add_argument("--config", default=None)

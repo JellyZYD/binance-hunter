@@ -144,6 +144,96 @@ class Store:
                     validation_start INTEGER,
                     validation_end INTEGER
                 );
+
+                CREATE TABLE IF NOT EXISTS waterfall_watch(
+                    symbol TEXT PRIMARY KEY,
+                    strategy TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    family TEXT NOT NULL,
+                    last_time INTEGER NOT NULL,
+                    last_price REAL NOT NULL,
+                    ret_30m REAL NOT NULL,
+                    ret_2h REAL NOT NULL,
+                    ret_4h REAL NOT NULL,
+                    ret_24h REAL NOT NULL,
+                    runup_24h REAL NOT NULL,
+                    dd_from_24h_high REAL NOT NULL,
+                    qv30 REAL NOT NULL,
+                    volr20 REAL NOT NULL,
+                    volr5_20 REAL NOT NULL,
+                    tsell REAL NOT NULL,
+                    updated_time INTEGER NOT NULL,
+                    evidence_json TEXT NOT NULL DEFAULT '[]'
+                );
+
+                CREATE TABLE IF NOT EXISTS waterfall_positions(
+                    position_id TEXT PRIMARY KEY,
+                    symbol TEXT NOT NULL,
+                    strategy TEXT NOT NULL,
+                    family TEXT NOT NULL,
+                    rule TEXT NOT NULL,
+                    exit_profile TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    side TEXT NOT NULL,
+                    entry_time INTEGER NOT NULL,
+                    entry_price REAL NOT NULL,
+                    notional_usdt REAL NOT NULL,
+                    stop_price REAL NOT NULL,
+                    best_price REAL NOT NULL,
+                    worst_price REAL NOT NULL,
+                    trail_price REAL NOT NULL DEFAULT 0,
+                    exit_time INTEGER,
+                    exit_price REAL NOT NULL DEFAULT 0,
+                    pnl_pct REAL NOT NULL DEFAULT 0,
+                    pnl_usdt REAL NOT NULL DEFAULT 0,
+                    exit_reason TEXT NOT NULL DEFAULT '',
+                    fee_rate REAL NOT NULL DEFAULT 0.0008,
+                    margin_usdt REAL NOT NULL DEFAULT 0,
+                    leverage REAL NOT NULL DEFAULT 1,
+                    capital_fraction REAL NOT NULL DEFAULT 0,
+                    evidence_json TEXT NOT NULL DEFAULT '[]',
+                    updated_time INTEGER NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_waterfall_positions_status
+                    ON waterfall_positions(status, updated_time);
+                CREATE INDEX IF NOT EXISTS idx_waterfall_positions_symbol
+                    ON waterfall_positions(symbol, entry_time);
+
+                CREATE TABLE IF NOT EXISTS waterfall_signals(
+                    signal_id TEXT PRIMARY KEY,
+                    position_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    strategy TEXT NOT NULL,
+                    action TEXT NOT NULL,
+                    family TEXT NOT NULL,
+                    rule TEXT NOT NULL,
+                    decision_time INTEGER NOT NULL,
+                    price REAL NOT NULL,
+                    stop_price REAL NOT NULL,
+                    pnl_pct REAL NOT NULL DEFAULT 0,
+                    confidence REAL NOT NULL DEFAULT 0,
+                    tier TEXT NOT NULL DEFAULT 'normal',
+                    notional_usdt REAL NOT NULL DEFAULT 0,
+                    margin_usdt REAL NOT NULL DEFAULT 0,
+                    leverage REAL NOT NULL DEFAULT 1,
+                    account_equity_usdt REAL NOT NULL DEFAULT 0,
+                    evidence_json TEXT NOT NULL DEFAULT '[]',
+                    pushed INTEGER NOT NULL DEFAULT 0,
+                    push_error TEXT NOT NULL DEFAULT ''
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_waterfall_signals_time
+                    ON waterfall_signals(decision_time DESC);
+
+                CREATE TABLE IF NOT EXISTS waterfall_shadow_micro(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    symbol TEXT NOT NULL,
+                    event_time INTEGER NOT NULL,
+                    stream TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_time INTEGER NOT NULL
+                );
                 """
             )
             ensure_columns(
@@ -207,6 +297,26 @@ class Store:
                     "route_mode": "TEXT NOT NULL DEFAULT ''",
                     "route_confidence": "REAL NOT NULL DEFAULT 0",
                     "route_margin": "REAL NOT NULL DEFAULT 0",
+                },
+            )
+            ensure_columns(
+                conn,
+                "waterfall_positions",
+                {
+                    "margin_usdt": "REAL NOT NULL DEFAULT 0",
+                    "leverage": "REAL NOT NULL DEFAULT 1",
+                    "capital_fraction": "REAL NOT NULL DEFAULT 0",
+                },
+            )
+            ensure_columns(
+                conn,
+                "waterfall_signals",
+                {
+                    "tier": "TEXT NOT NULL DEFAULT 'normal'",
+                    "notional_usdt": "REAL NOT NULL DEFAULT 0",
+                    "margin_usdt": "REAL NOT NULL DEFAULT 0",
+                    "leverage": "REAL NOT NULL DEFAULT 1",
+                    "account_equity_usdt": "REAL NOT NULL DEFAULT 0",
                 },
             )
             conn.commit()
@@ -664,6 +774,281 @@ class Store:
         finally:
             conn.close()
 
+    def upsert_waterfall_watch(self, rows: list[dict[str, Any]]) -> None:
+        if not rows:
+            return
+        conn = self.connect()
+        try:
+            conn.executemany(
+                """INSERT OR REPLACE INTO waterfall_watch(
+                    symbol, strategy, status, family, last_time, last_price,
+                    ret_30m, ret_2h, ret_4h, ret_24h, runup_24h, dd_from_24h_high,
+                    qv30, volr20, volr5_20, tsell, updated_time, evidence_json
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                [
+                    (
+                        row["symbol"],
+                        row["strategy"],
+                        row["status"],
+                        row["family"],
+                        int(row["last_time"]),
+                        float(row["last_price"]),
+                        float(row["ret_30m"]),
+                        float(row["ret_2h"]),
+                        float(row["ret_4h"]),
+                        float(row["ret_24h"]),
+                        float(row["runup_24h"]),
+                        float(row["dd_from_24h_high"]),
+                        float(row["qv30"]),
+                        float(row["volr20"]),
+                        float(row["volr5_20"]),
+                        float(row["tsell"]),
+                        int(row["updated_time"]),
+                        json.dumps(row.get("evidence", []), ensure_ascii=False),
+                    )
+                    for row in rows
+                ],
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def upsert_waterfall_position(self, row: dict[str, Any]) -> None:
+        conn = self.connect()
+        try:
+            conn.execute(
+                """INSERT OR REPLACE INTO waterfall_positions(
+                    position_id, symbol, strategy, family, rule, exit_profile, status, side,
+                    entry_time, entry_price, notional_usdt, stop_price, best_price, worst_price,
+                    trail_price, exit_time, exit_price, pnl_pct, pnl_usdt, exit_reason, fee_rate,
+                    margin_usdt, leverage, capital_fraction, evidence_json, updated_time
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    row["position_id"],
+                    row["symbol"],
+                    row["strategy"],
+                    row["family"],
+                    row["rule"],
+                    row["exit_profile"],
+                    row["status"],
+                    row["side"],
+                    int(row["entry_time"]),
+                    float(row["entry_price"]),
+                    float(row["notional_usdt"]),
+                    float(row["stop_price"]),
+                    float(row["best_price"]),
+                    float(row["worst_price"]),
+                    float(row.get("trail_price") or 0.0),
+                    row.get("exit_time"),
+                    float(row.get("exit_price") or 0.0),
+                    float(row.get("pnl_pct") or 0.0),
+                    float(row.get("pnl_usdt") or 0.0),
+                    str(row.get("exit_reason") or ""),
+                    float(row.get("fee_rate") or 0.0008),
+                    float(row.get("margin_usdt") or 0.0),
+                    float(row.get("leverage") or 1.0),
+                    float(row.get("capital_fraction") or 0.0),
+                    json.dumps(row.get("evidence", []), ensure_ascii=False),
+                    int(row["updated_time"]),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def save_waterfall_signal(self, row: dict[str, Any], pushed: bool = False, push_error: str = "") -> None:
+        conn = self.connect()
+        try:
+            conn.execute(
+                """INSERT OR IGNORE INTO waterfall_signals(
+                    signal_id, position_id, symbol, strategy, action, family, rule, decision_time,
+                    price, stop_price, pnl_pct, confidence, tier, notional_usdt, margin_usdt,
+                    leverage, account_equity_usdt, evidence_json, pushed, push_error
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    row["signal_id"],
+                    row["position_id"],
+                    row["symbol"],
+                    row["strategy"],
+                    row["action"],
+                    row["family"],
+                    row["rule"],
+                    int(row["decision_time"]),
+                    float(row["price"]),
+                    float(row["stop_price"]),
+                    float(row.get("pnl_pct") or 0.0),
+                    float(row.get("confidence") or 0.0),
+                    str(row.get("tier") or "normal"),
+                    float(row.get("notional_usdt") or 0.0),
+                    float(row.get("margin_usdt") or 0.0),
+                    float(row.get("leverage") or 1.0),
+                    float(row.get("account_equity_usdt") or 0.0),
+                    json.dumps(row.get("evidence", []), ensure_ascii=False),
+                    1 if pushed else 0,
+                    push_error,
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def active_waterfall_positions(self) -> list[dict[str, Any]]:
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM waterfall_positions WHERE status='open' ORDER BY updated_time DESC"
+            ).fetchall()
+            return [decode_waterfall_row(dict(r)) for r in rows]
+        finally:
+            conn.close()
+
+    def waterfall_watch_rows(self, limit: int = 300) -> list[dict[str, Any]]:
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM waterfall_watch ORDER BY updated_time DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+            return [decode_waterfall_row(dict(r)) for r in rows]
+        finally:
+            conn.close()
+
+    def waterfall_position_rows(self, status: str = "", limit: int = 200) -> list[dict[str, Any]]:
+        conn = self.connect()
+        try:
+            if status:
+                rows = conn.execute(
+                    "SELECT * FROM waterfall_positions WHERE status=? ORDER BY updated_time DESC LIMIT ?",
+                    (status, int(limit)),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM waterfall_positions ORDER BY updated_time DESC LIMIT ?",
+                    (int(limit),),
+                ).fetchall()
+            return [decode_waterfall_row(dict(r)) for r in rows]
+        finally:
+            conn.close()
+
+    def waterfall_signal_rows(self, limit: int = 200) -> list[dict[str, Any]]:
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM waterfall_signals ORDER BY decision_time DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+            return [decode_waterfall_row(dict(r)) for r in rows]
+        finally:
+            conn.close()
+
+    def waterfall_summary(self, initial_balance_usdt: float = 0.0) -> dict[str, Any]:
+        conn = self.connect()
+        try:
+            open_count = conn.execute("SELECT COUNT(*) AS n FROM waterfall_positions WHERE status='open'").fetchone()["n"]
+            closed = conn.execute("SELECT COUNT(*) AS n FROM waterfall_positions WHERE status='closed'").fetchone()["n"]
+            watch = conn.execute("SELECT COUNT(*) AS n FROM waterfall_watch").fetchone()["n"]
+            signals = conn.execute("SELECT COUNT(*) AS n FROM waterfall_signals").fetchone()["n"]
+            pnl = conn.execute(
+                "SELECT SUM(pnl_usdt) AS pnl_usdt, AVG(pnl_pct) AS avg_pnl_pct FROM waterfall_positions WHERE status='closed'"
+            ).fetchone()
+            wins = conn.execute(
+                "SELECT COUNT(*) AS n FROM waterfall_positions WHERE status='closed' AND pnl_pct>0"
+            ).fetchone()["n"]
+            open_rows = conn.execute(
+                """SELECT p.symbol, p.entry_price, p.notional_usdt, p.margin_usdt, p.fee_rate,
+                          COALESCE(w.last_price, p.entry_price) AS mark_price
+                   FROM waterfall_positions p
+                   LEFT JOIN waterfall_watch w ON w.symbol=p.symbol
+                   WHERE p.status='open'"""
+            ).fetchall()
+            unrealized = 0.0
+            used_margin = 0.0
+            for row in open_rows:
+                entry = float(row["entry_price"] or 0.0)
+                mark = float(row["mark_price"] or entry)
+                notional = float(row["notional_usdt"] or 0.0)
+                fee_rate = float(row["fee_rate"] or 0.0)
+                used_margin += float(row["margin_usdt"] or 0.0)
+                if entry > 0 and mark > 0:
+                    unrealized += notional * (1.0 - mark / entry - fee_rate)
+            realized = float(pnl["pnl_usdt"] or 0.0) if pnl else 0.0
+            initial = float(initial_balance_usdt or 0.0)
+            equity = initial + realized + unrealized
+            return {
+                "watch": int(watch or 0),
+                "open_positions": int(open_count or 0),
+                "closed_positions": int(closed or 0),
+                "signals": int(signals or 0),
+                "paper_pnl_usdt": realized,
+                "avg_pnl_pct": float(pnl["avg_pnl_pct"] or 0.0) if pnl else 0.0,
+                "win_rate": (float(wins) / float(closed)) if closed else 0.0,
+                "paper_initial_balance_usdt": initial,
+                "paper_realized_pnl_usdt": realized,
+                "paper_unrealized_pnl_usdt": unrealized,
+                "paper_equity_usdt": equity,
+                "paper_used_margin_usdt": used_margin,
+                "paper_free_balance_usdt": equity - used_margin,
+            }
+        finally:
+            conn.close()
+
+    def save_waterfall_shadow_events(self, rows: list[dict[str, Any]]) -> int:
+        if not rows:
+            return 0
+        conn = self.connect()
+        try:
+            conn.executemany(
+                """INSERT INTO waterfall_shadow_micro(
+                    symbol, event_time, stream, payload_json, created_time
+                ) VALUES(?,?,?,?,?)""",
+                [
+                    (
+                        row["symbol"],
+                        int(row["event_time"]),
+                        row["stream"],
+                        json.dumps(row["payload"], ensure_ascii=False),
+                        int(row["created_time"]),
+                    )
+                    for row in rows
+                ],
+            )
+            conn.commit()
+            return len(rows)
+        finally:
+            conn.close()
+
+    def waterfall_shadow_rows(self, limit: int = 200) -> list[dict[str, Any]]:
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                "SELECT * FROM waterfall_shadow_micro ORDER BY event_time DESC LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+            out = []
+            for row in rows:
+                item = dict(row)
+                item["payload"] = decode_json(item.pop("payload_json", "{}"), {})
+                out.append(item)
+            return out
+        finally:
+            conn.close()
+
+    def waterfall_shadow_summary(self) -> dict[str, Any]:
+        conn = self.connect()
+        try:
+            total = conn.execute("SELECT COUNT(*) AS n FROM waterfall_shadow_micro").fetchone()["n"]
+            by_stream = conn.execute(
+                "SELECT stream, COUNT(*) AS n, MAX(event_time) AS latest FROM waterfall_shadow_micro GROUP BY stream"
+            ).fetchall()
+            symbols = conn.execute("SELECT COUNT(DISTINCT symbol) AS n FROM waterfall_shadow_micro").fetchone()["n"]
+            return {
+                "events": int(total or 0),
+                "symbols": int(symbols or 0),
+                "by_stream": [dict(r) for r in by_stream],
+            }
+        finally:
+            conn.close()
+
 
 def row_to_candle(row: sqlite3.Row) -> Candle:
     return Candle(
@@ -754,3 +1139,16 @@ def row_get(row: sqlite3.Row, key: str) -> Any:
         return row[key]
     except (IndexError, KeyError):
         return None
+
+
+def decode_waterfall_row(row: dict[str, Any]) -> dict[str, Any]:
+    if "evidence_json" in row:
+        row["evidence"] = decode_json(row.pop("evidence_json"), [])
+    return row
+
+
+def decode_json(raw: Any, fallback: Any) -> Any:
+    try:
+        return json.loads(raw) if isinstance(raw, str) else fallback
+    except Exception:
+        return fallback

@@ -1,5 +1,5 @@
-import HunterDashboard from '@/components/hunter/HunterDashboard';
+import WaterfallDashboard from '@/components/hunter/WaterfallDashboard';
 
 export default function HomePage() {
-  return <HunterDashboard />;
+  return <WaterfallDashboard />;
 }

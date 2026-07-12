@@ -497,6 +497,7 @@ export default function HunterDashboard() {
           <p className="subtitle">主力异动 / 多空信号 / 4h 冷却确认 / 流动性雷达</p>
         </div>
         <div className="header-actions">
+          <a className="header-link" href="/waterfall">瀑布量化</a>
           <a className="header-link" href="#watch-history">监管记录</a>
           <button type="button" onClick={refresh} aria-label="刷新数据">
             刷新

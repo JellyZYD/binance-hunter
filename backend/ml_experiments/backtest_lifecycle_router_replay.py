@@ -39,7 +39,16 @@ def main(argv: list[str] | None = None) -> int:
         raise RuntimeError(f"lifecycle models not ready: {scorer.error}")
 
     scores = score_all(test, scorer)
-    replay = replay_router_strategy(test, scores, scorer, args.confirm_bars, args.cooldown_bars, args.margin, args)
+    replay = replay_router_strategy(
+        test,
+        scores,
+        scorer,
+        args.confirm_bars,
+        args.cooldown_bars,
+        args.margin,
+        args,
+        pump_signal_min_gain_pct=args.pump_signal_min_gain_pct,
+    )
     high_replay = replay_high_pump_strategy(dense, test, scorer, args) if args.high_pump_enabled else pd.DataFrame()
     combined = combine_signal_streams(replay, high_replay, args.cooldown_bars)
     report = build_report(test, replay, high_replay, combined, split, args)
@@ -66,6 +75,7 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--fast-break-threshold", type=float, default=life.DEFAULT_ROUTE_THRESHOLDS["fast_dump"])
     parser.add_argument("--slow-break-threshold", type=float, default=life.DEFAULT_ROUTE_THRESHOLDS["slow_distribution"])
     parser.add_argument("--slow-mature-threshold", type=float, default=life.DEFAULT_ROUTE_THRESHOLDS["slow_distribution"])
+    parser.add_argument("--pump-signal-min-gain-pct", type=float, default=25.0)
     parser.add_argument("--high-pump-enabled", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--high-pump-dense", default="backend/storage/ml/high_pump40_experts/high_pump_40_dense.parquet")
     return parser.parse_args(argv)
@@ -193,6 +203,7 @@ def replay_router_strategy(
     cooldown_bars: int,
     margin: float,
     args: argparse.Namespace,
+    pump_signal_min_gain_pct: float = 0.0,
 ) -> pd.DataFrame:
     base_thresholds = dict(life.DEFAULT_ROUTE_THRESHOLDS)
     route_meta = (scorer.lifecycle_meta or {}).get("route", {})
@@ -229,6 +240,9 @@ def replay_router_strategy(
                 candidate = raw_mode
                 confirmed = raw_mode if streak >= max(1, confirm_bars) else "unknown"
             state = str(row["behavior_state"])
+            high_gain_pct = float(row.get("ctx_high_since_entry", 0.0) or 0.0) * 100.0
+            if high_gain_pct < float(pump_signal_min_gain_pct or 0.0):
+                continue
             if confirmed in {"unknown", "continuation", "second_distribution"}:
                 continue
             emitted = None
@@ -450,6 +464,7 @@ def build_report(
             "fast_short_gate": sorted(life.FAST_SHORT_GATE),
             "high_pump_enabled": args.high_pump_enabled,
             "high_pump_dense": args.high_pump_dense,
+            "pump_signal_min_gain_pct": args.pump_signal_min_gain_pct,
             "high_pump_top_gate": sorted(life.HIGH_PUMP_TOP_GATE),
             "high_pump_short_gate": sorted(life.HIGH_PUMP_SHORT_GATE),
         },

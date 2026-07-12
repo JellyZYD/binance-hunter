@@ -15,6 +15,9 @@
     "cache_dir": "data/cache",
     "reports_dir": "reports"
   },
+  "runtime": {
+    "active_strategy": "waterfall_quant"
+  },
   "universe": {
     "quote_asset": "USDT",
     "contract_type": "PERPETUAL",
@@ -158,7 +161,7 @@
     "lifecycle_long_watch_min_gain_pct": 15.0,
     "lifecycle_min_remaining_pct": 10.0,
     "lifecycle_exhaustion_min_gain_pct": 8.0,
-    "long_enabled": true,
+    "long_enabled": false,
     "long_watch_hours": 36,
     "long_trend_break_pct": 8.0
   },
@@ -168,5 +171,38 @@
     "profit_thresholds_pct": [3, 5, 10],
     "train_ratio": 0.7,
     "min_signals": 5
+  },
+  "waterfall_quant": {
+    "variant": "core5_agg",
+    "broad_top": 450,
+    "watch_interval": "1m",
+    "discover_every": "15m",
+    "prewarm_limit": 1500,
+    "max_workers": 8,
+    "notional_usdt": 100.0,
+    "paper_initial_balance_usdt": 100.0,
+    "paper_margin_fraction": 0.2,
+    "leverage": 10.0,
+    "max_open_positions": 5,
+    "fee_rate": 0.0008,
+    "same_symbol_cooldown_hours": 4.0,
+    "after_stop_cooldown_hours": 6.0,
+    "family_gap_minutes": 120,
+    "enabled_families": ["post_pump", "downtrend_continuation", "other"],
+    "max_trades_per_symbol_day": 2,
+    "micro_streams": ["aggTrade"],
+    "require_agg_confirmation": true,
+    "agg_sell_ratio_min": 0.60,
+    "agg_low_time_frac_min": 0.55,
+    "strong_agg_sell_ratio_min": 0.64,
+    "strong_agg_close_pos_max": 0.15,
+    "downtrend_agg_sell_ratio_min": 0.64,
+    "downtrend_low_time_frac_min": 0.80,
+    "momentum_low_time_frac_min": 0.80,
+    "momentum_close_pos_max": 0.25,
+    "store_micro_events": false,
+    "push_wecom": true,
+    "execution_mode": "paper",
+    "real_order_enabled": false
   }
 }

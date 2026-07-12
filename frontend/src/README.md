@@ -1,18 +1,23 @@
 # Frontend Source
 
-这是项目的轻量 Next.js 面板，不承担策略计算，只展示后端 API 的只读结果。
+This Next.js app is display-only. Strategy state and paper trading data come
+from the Python backend.
 
-## 入口
+## Entry Points
 
-- `app/page.tsx`：渲染 `HunterDashboard`。
-- `components/hunter/HunterDashboard.tsx`：刷新数据、展示表格。
-- `app/api/hunter/[...path]/route.ts`：代理到 Python API。
-- `app/globals.css`：纯 CSS 样式，无 Tailwind runtime 依赖。
+- `app/page.tsx`: renders `WaterfallDashboard`.
+- `app/waterfall/page.tsx`: renders `WaterfallDashboard`.
+- `components/hunter/WaterfallDashboard.tsx`: current production waterfall
+  quant interface.
+- `components/hunter/HunterDashboard.tsx`: legacy lifecycle interface, retained
+  for manual inspection only.
+- `app/api/hunter/[...path]/route.ts`: proxy to Python backend API.
+- `app/globals.css`: plain CSS styles.
 
-## 数据流
+## Data Flow
 
 ```text
 Browser -> Next /api/hunter/* -> Python backend /api/* -> SQLite
 ```
 
-前端不直接读数据库，也不写策略状态。这样部署到 Vercel 时只需要配置 `HUNTER_API_BASE_URL`。
+The browser never reads SQLite directly and never writes strategy state.

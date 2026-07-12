@@ -3,11 +3,13 @@
 import json
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from .data.store import Store
 from .timeutils import iso_from_ms, utc_ms
+from .waterfall import waterfall_settings
 
 
 def run_web(settings: dict[str, Any], host: str = "127.0.0.1", port: int = 8787) -> None:
@@ -77,6 +79,25 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 self.write_json({"rows": decode_backtests(self.store.backtest_runs(limit=int_param(query, "limit", 20)))})
             elif parsed.path == "/api/model":
                 self.write_json(read_model_meta())
+            elif parsed.path == "/api/waterfall/summary":
+                self.write_json(self.api_waterfall_summary())
+            elif parsed.path == "/api/waterfall/watch":
+                self.write_json({"rows": self.store.waterfall_watch_rows(limit=int_param(query, "limit", 300))})
+            elif parsed.path == "/api/waterfall/positions":
+                rows = self.store.waterfall_position_rows(
+                    status=query.get("status", [""])[0],
+                    limit=int_param(query, "limit", 200),
+                )
+                self.write_json({"rows": enrich_waterfall_positions(self.store, rows)})
+            elif parsed.path == "/api/waterfall/signals":
+                self.write_json({"rows": self.store.waterfall_signal_rows(limit=int_param(query, "limit", 200))})
+            elif parsed.path == "/api/waterfall/shadow":
+                self.write_json({
+                    "summary": self.store.waterfall_shadow_summary(),
+                    "rows": self.store.waterfall_shadow_rows(limit=int_param(query, "limit", 200)),
+                })
+            elif parsed.path == "/api/waterfall/replay-results":
+                self.write_json(read_waterfall_replay_results(limit=int_param(query, "limit", 20)))
             elif parsed.path == "/api/candles":
                 symbol = (query.get("symbol", [""])[0] or "").upper()
                 interval = query.get("interval", ["15m"])[0]
@@ -135,6 +156,39 @@ class DashboardHandler(BaseHTTPRequestHandler):
         }
         return data
 
+    def api_waterfall_summary(self) -> dict[str, Any]:
+        cfg = waterfall_settings(self.settings)
+        out = self.store.waterfall_summary(float(cfg.get("paper_initial_balance_usdt") or 0.0))
+        runtime = self.settings.get("runtime", {})
+        out["active_strategy"] = runtime.get("active_strategy", "waterfall_quant")
+        out["config"] = {
+            "variant": cfg.get("variant"),
+            "broad_top": cfg.get("broad_top"),
+            "watch_interval": cfg.get("watch_interval"),
+            "discover_every": cfg.get("discover_every"),
+            "prewarm_limit": cfg.get("prewarm_limit"),
+            "same_symbol_cooldown_hours": cfg.get("same_symbol_cooldown_hours"),
+            "after_stop_cooldown_hours": cfg.get("after_stop_cooldown_hours"),
+            "family_gap_minutes": cfg.get("family_gap_minutes"),
+            "max_trades_per_symbol_day": cfg.get("max_trades_per_symbol_day"),
+            "notional_usdt": cfg.get("notional_usdt"),
+            "paper_initial_balance_usdt": cfg.get("paper_initial_balance_usdt"),
+            "paper_margin_fraction": cfg.get("paper_margin_fraction"),
+            "leverage": cfg.get("leverage"),
+            "max_open_positions": cfg.get("max_open_positions"),
+            "enabled_families": cfg.get("enabled_families", []),
+            "micro_streams": cfg.get("micro_streams", []),
+            "require_agg_confirmation": bool(cfg.get("require_agg_confirmation", True)),
+            "agg_sell_ratio_min": cfg.get("agg_sell_ratio_min"),
+            "agg_low_time_frac_min": cfg.get("agg_low_time_frac_min"),
+            "strong_agg_sell_ratio_min": cfg.get("strong_agg_sell_ratio_min"),
+            "strong_agg_close_pos_max": cfg.get("strong_agg_close_pos_max"),
+            "execution_mode": cfg.get("execution_mode", "paper"),
+            "real_order_enabled": bool(cfg.get("real_order_enabled", False)),
+            "push_wecom": bool(cfg.get("push_wecom", True)),
+        }
+        return out
+
     def write_json(self, payload: dict[str, Any]) -> None:
         data = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
         self.send_response(HTTPStatus.OK)
@@ -165,6 +219,73 @@ def read_model_meta() -> dict[str, Any]:
         return m
     except Exception as exc:
         return {"ready": False, "error": f"{type(exc).__name__}: {exc}"}
+
+
+def read_waterfall_replay_results(limit: int = 20) -> dict[str, Any]:
+    rows = []
+    storage = Path(__file__).resolve().parents[1] / "storage" / "ml"
+
+    agg_root = storage / "agg_waterfall_replay"
+    for path in sorted(agg_root.glob("agg_waterfall_metrics_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+            item["path"] = str(path)
+            item["updated_time"] = int(path.stat().st_mtime * 1000)
+            item["result_type"] = "agg_direct"
+            item["mode"] = item.get("mode", "agg_direct")
+            rows.append(item)
+        except Exception:
+            continue
+
+    compare_root = storage / "waterfall_mode_compare"
+    for path in sorted(compare_root.glob("waterfall_mode_compare_metrics_*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:limit]:
+        try:
+            item = json.loads(path.read_text(encoding="utf-8"))
+            common = {
+                "result_type": "mode_compare",
+                "path": str(path),
+                "updated_time": int(path.stat().st_mtime * 1000),
+                "start": item.get("start"),
+                "end": item.get("end"),
+                "symbols": item.get("symbols"),
+                "variant": item.get("variant"),
+                "families": item.get("families", []),
+            }
+            for mode in ("kline", "agg"):
+                metrics = item.get(mode) or {}
+                rows.append({**common, "mode": mode, **metrics})
+        except Exception:
+            continue
+    rows.sort(key=lambda r: int(r.get("updated_time") or 0), reverse=True)
+    return {"rows": rows}
+
+
+def enrich_waterfall_positions(store: Store, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not rows:
+        return rows
+    watch = {str(r.get("symbol") or ""): r for r in store.waterfall_watch_rows(limit=2000)}
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        item = dict(row)
+        symbol = str(item.get("symbol") or "")
+        entry = float(item.get("entry_price") or 0.0)
+        status = str(item.get("status") or "")
+        mark = float((watch.get(symbol) or {}).get("last_price") or item.get("exit_price") or entry or 0.0)
+        notional = float(item.get("notional_usdt") or 0.0)
+        fee_rate = float(item.get("fee_rate") or 0.0)
+        margin = float(item.get("margin_usdt") or 0.0)
+        if status == "open" and entry > 0 and mark > 0:
+            pnl_pct = 1.0 - mark / entry - fee_rate
+            pnl_usdt = notional * pnl_pct
+        else:
+            pnl_pct = float(item.get("pnl_pct") or 0.0)
+            pnl_usdt = float(item.get("pnl_usdt") or 0.0)
+        item["mark_price"] = mark
+        item["unrealized_pnl_pct"] = pnl_pct if status == "open" else 0.0
+        item["unrealized_pnl_usdt"] = pnl_usdt if status == "open" else 0.0
+        item["margin_roi_pct"] = (pnl_usdt / margin) if margin > 0 else 0.0
+        out.append(item)
+    return out
 
 
 def int_param(query: dict[str, list[str]], key: str, default: int) -> int:

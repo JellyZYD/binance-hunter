@@ -147,10 +147,21 @@ h2 { margin: 0; font-size: 18px; line-height: 1.25; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.metric-sub {
+  display: block;
+  margin-top: 5px;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .tone-cyan { border-color: rgba(11,159,180,.28); }
 .tone-red { border-color: rgba(212,76,99,.3); }
 .tone-amber { border-color: rgba(199,131,30,.32); }
 .tone-green { border-color: rgba(22,138,99,.3); }
+.tone-neutral { border-color: rgba(86,117,128,.24); }
 
 .monitor-section {
   margin-top: 16px;
@@ -667,4 +678,184 @@ td { color: #1d333a; }
   .history-grid {
     grid-template-columns: 1fr;
   }
+}
+
+.waterfall-shell {
+  min-height: 100vh;
+  max-width: 1760px;
+  margin: 0 auto;
+  padding: 18px;
+}
+
+.waterfall-header {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 20px 22px;
+  border: 1px solid rgba(11, 159, 180, 0.22);
+  border-radius: 8px;
+  background:
+    linear-gradient(120deg, rgba(11, 159, 180, 0.14), transparent 34%),
+    linear-gradient(300deg, rgba(22, 138, 99, 0.13), transparent 32%),
+    rgba(255, 255, 255, 0.9);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.waterfall-header::before {
+  position: absolute;
+  inset: 0 0 auto;
+  height: 3px;
+  background: linear-gradient(90deg, #0b9fb4, #168a63, #d44c63);
+  content: "";
+}
+
+.waterfall-config {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.waterfall-config span {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 4px 10px;
+  border: 1px solid rgba(11, 159, 180, 0.2);
+  border-radius: 999px;
+  color: #075a66;
+  background: rgba(255, 255, 255, 0.68);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.waterfall-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.waterfall-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(360px, 0.85fr);
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.wf-panel {
+  min-width: 0;
+}
+
+.wf-position-list,
+.wf-signal-list {
+  display: grid;
+  gap: 10px;
+}
+
+.wf-position-list {
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+}
+
+.wf-position-card,
+.wf-signal {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.84);
+  padding: 12px;
+}
+
+.wf-card-head,
+.wf-signal > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.wf-card-head strong,
+.wf-signal strong {
+  color: #0d2b35;
+  font-size: 18px;
+}
+
+.wf-card-head span,
+.wf-signal span,
+.wf-position-card p,
+.wf-signal p {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.wf-card-main {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.wf-card-main b {
+  color: var(--red);
+  font-size: 22px;
+}
+
+.wf-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.wf-card-meta span {
+  padding: 2px 7px;
+  border: 1px solid rgba(86, 117, 128, 0.16);
+  border-radius: 999px;
+  background: rgba(248, 252, 253, 0.78);
+  color: #4f6970;
+  font-size: 11px;
+}
+
+.wf-signal {
+  border-left: 4px solid rgba(96, 117, 125, 0.32);
+}
+
+.wf-signal b {
+  display: inline-block;
+  margin-top: 4px;
+}
+
+.wf-open {
+  border-left-color: var(--red);
+  background: linear-gradient(135deg, rgba(255, 237, 241, 0.9), rgba(255, 255, 255, 0.88));
+}
+
+.wf-profit {
+  border-left-color: var(--green);
+  background: linear-gradient(135deg, rgba(230, 248, 239, 0.9), rgba(255, 255, 255, 0.88));
+}
+
+.wf-stop {
+  border-left-color: var(--amber);
+  background: linear-gradient(135deg, rgba(255, 247, 229, 0.9), rgba(255, 255, 255, 0.88));
+}
+
+.waterfall-table {
+  min-width: 1180px;
+  font-size: 12px;
+}
+
+@media (max-width: 1180px) {
+  .waterfall-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 760px) {
+  .waterfall-shell { padding: 12px; }
+  .waterfall-header { flex-direction: column; }
+  .waterfall-config span { white-space: normal; }
 }

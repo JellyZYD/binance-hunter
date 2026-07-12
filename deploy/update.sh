@@ -16,11 +16,11 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-echo "[1/4] Pull latest code"
+echo "[1/5] Pull latest code"
 git -C "$CLONE_DIR" fetch origin
 git -C "$CLONE_DIR" reset --hard origin/main
 
-echo "[2/4] Update backend"
+echo "[2/5] Update backend"
 cd "$BACKEND_DIR"
 if [ ! -d .venv ]; then
   python3 -m venv .venv
@@ -29,7 +29,7 @@ fi
 pip install --upgrade pip
 pip install -r requirements.txt
 
-echo "[3/4] Update frontend"
+echo "[3/5] Update frontend"
 if [ "$INSTALL_FRONTEND" = "1" ]; then
   cd "$APP_DIR"
   npm ci
