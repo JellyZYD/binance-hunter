@@ -828,7 +828,7 @@ async def waterfall_monitor(
     from .board_waterfall import BoardWaterfallEngine, board_waterfall_settings
 
     if bool(board_waterfall_settings(settings).get("enabled", True)):
-        board_engine = BoardWaterfallEngine(settings)
+        board_engine = BoardWaterfallEngine(settings, shared_candles=engine.candles)
         board_engine.load_positions(store.active_waterfall_positions())
         board_engine.load_recent_state(store.waterfall_position_rows(limit=1000), store.waterfall_signal_rows(limit=1000))
         extra_engines.append(board_engine)

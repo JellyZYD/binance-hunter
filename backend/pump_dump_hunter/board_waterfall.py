@@ -62,12 +62,17 @@ def board_waterfall_settings(settings: dict[str, Any]) -> dict[str, Any]:
 class BoardWaterfallEngine:
     """Champion-label short engine; same interface as WaterfallEngine."""
 
-    def __init__(self, settings: dict[str, Any]):
+    def __init__(self, settings: dict[str, Any], shared_candles: dict[str, deque[Candle]] | None = None):
         self.settings = settings
         self.cfg = board_waterfall_settings(settings)
         self.strategy = STRATEGY_NAME
         self.maxlen = 1500
-        self.candles: dict[str, deque[Candle]] = {}
+        # Share the codex engine's candle deques instead of keeping a second
+        # full copy — two independent 1500-candle-per-symbol stores doubled the
+        # candle memory and OOM'd the 2G box. When shared, this engine never
+        # appends (the codex engine populates the dict before we read it).
+        self._shared = shared_candles is not None
+        self.candles: dict[str, deque[Candle]] = shared_candles if shared_candles is not None else {}
         self.positions: dict[str, WaterfallPosition] = {}
         self.last_signal_time: dict[str, int] = {}
         self.trade_count_day: dict[tuple[str, str], int] = {}
@@ -107,6 +112,8 @@ class BoardWaterfallEngine:
     # -- candle flow -----------------------------------------------------
 
     def prime_candles(self, candles: list[Candle]) -> list[dict[str, Any]]:
+        if self._shared:
+            return []  # codex engine already primed the shared dict
         for candle in sorted(candles, key=lambda c: (c.symbol, c.open_time)):
             self._append(candle)
         return []
@@ -115,7 +122,8 @@ class BoardWaterfallEngine:
         if event.interval != "1m":
             return [], [], []
         candle = event.candle
-        self._append(candle)
+        if not self._shared:
+            self._append(candle)  # shared: codex engine appended before us
         changed_positions: list[WaterfallPosition] = []
         signals: list[WaterfallSignal] = []
 
