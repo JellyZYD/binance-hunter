@@ -1012,9 +1012,13 @@ def prewarm_waterfall_symbols(
     errors: list[str] = []
 
     def fetch(symbol: str) -> tuple[str, list[Candle]]:
-        # DB-first prewarm: candles persisted by the previous run cover most
-        # of the window, so a quick restart only needs the missing tail from
-        # REST (weight ~1/symbol instead of ~10) and cannot trigger IP bans.
+        # DB-first prewarm: reuse candles persisted by the previous run so a
+        # quick restart doesn't re-fetch the whole window (weight ~1 vs ~10) and
+        # cannot trigger IP bans. But a symbol whose DB history is short (new
+        # listing, rotated in/out of the universe) must still be BACKFILLED to
+        # the full window from REST — both engines gate on candle count
+        # (core5 needs 241 = 4h, board needs 1441 = 24h), so under-filled
+        # symbols would silently never watch/signal.
         cached = [
             c
             for c in store.load_candles(symbol, "1m", start_time=cutoff - limit * 60_000)
@@ -1022,12 +1026,15 @@ def prewarm_waterfall_symbols(
         ]
         last_close = cached[-1].close_time if cached else 0
         gap_min = int((cutoff - last_close) / 60_000) if last_close else limit
-        if gap_min <= 0:
-            return symbol, cached
-        fetch_limit = max(2, min(limit, gap_min + 2))
+        if len(cached) >= limit - 5 and gap_min <= 3:
+            return symbol, cached  # already full & fresh → no REST
+        if len(cached) < limit - 5:
+            fetch_limit = limit  # thin history → backfill the whole window
+        else:
+            fetch_limit = max(2, min(limit, gap_min + 2))  # near-full → just the gap
         fresh = [c for c in client.klines(symbol, "1m", limit=fetch_limit) if c.close_time <= cutoff]
         merged = {c.open_time: c for c in [*cached, *fresh]}
-        return symbol, [merged[k] for k in sorted(merged)]
+        return symbol, [merged[k] for k in sorted(merged)][-limit:]
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futs = {pool.submit(fetch, s): s for s in symbols}
