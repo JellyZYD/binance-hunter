@@ -840,7 +840,15 @@ async def waterfall_monitor(
     every = parse_duration_seconds(discover_every or str(cfg["discover_every"]))
     workers = int(max_workers or cfg["max_workers"])
     processed = 0
-    symbols = refresh_waterfall_universe(client, store, engine, settings, top, workers, extra_engines=extra_engines)
+    while True:
+        try:
+            symbols = refresh_waterfall_universe(client, store, engine, settings, top, workers, extra_engines=extra_engines)
+            break
+        except Exception as exc:
+            # Rate-limit bans (HTTP 418/429) must wait, not crash: a systemd
+            # restart loop re-prewarms the full universe and extends the ban.
+            print(f"[{local_stamp()}] waterfall universe error: {exc}; retry in 180s", flush=True)
+            await asyncio.sleep(180)
     micro_streams = [str(x) for x in cfg.get("micro_streams", ["aggTrade"]) if str(x)]
     source = WebSocketMarketSource(settings, symbols, ["1m"], micro_streams=micro_streams)
     agen = source.market_events()
@@ -854,7 +862,10 @@ async def waterfall_monitor(
             except asyncio.TimeoutError:
                 await source.close()
                 await agen.aclose()
-                symbols = refresh_waterfall_universe(client, store, engine, settings, top, workers, extra_engines=extra_engines)
+                try:
+                    symbols = refresh_waterfall_universe(client, store, engine, settings, top, workers, extra_engines=extra_engines)
+                except Exception as exc:
+                    print(f"[{local_stamp()}] waterfall re-discovery error: {exc}; keep old universe", flush=True)
                 source = WebSocketMarketSource(settings, symbols, ["1m"], micro_streams=micro_streams)
                 agen = source.market_events()
                 next_discovery = utc_ms() + every * 1000

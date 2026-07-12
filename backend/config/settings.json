@@ -195,7 +195,7 @@
     "watch_interval": "1m",
     "discover_every": "15m",
     "prewarm_limit": 1500,
-    "max_workers": 8,
+    "max_workers": 3,
     "notional_usdt": 100.0,
     "paper_initial_balance_usdt": 100.0,
     "paper_margin_fraction": 0.2,
