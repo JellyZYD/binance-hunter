@@ -75,7 +75,7 @@
     ],
     "max_streams_per_connection": 180,
     "prewarm_limit": 360,
-    "heartbeat_events": 5000,
+    "heartbeat_events": 7500,
     "reconnect_initial_seconds": 1,
     "reconnect_max_seconds": 30
   },
