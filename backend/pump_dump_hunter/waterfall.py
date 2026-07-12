@@ -3,6 +3,8 @@
 import asyncio
 import json
 import os
+import threading
+import time
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
@@ -146,6 +148,7 @@ def waterfall_settings(settings: dict[str, Any]) -> dict[str, Any]:
     cfg.setdefault("prewarm_limit", 1500)
     cfg.setdefault("max_workers", 8)
     cfg.setdefault("rss_soft_limit_mb", 1100)  # log a warning above this; systemd MemoryMax is the hard backstop
+    cfg.setdefault("rest_weight_per_sec", 20)  # prewarm REST budget ~1200/min; leaves room under Binance 2400/min for the micro collector
     cfg.setdefault("watch_interval", "1m")
     cfg.setdefault("notional_usdt", 100.0)
     cfg.setdefault("paper_initial_balance_usdt", 100.0)
@@ -1012,6 +1015,37 @@ def parse_micro_message(raw: str | bytes) -> dict[str, Any] | None:
     }
 
 
+# Shared REST weight throttle across prewarm workers. Binance USD-M futures cap
+# is 2400 weight/min per IP; the micro collector already spends ~570/min from a
+# separate process on the same IP, so the monitor's prewarm bursts (klines
+# limit=1500 is weight 10 each) must be paced or a 15m universe refresh bans us.
+# A monotonic "next allowed slot" advanced by weight/rate serializes pacing.
+_rest_lock = threading.Lock()
+_rest_next = [0.0]
+
+
+def _klines_weight(limit: int) -> int:
+    if limit <= 100:
+        return 1
+    if limit <= 500:
+        return 2
+    if limit <= 1000:
+        return 5
+    return 10
+
+
+def _throttle_rest(weight: int, per_sec: float) -> None:
+    if per_sec <= 0:
+        return
+    with _rest_lock:
+        now = time.monotonic()
+        start = max(now, _rest_next[0])
+        _rest_next[0] = start + weight / per_sec
+        wait = start - now
+    if wait > 0:
+        time.sleep(wait)
+
+
 def refresh_waterfall_universe(
     client: BinanceRestClient,
     store: Store,
@@ -1021,8 +1055,17 @@ def refresh_waterfall_universe(
     max_workers: int,
     extra_engines: list[Any] | None = None,
 ) -> list[str]:
-    rows = build_broad_universe(client, settings, broad_top=broad_top)
-    symbols = [str(r["symbol"]) for r in rows]
+    try:
+        rows = build_broad_universe(client, settings, broad_top=broad_top)
+        symbols = [str(r["symbol"]) for r in rows]
+    except Exception as exc:
+        # REST universe (ticker/exchangeInfo) unavailable — almost always a
+        # rate-limit ban. Fall back to the last-known universe already in the
+        # DB so the monitor runs on websocket + DB alone with ZERO REST, instead
+        # of being stuck in a retry loop until the ban lifts. The next 15m
+        # refresh picks up the fresh liquidity-ranked universe once REST is back.
+        symbols = store.candle_symbols("1m")
+        print(f"[{local_stamp()}] waterfall universe REST failed ({type(exc).__name__}); falling back to {len(symbols)} DB symbols", flush=True)
     active = [str(r["symbol"]) for r in store.active_waterfall_positions()]
     symbols = sorted(set(symbols) | set(active))
     print(f"[{local_stamp()}] waterfall universe symbols={len(symbols)} broad_top={broad_top}", flush=True)
@@ -1043,15 +1086,17 @@ def prewarm_waterfall_symbols(
     changed: list[dict[str, Any]] = []
     total = 0
     errors: list[str] = []
+    per_sec = float(engine.cfg.get("rest_weight_per_sec", 20))
+    with _rest_lock:
+        _rest_next[0] = time.monotonic()  # start each prewarm burst with a fresh budget
 
     def fetch(symbol: str) -> tuple[str, list[Candle]]:
-        # DB-first prewarm: reuse candles persisted by the previous run so a
-        # quick restart doesn't re-fetch the whole window (weight ~1 vs ~10) and
-        # cannot trigger IP bans. But a symbol whose DB history is short (new
-        # listing, rotated in/out of the universe) must still be BACKFILLED to
-        # the full window from REST — both engines gate on candle count
-        # (core5 needs 241 = 4h, board needs 1441 = 24h), so under-filled
-        # symbols would silently never watch/signal.
+        # DB-first + weight-throttled: reuse candles persisted by the previous
+        # run, and fetch ONLY the gap since shutdown (or the full window for a
+        # thin/new symbol) from REST — but rate-limited so the aggregate weight
+        # stays under Binance's 2400/min even during the 15m universe refresh and
+        # alongside the micro collector. Gaps are always filled (websocket can't
+        # backfill downtime); the throttle is what prevents bans, not skipping.
         cached = [
             c
             for c in store.load_candles(symbol, "1m", start_time=cutoff - limit * 60_000)
@@ -1059,12 +1104,13 @@ def prewarm_waterfall_symbols(
         ]
         last_close = cached[-1].close_time if cached else 0
         gap_min = int((cutoff - last_close) / 60_000) if last_close else limit
-        if len(cached) >= limit - 5 and gap_min <= 3:
-            return symbol, cached  # already full & fresh → no REST
+        if len(cached) >= limit - 5 and gap_min <= 1:
+            return symbol, cached  # full & current → nothing to fetch
         if len(cached) < limit - 5:
             fetch_limit = limit  # thin history → backfill the whole window
         else:
-            fetch_limit = max(2, min(limit, gap_min + 2))  # near-full → just the gap
+            fetch_limit = max(2, min(limit, gap_min + 2))  # fill the downtime gap
+        _throttle_rest(_klines_weight(fetch_limit), per_sec)
         fresh = [c for c in client.klines(symbol, "1m", limit=fetch_limit) if c.close_time <= cutoff]
         merged = {c.open_time: c for c in [*cached, *fresh]}
         return symbol, [merged[k] for k in sorted(merged)][-limit:]
