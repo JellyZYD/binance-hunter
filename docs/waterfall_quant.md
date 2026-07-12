@@ -1,7 +1,12 @@
 # Waterfall Quant Production Mode
 
-This server mode runs only the latest waterfall short strategy. The old
+This server mode runs the latest waterfall short strategies. The old
 lifecycle/long-short monitor is not the default runtime anymore.
+
+> **Two engines run in parallel** on the same 1m stream, each with its own
+> independent 100U paper account (see `board_waterfall.md` for the Claude
+> engine). This doc covers the **Codex core5_agg** engine. Both are labeled
+> per strategy in pushes and on `/waterfall`.
 
 ## Active Runtime
 
@@ -146,6 +151,14 @@ The best same-window comparison so far:
 
 Direct strict scanning remains research-only until it beats core5+agg on the
 same symbols and same dates.
+
+> **Cost-model caveat**: the table above uses the optimistic 0.08% round-trip
+> fee with no slippage. Under an honest 0.30% round-trip on the full-history
+> independent replay, the core5+agg edge is roughly +0.30%/trade in the 2026H1
+> verdict period (vs the +1.16% headline), and drops to ≈0 once the few
+> cascade days (e.g. 2025-10-10) are removed. Paper PnL is shown at 0.08% for
+> A/B parity with the Claude engine; mentally deduct ~0.2pp/trade when judging
+> the real edge. See `审查意见_claude_round4_部署版.md` in the review pack.
 
 ## Commands
 

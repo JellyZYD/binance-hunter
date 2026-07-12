@@ -6,28 +6,23 @@
 |---|---|---|---|
 | OI | REST /fapi/v1/openInterest，全观察池(450币) | 每 60s | 实时细粒度持仓量（Vision metrics 只有 5m 归档）|
 | 爆仓流 | websocket !forceOrder@arr 全市场 | 实时 | 级联判别的最直接信号，币安已下架历史版，只能实时采 |
-| 热池盘口 | REST /fapi/v1/depth?limit=20，涨幅榜前30 | 每 30s | 瀑布前买盘塌陷研究（top5 档 + 20 档名义额合计）|
+| 热池盘口 | REST /fapi/v1/depth?limit=20，涨幅榜前30 | 每 30s | 瀑布前买盘塌陷研究（top5 档 + 20 档名义额合计），Claude 冠军标签"远档增厚门"的 live 数据源 |
 
 ## 存储预算（30G 服务器）
 
 约 25-30 MB/天，parquet 按小时分文件存 `backend/storage/micro/`，
 默认 90 天环形保留（启动时+每日自动清理超期文件）→ 峰值占用 < 3 GB。
+写入是**缓冲的**：每 300 秒 flush 一次，所以启动后 **约 5 分钟才出现第一批文件**，`ls` 早了会看到空目录，属正常。
 
 **拿回本地**：建议每周一次，约 200 MB/周：
 ```bash
 scp -r root@pixia.cc:/opt/binance-hunter/backend/storage/micro E:\2C2G\币安数据库\micro_server\
 ```
 
-## 本地/服务器启动
+## 服务器启动
 
 ```bash
-python backend/run.py collect-micro --broad-top 450
-```
-
-systemd 单元（服务器，与现有三个服务并列）：
-
-```ini
-# /etc/systemd/system/binance-hunter-micro.service
+cat > /etc/systemd/system/binance-hunter-micro.service <<'EOF'
 [Unit]
 Description=binance-hunter micro data collector
 After=network-online.target
@@ -35,16 +30,28 @@ After=network-online.target
 [Service]
 WorkingDirectory=/opt/binance-hunter
 EnvironmentFile=/etc/binance-hunter.env
-ExecStart=/usr/bin/python3 backend/run.py collect-micro --broad-top 450
+ExecStart=/opt/binance-hunter/backend/.venv/bin/python backend/run.py collect-micro --broad-top 450
 Restart=always
 RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
-```
-
-```bash
+EOF
 systemctl daemon-reload && systemctl enable --now binance-hunter-micro
 ```
 
-已本地实测：75 秒运行三路数据全部正常落盘（2026-07-12）。
+> ExecStart 必须用 venv 里的 python（`backend/.venv/bin/python`），系统 `python3` 没装依赖。
+
+验收（等 ~5 分钟后）：
+```bash
+systemctl status binance-hunter-micro --no-pager | head -3
+ls -lh /opt/binance-hunter/backend/storage/micro/   # 应有 oi_/liq_/depth_ 三类 parquet
+```
+
+## 限流保护（2026-07-12 加固）
+
+- OI/盘口两个 REST 轮询遇到 **418/429 会退避 200 秒**再重扫，不会在封禁期间继续轰炸（否则会延长封禁）。
+- 三路轮询**错峰启动**：OI 延后 90s、盘口延后 120s，避免与 monitor 开机预热同时冲击币安权重；爆仓流 websocket 不占 REST 权重，立即启动。
+- **与 monitor 同机共享 IP 权重**：重启大量服务时注意别让采集器和 monitor 全量预热同时发生（见 `deploy/README.md` 的"限流与重启"一节）。
+
+已本地实测：75 秒三路正常落盘；服务器 2026-07-12 上线，DB-first 预热 + 错峰后无封禁。

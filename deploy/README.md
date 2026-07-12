@@ -1,6 +1,54 @@
-## Lifecycle Expert Production Version
+## Waterfall Quant 双策略生产版（当前默认，2026-07-12）
 
-当前默认生产策略已经升级为生命周期专家版：
+默认监控策略已切到 `runtime.active_strategy = "waterfall_quant"`，同一条 1m WebSocket 流上**并行跑两套独立引擎**，各自独立纸面账户（初始 100U / 20% 权益保证金 / 10x / 最多 5 仓 / 实盘关闭），互不干扰、独立署名：
+
+| 策略 | 引擎 | 触发 | 出场 | 频率(裁决期) |
+|---|---|---|---|---|
+| **Codex·core5_agg** | `waterfall.py` | 1m 收线 core5 结构 + aggTrade 卖压分族门控 | 分档追踪止盈 | ~1.5 笔/天 |
+| **Claude·冠军标签** | `board_waterfall.py` | 板上涨≥40% + 60m 跌≥7% + 量≥30万U（纯 1m 收线） | B 结构止损(60m 低点后反弹高×1.01) + 3.5%/3% 追踪 + 4h | ~3.3 笔/天 |
+
+- 两套重叠仅 ~30%（core5_agg 抓"已跌趋势中继"，冠军标签抓"板上深瀑布"），互补而非竞争。
+- 企微推送标题带 `[Codex·core5_agg]` / `[Claude·冠军标签]` 署名；`/waterfall` 页显示两张独立账户卡（从开机即显示，不等首笔交易）。
+- 开关：`claude_board_waterfall.enabled`（Claude 侧）、`waterfall_quant.require_agg_confirmation`（Codex 侧 agg 门）。参数全在 `backend/config/settings.json`，本地改后 push 再 `update.sh`。
+- 实盘安全：`WaterfallExecutionAdapter` 默认 paper，`real_order_enabled=false`；改 live 会启动即抛异常拒绝下单。
+
+部署后检查：
+```bash
+journalctl -u binance-hunter-monitor -n 20 --no-pager   # 应有 websocket connected streams=... 无 418
+curl -s https://pixia.cc/api/hunter/waterfall/summary | python3 -m json.tool | grep -A6 strategy_label
+```
+`accounts` 应含 `Codex·core5_agg` 和 `Claude·冠军标签` 两段，各 100U。
+
+### 限流与重启（2026-07-12 血泪教训，务必读）
+
+**病根**：monitor 每次启动要 REST 预热 ~400 币的 1m K 线，接近币安权重上限。**连续重启**（或重启时采集器同时全量请求）会叠加超限 → IP 被 418 封禁 → 旧代码把限流当致命错误崩溃 → systemd 5 秒重启 → 再预热 → 封禁续期，形成自我 DDoS 死循环（曾连崩 14 次）。
+
+**已修复的三道防线**（3cf48e3 / a874db4 / 439d875）：
+1. **DB-first 预热**：预热先读本地 SQLite，只从 REST 补缺口尾巴。快速重启权重从 ~4000 降到 ~400，单次重启不再触发封禁。
+2. **限流自愈**：启动 discovery 遇错退避 180s 重试而非崩溃；采集器 OI/盘口遇 418/429 退避 200s。封禁自然过期后自动恢复，**无需人工干预**。
+3. **采集器错峰**：OI/盘口轮询延后 90s/120s 启动，避开 monitor 预热窗口。
+
+**运维守则**：
+- 更新代码走轻量三连即可，**不要连续 restart**：
+  ```bash
+  cd /opt/binance-hunter && git fetch origin && git reset --hard origin/main
+  systemctl restart binance-hunter-monitor          # 涉及前端才用 sudo bash deploy/update.sh
+  ```
+- 若同时重启 monitor 和采集器，中间隔 60s：`systemctl restart binance-hunter-monitor && sleep 60 && systemctl start binance-hunter-micro`。
+- 看是否被封 / 封到几点：
+  ```bash
+  journalctl -u binance-hunter-monitor -n 20 --no-pager | grep -oP 'banned until \K[0-9]+' | tail -1 \
+    | xargs -I{} sh -c 'date -d @$(({} / 1000)) "+封禁到: %F %H:%M:%S %Z"'
+  ```
+  时间戳不变=在倒计时（好）；变大=还有进程在撞墙，先 `systemctl stop binance-hunter-micro`。封禁期间**只等不重启**。
+
+微观数据采集器（OI/爆仓流/盘口）的完整说明见 [`../docs/micro-collector.md`](../docs/micro-collector.md)。
+
+---
+
+## Lifecycle Expert Production Version（历史，已非默认）
+
+以下为上一代生命周期专家版记录，当前 `active_strategy` 已切到 `waterfall_quant`（见上）。生命周期版：
 
 - `signals.strategy_version=lifecycle_expert`
 - WebSocket 周期：`5m`, `15m`
@@ -132,16 +180,42 @@ sudo systemctl daemon-reload && sudo systemctl restart binance-hunter-monitor
 ## 常用运维命令
 
 ```bash
-systemctl status binance-hunter-monitor.service binance-hunter-api.service binance-hunter-web.service
+# 四个服务状态（含采集器）
+systemctl status binance-hunter-monitor binance-hunter-api binance-hunter-web binance-hunter-micro --no-pager | grep -E "●|Active"
+
+# monitor 心跳（约 30s 一条 waterfall events=... open_positions=...；数字在涨=正常）
 journalctl -u binance-hunter-monitor.service -f
-sqlite3 /opt/binance-hunter/backend/storage/hunter.db ".tables"
+
+# 双策略账户（各 100U，从开机即显示）
+curl -s https://pixia.cc/api/hunter/waterfall/summary | python3 -m json.tool | grep -A6 strategy_label
+
+# K 线是否实时进库（第二个时间应离当前 UTC < 2min）
+sqlite3 /opt/binance-hunter/backend/storage/hunter.db \
+  "SELECT COUNT(*), MAX(datetime(close_time/1000,'unixepoch')) FROM candles WHERE interval='1m';"
+
+# 采集器三路数据（启动 ~5min 后才有文件）
+ls -lh /opt/binance-hunter/backend/storage/micro/
 ```
+
+> 心跳日志频率由 `websocket.heartbeat_events` 控制（当前 7500 ≈ 30s 一条）。
+> API 内网端口 `127.0.0.1:8787`（`/api/hunter/...` 经 Nginx 代理对外）。
 
 ## 资源建议（2 核 2G）
 
 - 起步：`HUNTER_TOP=120 HUNTER_BROAD_TOP=220 HUNTER_MAX_WORKERS=8`
 - 稳定后可提到 `HUNTER_TOP=200~250 HUNTER_BROAD_TOP=400 HUNTER_MAX_WORKERS=12`
-- 前端 `npm run build` 内存吃紧时先加 2G swap（见下方文档）。
+- 瀑布预热并发 `waterfall_quant.max_workers` 已降到 3（防限流，见"限流与重启"）。
+
+### 加 2G swap（前端构建 / lightgbm 安装内存吃紧时）
+
+2G 内存机器跑 `npm run build`（尤其 codex 改动前端后缓存失效那次）会 OOM，把 sshd 一起拖死。**先加一次性 swap 再部署**，一劳永逸：
+
+```bash
+fallocate -l 2G /swapfile && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+echo '/swapfile none swap sw 0 0' >> /etc/fstab   # 开机自动挂载
+```
+
+若已 OOM 假死连不上 SSH：阿里云控制台**重启实例**（本机无需抢救的状态，重启零损失），起来后先加 swap 再重跑部署。
 
 ## 443 端口复用：网站 + 翻墙（Xray）共存
 
