@@ -49,7 +49,7 @@ ls -lh /opt/binance-hunter/backend/storage/micro/   # 应有 oi_/liq_/depth_ 三
 cat /opt/binance-hunter/backend/storage/micro/latest_depth.json | head -c 300
 ```
 
-`latest_depth.json` 每轮盘口抓取后原子更新，不等 5 分钟 parquet flush。监控进程读取它并在盘口增量通过时，将同一个 Codex core5 纸面信号标记为 `bookdepth_strong`（前端/企业微信显示“BookDepth增强”）。采集器重启后约需两分钟形成基线；期间 core5+agg 继续正常运行。
+`latest_depth.json` 每轮盘口抓取后原子更新，不等 5 分钟 parquet flush。监控进程读取它并在盘口增量通过时，将同一个 Codex core5 纸面信号标记为 `bookdepth_strong`（前端/企业微信显示“BookDepth增强”）。微观服务重启时盘口轮询会先错峰等待 120 秒，再用约两分钟形成基线，因此首次增强档约需 4-5 分钟；期间 core5+agg 继续正常运行。
 
 ## 限流保护（2026-07-12 加固）
 

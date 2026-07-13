@@ -105,8 +105,9 @@ account. It does not create a separate account, position, or duplicate signal.
 The historical `core5+agg+bookDepth` result used Binance Vision percentage
 depth, while live collection uses REST top-20 depth. This live tier is therefore
 an explicit paper validation of the proxy, not a claim that the two feeds are
-identical. The collector needs about two minutes after restart to build its
-first baseline.
+identical. Depth polling is deliberately delayed for 120 seconds during a
+service restart, then needs about two more minutes of snapshots. The first
+enhanced tier should therefore appear after roughly four to five minutes.
 
 ## Paper Execution
 
