@@ -185,6 +185,8 @@ class BoardWaterfallEngine:
         entry = close * (1.0 - slip)
         stop = max(bounce_high * (1.0 + float(self.cfg["stop_bounce_buffer"])), entry * (1.0 + float(self.cfg["stop_min_pct"])))
         sizing = self.paper_sizing()
+        if sizing["margin_usdt"] <= 0 or sizing["notional_usdt"] <= 0:
+            return None
         position_id = f"cbwf-{symbol}-{now}"
         evidence = [
             f"strategy={self.strategy}",
@@ -253,10 +255,14 @@ class BoardWaterfallEngine:
 
     def paper_sizing(self) -> dict[str, float]:
         equity = max(0.0, self.initial_balance_usdt + self.realized_pnl_usdt)
-        margin = equity * self.margin_fraction
+        used_margin = sum(max(0.0, p.margin_usdt) for p in self.positions.values())
+        free = max(0.0, equity - used_margin)
+        margin = min(free, equity * max(0.0, min(1.0, self.margin_fraction)))
         notional = margin * self.leverage
         return {
             "equity_usdt": equity,
+            "free_usdt": free,
+            "used_margin_usdt": used_margin,
             "margin_usdt": margin,
             "notional_usdt": notional,
             "leverage": self.leverage,

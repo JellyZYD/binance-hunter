@@ -197,6 +197,11 @@ Dashboard:
   symbol (not per candle). systemd `MemoryMax` is the hard OOM backstop.
 - REST prewarm is weight-throttled (`rest_weight_per_sec`, default 20) so
   restarts and 15m refreshes never trip Binance's 2400/min ban; if the REST
-  universe call is banned, the monitor falls back to the DB's known symbols.
+  universe call is banned, the monitor falls back to the DB's known symbols
+  and switches prewarm to strict DB-only mode. It does not issue per-symbol
+  kline REST calls while the universe request is unavailable.
+- Restart recovery is strategy-scoped. Each engine restores only its own open
+  positions and complete realized-PnL history, preventing exit-profile,
+  cooldown and account contamination between core5 and Board Waterfall.
 - SQLite runs in WAL mode so the read-only API never blocks on candle writes.
 - See `../deploy/README.md` → 内存与防死机 / 限流与重启 for the full playbook.

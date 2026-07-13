@@ -81,6 +81,20 @@ def main() -> int:
     if abs(float(cfg.get("leverage") or 0.0) - 10.0) > 0.001:
         print(f"live verify failed: leverage must be 10x: {cfg}", file=sys.stderr)
         return 1
+    accounts = summary.get("accounts") or []
+    account_strategies = {str(account.get("strategy") or "") for account in accounts}
+    expected_accounts = {f"waterfall_{EXPECTED_VARIANT}_1m", "claude_board_wf_1m"}
+    if account_strategies != expected_accounts:
+        print(f"live verify failed: independent accounts={sorted(account_strategies)}", file=sys.stderr)
+        return 1
+    account_initial = sum(float(account.get("paper_initial_balance_usdt") or 0.0) for account in accounts)
+    total_initial = float(summary.get("paper_initial_balance_usdt") or 0.0)
+    if abs(total_initial - account_initial) > 0.01 or abs(total_initial - 200.0) > 0.01:
+        print(
+            f"live verify failed: combined initial={total_initial} account sum={account_initial}, expected 200U",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

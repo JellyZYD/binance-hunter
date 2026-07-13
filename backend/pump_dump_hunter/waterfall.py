@@ -425,12 +425,16 @@ class WaterfallEngine:
 
     def load_positions(self, rows: list[dict[str, Any]]) -> None:
         for row in rows:
+            if str(row.get("strategy") or "") != self.strategy:
+                continue
             pos = waterfall_position_from_row(row)
             if pos.status == "open":
                 self.positions[pos.symbol] = pos
 
     def load_recent_state(self, positions: list[dict[str, Any]], signals: list[dict[str, Any]]) -> None:
         for row in positions:
+            if str(row.get("strategy") or "") != self.strategy:
+                continue
             symbol = str(row.get("symbol") or "")
             if not symbol:
                 continue
@@ -450,6 +454,8 @@ class WaterfallEngine:
             if status == "closed":
                 self.realized_pnl_usdt += float(row.get("pnl_usdt") or 0.0)
         for row in signals:
+            if str(row.get("strategy") or "") != self.strategy:
+                continue
             symbol = str(row.get("symbol") or "")
             action = str(row.get("action") or "")
             t = int(row.get("decision_time") or 0)
@@ -835,15 +841,21 @@ async def waterfall_monitor(
     sink = WaterfallSignalSink(dirs["alerts"], settings)
     executor = WaterfallExecutionAdapter(settings)
     engine = WaterfallEngine(settings)
-    engine.load_positions(store.active_waterfall_positions())
-    engine.load_recent_state(store.waterfall_position_rows(limit=1000), store.waterfall_signal_rows(limit=1000))
+    engine.load_positions(store.active_waterfall_positions(strategy=engine.strategy))
+    engine.load_recent_state(
+        store.waterfall_position_rows(limit=0, strategy=engine.strategy),
+        store.waterfall_signal_rows(limit=1000, strategy=engine.strategy),
+    )
     extra_engines: list[Any] = []
     from .board_waterfall import BoardWaterfallEngine, board_waterfall_settings
 
     if bool(board_waterfall_settings(settings).get("enabled", True)):
         board_engine = BoardWaterfallEngine(settings, shared_candles=engine.candles)
-        board_engine.load_positions(store.active_waterfall_positions())
-        board_engine.load_recent_state(store.waterfall_position_rows(limit=1000), store.waterfall_signal_rows(limit=1000))
+        board_engine.load_positions(store.active_waterfall_positions(strategy=board_engine.strategy))
+        board_engine.load_recent_state(
+            store.waterfall_position_rows(limit=0, strategy=board_engine.strategy),
+            store.waterfall_signal_rows(limit=1000, strategy=board_engine.strategy),
+        )
         extra_engines.append(board_engine)
     cfg = waterfall_settings(settings)
     top = int(broad_top or cfg["broad_top"])
@@ -1063,6 +1075,7 @@ def refresh_waterfall_universe(
     max_workers: int,
     extra_engines: list[Any] | None = None,
 ) -> list[str]:
+    allow_rest_prewarm = True
     try:
         rows = build_broad_universe(client, settings, broad_top=broad_top)
         symbols = [str(r["symbol"]) for r in rows]
@@ -1072,12 +1085,22 @@ def refresh_waterfall_universe(
         # DB so the monitor runs on websocket + DB alone with ZERO REST, instead
         # of being stuck in a retry loop until the ban lifts. The next 15m
         # refresh picks up the fresh liquidity-ranked universe once REST is back.
+        allow_rest_prewarm = False
         symbols = store.candle_symbols("1m")
         print(f"[{local_stamp()}] waterfall universe REST failed ({type(exc).__name__}); falling back to {len(symbols)} DB symbols", flush=True)
     active = [str(r["symbol"]) for r in store.active_waterfall_positions()]
     symbols = sorted(set(symbols) | set(active))
     print(f"[{local_stamp()}] waterfall universe symbols={len(symbols)} broad_top={broad_top}", flush=True)
-    prewarm_waterfall_symbols(client, store, engine, symbols, int(engine.cfg["prewarm_limit"]), max_workers, extra_engines=extra_engines)
+    prewarm_waterfall_symbols(
+        client,
+        store,
+        engine,
+        symbols,
+        int(engine.cfg["prewarm_limit"]),
+        max_workers,
+        extra_engines=extra_engines,
+        allow_rest=allow_rest_prewarm,
+    )
     return symbols
 
 
@@ -1089,6 +1112,7 @@ def prewarm_waterfall_symbols(
     limit: int,
     max_workers: int,
     extra_engines: list[Any] | None = None,
+    allow_rest: bool = True,
 ) -> None:
     cutoff = closed_candle_cutoff_ms(utc_ms(), "1m")
     changed: list[dict[str, Any]] = []
@@ -1114,6 +1138,8 @@ def prewarm_waterfall_symbols(
         gap_min = int((cutoff - last_close) / 60_000) if last_close else limit
         if len(cached) >= limit - 5 and gap_min <= 1:
             return symbol, cached  # full & current → nothing to fetch
+        if not allow_rest:
+            return symbol, cached  # REST is banned/unavailable: websocket + DB only
         if len(cached) < limit - 5:
             fetch_limit = limit  # thin history → backfill the whole window
         else:
@@ -1143,7 +1169,8 @@ def prewarm_waterfall_symbols(
             except Exception as exc:
                 errors.append(f"{symbol}={type(exc).__name__}: {exc}"[:160])
     store.upsert_waterfall_watch(changed)
-    print(f"[{local_stamp()}] waterfall prewarm candles={total} watch={len(changed)} errors={len(errors)}", flush=True)
+    mode = "db+rest" if allow_rest else "db-only"
+    print(f"[{local_stamp()}] waterfall prewarm mode={mode} candles={total} watch={len(changed)} errors={len(errors)}", flush=True)
     if errors:
         print(f"[{local_stamp()}] waterfall prewarm error preview: {'; '.join(errors[:5])}", flush=True)
 

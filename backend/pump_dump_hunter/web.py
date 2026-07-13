@@ -177,7 +177,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
         from .waterfall import strategy_label
 
         cfg = waterfall_settings(self.settings)
-        out = self.store.waterfall_summary(float(cfg.get("paper_initial_balance_usdt") or 0.0))
+        out = self.store.waterfall_summary(0.0)
         board_cfg = board_waterfall_settings(self.settings)
         accounts = []
         known = [f"waterfall_{cfg.get('variant', 'core5_agg')}_1m"]
@@ -194,6 +194,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             acc["strategy"] = strat
             acc["strategy_label"] = strategy_label(strat)
             accounts.append(acc)
+        out = combine_waterfall_accounts(out, accounts)
         out["accounts"] = accounts
         runtime = self.settings.get("runtime", {})
         out["active_strategy"] = runtime.get("active_strategy", "waterfall_quant")
@@ -234,6 +235,41 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+
+def combine_waterfall_accounts(base: dict[str, Any], accounts: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build the dashboard total from independent paper accounts."""
+    out = dict(base)
+    sum_fields = (
+        "open_positions",
+        "closed_positions",
+        "signals",
+        "paper_initial_balance_usdt",
+        "paper_realized_pnl_usdt",
+        "paper_unrealized_pnl_usdt",
+        "paper_equity_usdt",
+        "paper_used_margin_usdt",
+        "paper_free_balance_usdt",
+    )
+    for field in sum_fields:
+        out[field] = sum(float(account.get(field) or 0.0) for account in accounts)
+    out["paper_pnl_usdt"] = out["paper_realized_pnl_usdt"]
+    closed = int(out["closed_positions"])
+    if closed:
+        wins = sum(
+            float(account.get("win_rate") or 0.0) * int(account.get("closed_positions") or 0)
+            for account in accounts
+        )
+        pnl_weighted = sum(
+            float(account.get("avg_pnl_pct") or 0.0) * int(account.get("closed_positions") or 0)
+            for account in accounts
+        )
+        out["win_rate"] = wins / closed
+        out["avg_pnl_pct"] = pnl_weighted / closed
+    else:
+        out["win_rate"] = 0.0
+        out["avg_pnl_pct"] = 0.0
+    return out
 
 
 def read_model_meta() -> dict[str, Any]:

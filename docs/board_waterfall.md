@@ -109,6 +109,42 @@ exits; +2h relay tested −0.14% over 1471 samples).
 - API: `/api/hunter/waterfall/positions?strategy=claude_board_wf_1m`,
   `.../signals?strategy=...`, and `accounts[]` in `/api/hunter/waterfall/summary`.
 
+## State isolation and restart recovery
+
+- The Board and core5 engines restore positions, realized PnL, cooldowns and
+  trade counts using their own strategy id only. A `claude_e1` position can
+  never be loaded by the core5 engine.
+- Closed-position history is restored without the old 1000-row cap, so paper
+  equity does not lose early realized PnL after a long-running restart.
+- Position sizing is capped by free paper equity. No position is created when
+  equity or free margin is zero.
+- The dashboard total is the sum of both independent 100U accounts; each
+  account remains available separately in `accounts[]`.
+
+## Reproducible production-engine replay
+
+The repository includes a replay that imports `BoardWaterfallEngine` directly
+and merges all selected symbols in timestamp order. This preserves global
+position limits, account equity, margin use and cooldown behavior:
+
+```bash
+python backend/ml_experiments/backtest_board_waterfall.py \
+  --klines-dir "E:\\A\\bb\\data\\klines" \
+  --start 2026-01-01 --end 2026-06-30 \
+  --split-date 2026-04-01
+```
+
+Use `--symbols NOMUSDT,LABUSDT` for a focused replay or `--max-symbols 50` for
+a smoke run. Output includes the trade ledger plus all/train/holdout metrics:
+frequency, win rate, average and median return, PF, MAE/MFE, 3%/5% winners and
+PF with the largest winner removed. Positions still open at the end are
+reported but are not force-closed into results.
+
+The headline 2026H1 figures above predate this in-repository runner. Treat them
+as research evidence until regenerated from the exact local dataset and saved
+report; the production-engine replay is now the authoritative verification
+path.
+
 ## Next (post paper A/B)
 
 1. Enable the far-depth gate once collect-micro depth polling has a 2h baseline.

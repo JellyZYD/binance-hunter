@@ -19,6 +19,10 @@ curl -s https://pixia.cc/api/hunter/waterfall/summary | python3 -m json.tool | g
 ```
 `accounts` 应含 `Codex·core5_agg` 和 `Claude·冠军标签` 两段，各 100U。
 
+重启恢复按 `strategy` 严格隔离：两套引擎不会加载对方的持仓、退出配置、
+冷却或盈亏；顶部总账户是两个独立 100U 账户的合计。若币池 REST 请求被
+418/429 拒绝，预热会切到严格 DB-only，不再继续逐币请求 K 线。
+
 ### 限流与重启（2026-07-12 血泪教训，务必读）
 
 **病根**：monitor 每次启动要 REST 预热 ~400 币的 1m K 线，接近币安权重上限。**连续重启**（或重启时采集器同时全量请求）会叠加超限 → IP 被 418 封禁 → 旧代码把限流当致命错误崩溃 → systemd 5 秒重启 → 再预热 → 封禁续期，形成自我 DDoS 死循环（曾连崩 14 次）。

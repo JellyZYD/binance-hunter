@@ -902,12 +902,18 @@ class Store:
         finally:
             conn.close()
 
-    def active_waterfall_positions(self) -> list[dict[str, Any]]:
+    def active_waterfall_positions(self, strategy: str = "") -> list[dict[str, Any]]:
         conn = self.connect()
         try:
-            rows = conn.execute(
-                "SELECT * FROM waterfall_positions WHERE status='open' ORDER BY updated_time DESC"
-            ).fetchall()
+            if strategy:
+                rows = conn.execute(
+                    "SELECT * FROM waterfall_positions WHERE status='open' AND strategy=? ORDER BY updated_time DESC",
+                    (strategy,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM waterfall_positions WHERE status='open' ORDER BY updated_time DESC"
+                ).fetchall()
             return [decode_waterfall_row(dict(r)) for r in rows]
         finally:
             conn.close()
@@ -935,10 +941,11 @@ class Store:
                 clauses.append("strategy=?")
                 params.append(strategy)
             where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-            rows = conn.execute(
-                f"SELECT * FROM waterfall_positions {where} ORDER BY updated_time DESC LIMIT ?",
-                (*params, int(limit)),
-            ).fetchall()
+            sql = f"SELECT * FROM waterfall_positions {where} ORDER BY updated_time DESC"
+            if int(limit) > 0:
+                sql += " LIMIT ?"
+                params.append(int(limit))
+            rows = conn.execute(sql, tuple(params)).fetchall()
             return [decode_waterfall_row(dict(r)) for r in rows]
         finally:
             conn.close()
@@ -946,15 +953,24 @@ class Store:
     def waterfall_signal_rows(self, limit: int = 200, strategy: str = "") -> list[dict[str, Any]]:
         conn = self.connect()
         try:
-            if strategy:
+            if strategy and int(limit) > 0:
                 rows = conn.execute(
                     "SELECT * FROM waterfall_signals WHERE strategy=? ORDER BY decision_time DESC LIMIT ?",
                     (strategy, int(limit)),
                 ).fetchall()
-            else:
+            elif strategy:
+                rows = conn.execute(
+                    "SELECT * FROM waterfall_signals WHERE strategy=? ORDER BY decision_time DESC",
+                    (strategy,),
+                ).fetchall()
+            elif int(limit) > 0:
                 rows = conn.execute(
                     "SELECT * FROM waterfall_signals ORDER BY decision_time DESC LIMIT ?",
                     (int(limit),),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM waterfall_signals ORDER BY decision_time DESC"
                 ).fetchall()
             return [decode_waterfall_row(dict(r)) for r in rows]
         finally:
