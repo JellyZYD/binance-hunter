@@ -6,7 +6,7 @@
 |---|---|---|---|
 | OI | REST /fapi/v1/openInterest，全观察池(450币) | 每 60s | 实时细粒度持仓量（Vision metrics 只有 5m 归档）|
 | 爆仓流 | websocket !forceOrder@arr 全市场 | 实时 | 级联判别的最直接信号，币安已下架历史版，只能实时采 |
-| 热池盘口 | REST /fapi/v1/depth?limit=20，涨幅榜前30 | 每 30s | 瀑布前买盘塌陷研究（top5 档 + 20 档名义额合计），Claude 冠军标签"远档增厚门"的 live 数据源 |
+| 热池盘口 | REST /fapi/v1/depth?limit=20，涨幅/跌幅/成交额平衡池 60 个 | 每 30s | top5 档 + 20 档名义额合计，并为 core5 的 BookDepth 增强档提供实时代理 |
 
 ## 存储预算（30G 服务器）
 
@@ -30,7 +30,7 @@ After=network-online.target
 [Service]
 WorkingDirectory=/opt/binance-hunter
 EnvironmentFile=/etc/binance-hunter.env
-ExecStart=/opt/binance-hunter/backend/.venv/bin/python backend/run.py collect-micro --broad-top 450
+ExecStart=/opt/binance-hunter/backend/.venv/bin/python backend/run.py collect-micro --broad-top 450 --depth-top 60 --depth-interval 30
 Restart=always
 RestartSec=10
 
@@ -46,7 +46,10 @@ systemctl daemon-reload && systemctl enable --now binance-hunter-micro
 ```bash
 systemctl status binance-hunter-micro --no-pager | head -3
 ls -lh /opt/binance-hunter/backend/storage/micro/   # 应有 oi_/liq_/depth_ 三类 parquet
+cat /opt/binance-hunter/backend/storage/micro/latest_depth.json | head -c 300
 ```
+
+`latest_depth.json` 每轮盘口抓取后原子更新，不等 5 分钟 parquet flush。监控进程读取它并在盘口增量通过时，将同一个 Codex core5 纸面信号标记为 `bookdepth_strong`（前端/企业微信显示“BookDepth增强”）。采集器重启后约需两分钟形成基线；期间 core5+agg 继续正常运行。
 
 ## 限流保护（2026-07-12 加固）
 

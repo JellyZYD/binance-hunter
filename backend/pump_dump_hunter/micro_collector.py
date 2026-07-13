@@ -10,13 +10,14 @@ Streams
                  (default 60s; Vision metrics archives only 5m granularity).
 2. Liquidation : websocket !forceOrder@arr (all market). Live-only data --
                  Binance removed historical liquidationSnapshot. Highest value.
-3. Hot depth   : REST /fapi/v1/depth?limit=20 for the top-gainer hot pool
-                 (default 30 symbols, every 30s): top5 levels + notional sums
+3. Hot depth   : REST /fapi/v1/depth?limit=20 for a balanced hot pool
+                 (default 60 symbols, every 30s): gainers, losers and liquid
+                 contracts; top5 levels + notional sums
                  within the book, to study bid-collapse before waterfalls.
 
 Storage budget (defaults): OI ~450 syms x 1/min ~= 18 MB/day parquet;
-depth 30 syms x 2/min ~= 6 MB/day; liquidations ~= 1-5 MB/day.
-Total < 30 MB/day -> 90-day retention uses < 3 GB of the 30 GB server disk.
+depth 60 syms x 2/min ~= 12 MB/day; liquidations ~= 1-5 MB/day.
+Total < 40 MB/day -> 90-day retention uses < 4 GB of the 30 GB server disk.
 Hourly parquet files under storage/micro/, ring-buffer cleanup on startup
 and once per day. Pull to local weekly (~200 MB) with scp/rsync.
 
@@ -34,6 +35,7 @@ from typing import Any
 
 from .config import ensure_dirs
 from .data.rest_client import BinanceRestClient
+from .depth_cache import DepthSnapshotPublisher
 from .discovery import build_broad_universe
 from .timeutils import local_stamp, utc_ms
 
@@ -145,7 +147,12 @@ async def poll_oi(writer: MicroWriter, symbols_ref: dict[str, list[str]], interv
         await asyncio.sleep(max(1.0, interval - (time.time() - started)))
 
 
-async def poll_depth(writer: MicroWriter, symbols_ref: dict[str, list[str]], interval: int) -> None:
+async def poll_depth(
+    writer: MicroWriter,
+    publisher: DepthSnapshotPublisher,
+    symbols_ref: dict[str, list[str]],
+    interval: int,
+) -> None:
     import urllib.error
 
     while True:
@@ -164,6 +171,7 @@ async def poll_depth(writer: MicroWriter, symbols_ref: dict[str, list[str]], int
                     row[f"b{i + 1}p"], row[f"b{i + 1}q"] = bids[i]
                     row[f"a{i + 1}p"], row[f"a{i + 1}q"] = asks[i]
                 writer.add("depth", row)
+                publisher.add(row)
             except urllib.error.HTTPError as exc:
                 if exc.code in (418, 429):
                     print(f"[{local_stamp()}] micro depth rate-limited ({exc.code}); backoff 200s", flush=True)
@@ -172,6 +180,10 @@ async def poll_depth(writer: MicroWriter, symbols_ref: dict[str, list[str]], int
             except Exception:
                 pass
             await asyncio.sleep(0.2)
+        try:
+            publisher.flush(now_ms=utc_ms())
+        except OSError as exc:
+            print(f"[{local_stamp()}] live depth cache write failed: {exc}", flush=True)
         writer.maybe_flush()
         await asyncio.sleep(interval)
 
@@ -183,13 +195,46 @@ async def refresh_pools(client: BinanceRestClient, settings: dict[str, Any],
             rows = await asyncio.to_thread(build_broad_universe, client, settings, broad_top)
             symbols_ref["all"] = [str(r["symbol"]) for r in rows]
             tickers = await asyncio.to_thread(_get_json, f"{FAPI}/fapi/v1/ticker/24hr")
-            usdt = [t for t in tickers if str(t.get("symbol", "")).endswith("USDT")]
-            usdt.sort(key=lambda t: float(t.get("priceChangePercent") or 0), reverse=True)
-            symbols_ref["hot"] = [str(t["symbol"]) for t in usdt[:hot_top]]
+            symbols_ref["hot"] = balanced_depth_pool(tickers, symbols_ref["all"], hot_top)
             print(f"[{local_stamp()}] micro pools all={len(symbols_ref['all'])} hot={len(symbols_ref['hot'])}", flush=True)
         except Exception as exc:
             print(f"[{local_stamp()}] micro pool refresh failed: {exc}", flush=True)
         await asyncio.sleep(900)
+
+
+def balanced_depth_pool(tickers: list[dict[str, Any]], eligible_symbols: list[str], limit: int) -> list[str]:
+    eligible = set(eligible_symbols)
+    rows = [row for row in tickers if str(row.get("symbol") or "") in eligible]
+    if limit <= 0 or not rows:
+        return []
+    bucket = max(1, limit // 3)
+    gainers = sorted(rows, key=lambda row: float(row.get("priceChangePercent") or 0.0), reverse=True)
+    losers = list(reversed(gainers))
+    liquid = sorted(rows, key=lambda row: float(row.get("quoteVolume") or 0.0), reverse=True)
+    selected: list[str] = []
+
+    def add_group(group: list[dict[str, Any]], count: int) -> None:
+        if count <= 0:
+            return
+        added = 0
+        for row in group:
+            symbol = str(row.get("symbol") or "")
+            if symbol and symbol not in selected:
+                selected.append(symbol)
+                added += 1
+                if added >= count:
+                    break
+
+    for group, count in ((gainers, bucket), (losers, bucket), (liquid, limit - 2 * bucket)):
+        add_group(group, count)
+    if len(selected) < limit:
+        for row in sorted(rows, key=lambda item: abs(float(item.get("priceChangePercent") or 0.0)), reverse=True):
+            symbol = str(row.get("symbol") or "")
+            if symbol and symbol not in selected:
+                selected.append(symbol)
+                if len(selected) >= limit:
+                    break
+    return selected[:limit]
 
 
 async def listen_liquidations(writer: MicroWriter, settings: dict[str, Any]) -> None:
@@ -218,10 +263,11 @@ async def listen_liquidations(writer: MicroWriter, settings: dict[str, Any]) -> 
 
 
 async def collect_micro(settings: dict[str, Any], broad_top: int = 450, oi_interval: int = 60,
-                        depth_top: int = 30, depth_interval: int = 30, retention_days: int = 90) -> None:
+                        depth_top: int = 60, depth_interval: int = 30, retention_days: int = 90) -> None:
     dirs = ensure_dirs(settings)
     root = Path(dirs["db"]).parent / "micro"
     writer = MicroWriter(root, retention_days)
+    depth_publisher = DepthSnapshotPublisher(root / "latest_depth.json")
     writer.cleanup()
     client = BinanceRestClient(settings)
     symbols_ref: dict[str, list[str]] = {"all": [], "hot": []}
@@ -236,7 +282,7 @@ async def collect_micro(settings: dict[str, Any], broad_top: int = 450, oi_inter
     tasks = [
         _delayed(lambda: refresh_pools(client, settings, symbols_ref, broad_top, depth_top), 0.0),
         _delayed(lambda: poll_oi(writer, symbols_ref, oi_interval), 90.0),
-        _delayed(lambda: poll_depth(writer, symbols_ref, depth_interval), 120.0),
+        _delayed(lambda: poll_depth(writer, depth_publisher, symbols_ref, depth_interval), 120.0),
         listen_liquidations(writer, settings),
     ]
     try:

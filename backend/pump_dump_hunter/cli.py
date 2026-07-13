@@ -400,7 +400,7 @@ def build_parser() -> argparse.ArgumentParser:
     micro.add_argument("--config", default=None)
     micro.add_argument("--broad-top", type=int, default=450)
     micro.add_argument("--oi-interval", type=int, default=60)
-    micro.add_argument("--depth-top", type=int, default=30)
+    micro.add_argument("--depth-top", type=int, default=60)
     micro.add_argument("--depth-interval", type=int, default=30)
     micro.add_argument("--retention-days", type=int, default=90)
     micro.set_defaults(func=cmd_collect_micro)

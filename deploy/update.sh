@@ -40,6 +40,9 @@ echo "[4/5] Restart services"
 systemctl daemon-reload
 systemctl restart binance-hunter-api.service
 systemctl restart binance-hunter-monitor.service
+if systemctl cat binance-hunter-micro.service >/dev/null 2>&1; then
+  systemctl restart binance-hunter-micro.service
+fi
 if [ "$INSTALL_FRONTEND" = "1" ] && systemctl list-unit-files binance-hunter-web.service >/dev/null 2>&1; then
   systemctl restart binance-hunter-web.service
 fi

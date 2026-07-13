@@ -225,6 +225,13 @@ function strategyTag(strategy?: string) {
   return strategy === 'claude_board_wf_1m' ? 'Claude·冠军标签' : 'Codex·core5_agg';
 }
 
+function tierText(tier?: string) {
+  if (tier === 'bookdepth_strong') return 'BookDepth增强';
+  if (tier === 'strong') return '强信号';
+  if (tier === 'normal') return '普通';
+  return tier || '普通';
+}
+
 export default function WaterfallDashboard() {
   const [summary, setSummary] = useState<WaterfallSummary | null>(null);
   const [watch, setWatch] = useState<WatchRow[]>([]);
@@ -309,6 +316,7 @@ export default function WaterfallDashboard() {
         <span>版本：{String(cfg.variant || '-')}</span>
         <span>扫描：Top {String(cfg.broad_top || '-')} 流动性山寨合约</span>
         <span>触发：{String(cfg.watch_interval || '1m')} 收线 + aggTrade</span>
+        <span>BookDepth增强：{cfg.bookdepth_enhancement_enabled ? '开启' : '关闭'}</span>
         <span>仓位：权益 {fmt(Number(cfg.paper_margin_fraction || 0) * 100, 0)}% / {String(cfg.leverage || '-')}x</span>
         <span>最多持仓：{String(cfg.max_open_positions || '-')}</span>
         <span>类型：{Array.isArray(cfg.enabled_families) ? cfg.enabled_families.join(', ') : '-'}</span>
@@ -454,7 +462,7 @@ export default function WaterfallDashboard() {
                 </div>
                 <p>【{strategyTag(s.strategy)}】价格 {fmt(s.price, 8)} / 止损 {fmt(s.stop_price, 8)}</p>
                 <p>{familyText(s.family)} / {s.rule}</p>
-                <p>档位 {s.tier || 'normal'} / 保证金 {usdt(s.margin_usdt ?? 0)} / 名义 {usdt(s.notional_usdt ?? 0)}</p>
+                <p>档位 {tierText(s.tier)} / 保证金 {usdt(s.margin_usdt ?? 0)} / 名义 {usdt(s.notional_usdt ?? 0)}</p>
                 {s.action !== 'open_short'
                   ? <b>{pct(s.pnl_pct)} · 权益 {usdt(s.account_equity_usdt ?? 0)}</b>
                   : <b>置信 {fmt(s.confidence, 3)} · {fmt(s.leverage ?? 1, 1)}x</b>}

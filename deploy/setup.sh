@@ -18,10 +18,12 @@ DOMAIN="${DOMAIN:-}"
 INSTALL_FRONTEND="${INSTALL_FRONTEND:-1}"
 NODE_MAJOR="${NODE_MAJOR:-20}"
 HUNTER_TOP="${HUNTER_TOP:-120}"
-HUNTER_BROAD_TOP="${HUNTER_BROAD_TOP:-220}"
+HUNTER_BROAD_TOP="${HUNTER_BROAD_TOP:-450}"
 HUNTER_MAX_WORKERS="${HUNTER_MAX_WORKERS:-8}"
 HUNTER_DISCOVER_EVERY="${HUNTER_DISCOVER_EVERY:-15m}"
 HUNTER_API_PORT="${HUNTER_API_PORT:-8787}"
+HUNTER_DEPTH_TOP="${HUNTER_DEPTH_TOP:-60}"
+HUNTER_DEPTH_INTERVAL="${HUNTER_DEPTH_INTERVAL:-30}"
 NEXT_PORT="${NEXT_PORT:-3000}"
 HUNTER_NETWORK_PROXY="${HUNTER_NETWORK_PROXY:-}"
 WECOM_WEBHOOK_URL="${WECOM_WEBHOOK_URL:-}"
@@ -106,6 +108,26 @@ EnvironmentFile=/etc/binance-hunter.env
 ExecStart=${BACKEND_DIR}/.venv/bin/python run.py web --config config/settings.json --host 127.0.0.1 --port ${HUNTER_API_PORT}
 Restart=always
 RestartSec=5
+User=root
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+cat >/etc/systemd/system/binance-hunter-micro.service <<EOF
+[Unit]
+Description=Binance hunter micro data collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=${BACKEND_DIR}
+EnvironmentFile=/etc/binance-hunter.env
+ExecStart=${BACKEND_DIR}/.venv/bin/python run.py collect-micro --config config/settings.json --broad-top 450 --depth-top ${HUNTER_DEPTH_TOP} --depth-interval ${HUNTER_DEPTH_INTERVAL}
+Restart=always
+RestartSec=10
 User=root
 NoNewPrivileges=true
 
@@ -234,13 +256,14 @@ fi
 
 echo "[7/7] Start services"
 systemctl daemon-reload
-systemctl enable --now binance-hunter-api.service binance-hunter-monitor.service
+systemctl enable --now binance-hunter-api.service binance-hunter-monitor.service binance-hunter-micro.service
 if [ "$INSTALL_FRONTEND" = "1" ]; then
   systemctl enable --now binance-hunter-web.service
 fi
 
 systemctl --no-pager status binance-hunter-api.service || true
 systemctl --no-pager status binance-hunter-monitor.service || true
+systemctl --no-pager status binance-hunter-micro.service || true
 if [ "$INSTALL_FRONTEND" = "1" ]; then
   systemctl --no-pager status binance-hunter-web.service || true
 fi

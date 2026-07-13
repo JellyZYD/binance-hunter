@@ -16,6 +16,7 @@ from .config import ensure_dirs
 from .data.rest_client import BinanceRestClient
 from .data.store import Store
 from .data.websocket_source import WebSocketMarketSource
+from .depth_cache import DepthSignalCache
 from .discovery import build_broad_universe
 from .sysmon import read_self_rss_mb, write_monitor_health
 from .models import Candle, KlineClosed
@@ -175,6 +176,12 @@ def waterfall_settings(settings: dict[str, Any]) -> dict[str, Any]:
     cfg.setdefault("downtrend_low_time_frac_min", 0.80)
     cfg.setdefault("momentum_low_time_frac_min", 0.80)
     cfg.setdefault("momentum_close_pos_max", 0.25)
+    cfg.setdefault("bookdepth_enhancement_enabled", True)
+    cfg.setdefault("bookdepth_max_age_seconds", 75)
+    cfg.setdefault("bookdepth_baseline_min_age_seconds", 90)
+    cfg.setdefault("bookdepth_baseline_max_age_seconds", 210)
+    cfg.setdefault("bookdepth_imbalance_delta_min", 0.0)
+    cfg.setdefault("bookdepth_confidence_boost", 0.10)
     cfg.setdefault("store_micro_events", False)
     return cfg
 
@@ -422,6 +429,16 @@ class WaterfallEngine:
         self.initial_balance_usdt = float(self.cfg["paper_initial_balance_usdt"])
         self.leverage = float(self.cfg["leverage"])
         self.margin_fraction = float(self.cfg["paper_margin_fraction"])
+        depth_path = self.cfg.get("bookdepth_cache_path")
+        if not depth_path:
+            depth_path = Path(settings["paths"]["db_path"]).parent / "micro" / "latest_depth.json"
+        self.depth_cache = DepthSignalCache(
+            depth_path,
+            max_age_ms=int(float(self.cfg["bookdepth_max_age_seconds"]) * 1000),
+            baseline_min_age_ms=int(float(self.cfg["bookdepth_baseline_min_age_seconds"]) * 1000),
+            baseline_max_age_ms=int(float(self.cfg["bookdepth_baseline_max_age_seconds"]) * 1000),
+            min_imbalance_delta=float(self.cfg["bookdepth_imbalance_delta_min"]),
+        )
 
     def load_positions(self, rows: list[dict[str, Any]]) -> None:
         for row in rows:
@@ -609,6 +626,9 @@ class WaterfallEngine:
             micro_decision = self.micro_signal_decision(family, micro_feat)
             if not micro_decision["ok"]:
                 return None
+            depth_decision = self.bookdepth_signal_decision(symbol, utc_ms())
+            tier = "bookdepth_strong" if depth_decision["ok"] else str(micro_decision["tier"])
+            depth_boost = float(self.cfg["bookdepth_confidence_boost"]) if depth_decision["ok"] else 0.0
             sizing = self.paper_sizing()
             if sizing["margin_usdt"] <= 0 or sizing["notional_usdt"] <= 0:
                 return None
@@ -631,17 +651,27 @@ class WaterfallEngine:
                 f"volr5_20={feat['volr5_20']:.2f}",
                 f"tsell={feat['tsell']:.3f}",
                 f"drop5={feat['drop_5m'] * 100:.2f}%",
-                f"tier={micro_decision['tier']}",
+                f"tier={tier}",
                 f"agg_filter={micro_decision['reason']}",
                 f"m0_40s_sell_ratio={micro_feat.get('m0_40s_sell_ratio', 0.0):.3f}",
                 f"m0_50s_sell_ratio={micro_feat.get('m0_50s_sell_ratio', 0.0):.3f}",
                 f"m0_50s_close_pos={micro_feat.get('m0_50s_close_pos', 0.5):.3f}",
                 f"m0_59s_sell_ratio={micro_feat.get('m0_59s_sell_ratio', 0.0):.3f}",
                 f"m0_59s_low_time_frac={micro_feat.get('m0_59s_low_time_frac', 0.0):.3f}",
+                f"bookdepth={depth_decision['reason']}",
                 f"paper_margin={sizing['margin_usdt']:.2f}",
                 f"paper_notional={sizing['notional_usdt']:.2f}",
                 f"leverage={sizing['leverage']:.2f}",
             ]
+            if depth_decision["available"]:
+                evidence.extend(
+                    [
+                        f"bookdepth_imbalance20={depth_decision['imbalance20']:.4f}",
+                        f"bookdepth_baseline_imbalance20={depth_decision['baseline_imbalance20']:.4f}",
+                        f"bookdepth_imbalance_delta_2m={depth_decision['imbalance_delta_2m']:.4f}",
+                        f"bookdepth_age_seconds={depth_decision['age_seconds']:.1f}",
+                    ]
+                )
             pos = WaterfallPosition(
                 position_id=position_id,
                 symbol=symbol,
@@ -676,8 +706,13 @@ class WaterfallEngine:
                 decision_time=now,
                 price=entry,
                 stop_price=stop,
-                confidence=min(0.99, confidence_from_features(feat) + float(micro_decision["confidence_boost"])),
-                tier=str(micro_decision["tier"]),
+                confidence=min(
+                    0.99,
+                    confidence_from_features(feat)
+                    + float(micro_decision["confidence_boost"])
+                    + depth_boost,
+                ),
+                tier=tier,
                 notional_usdt=pos.notional_usdt,
                 margin_usdt=pos.margin_usdt,
                 leverage=pos.leverage,
@@ -690,6 +725,11 @@ class WaterfallEngine:
             self.last_family_time[(symbol, family)] = now
             return pos, sig
         return None
+
+    def bookdepth_signal_decision(self, symbol: str, now_ms: int) -> dict[str, Any]:
+        if not bool(self.cfg.get("bookdepth_enhancement_enabled", True)):
+            return {"available": False, "ok": False, "reason": "bookdepth_disabled"}
+        return self.depth_cache.decision(symbol, now_ms)
 
     def paper_sizing(self) -> dict[str, float]:
         equity = self.initial_balance_usdt + self.realized_pnl_usdt
@@ -1284,6 +1324,14 @@ def strategy_label(strategy: str) -> str:
     return STRATEGY_LABELS.get(strategy, "Codex·core5_agg")
 
 
+def signal_tier_label(tier: str) -> str:
+    return {
+        "bookdepth_strong": "BookDepth增强",
+        "strong": "强信号",
+        "normal": "普通",
+    }.get(tier, tier)
+
+
 def render_waterfall_wecom(signal: WaterfallSignal) -> str:
     action_cn = {
         "open_short": "瀑布开空",
@@ -1294,7 +1342,7 @@ def render_waterfall_wecom(signal: WaterfallSignal) -> str:
     lines = [
         f"**[{strategy_label(signal.strategy)}] {action_cn} {signal.symbol}**",
         f"> 价格 {signal.price:.8g} | 止损 {signal.stop_price:.8g}",
-        f"> 档位 {signal.tier} | 置信 {signal.confidence:.3f}",
+        f"> 档位 {signal_tier_label(signal.tier)} | 置信 {signal.confidence:.3f}",
         f"> 类型 {signal.family} | 规则 {signal.rule}",
     ]
     if signal.action != "open_short":

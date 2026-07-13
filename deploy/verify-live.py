@@ -49,7 +49,8 @@ def main() -> int:
         f"interval={cfg.get('watch_interval')} micro={cfg.get('micro_streams')} "
         f"paper={cfg.get('paper_initial_balance_usdt')}U "
         f"margin={cfg.get('paper_margin_fraction')} leverage={cfg.get('leverage')} "
-        f"agg={cfg.get('require_agg_confirmation')}"
+        f"agg={cfg.get('require_agg_confirmation')} "
+        f"bookdepth={cfg.get('bookdepth_enhancement_enabled')}"
     )
     if active != EXPECTED_STRATEGY:
         print(f"live verify failed: expected active_strategy={EXPECTED_STRATEGY}, got {active}", file=sys.stderr)
@@ -68,6 +69,9 @@ def main() -> int:
         return 1
     if cfg.get("require_agg_confirmation") is not True or "aggTrade" not in (cfg.get("micro_streams") or []):
         print(f"live verify failed: aggTrade confirmation not active: {cfg}", file=sys.stderr)
+        return 1
+    if cfg.get("bookdepth_enhancement_enabled") is not True:
+        print(f"live verify failed: BookDepth enhancement not active: {cfg}", file=sys.stderr)
         return 1
     if cfg.get("execution_mode") != "paper" or cfg.get("real_order_enabled") is not False:
         print(f"live verify failed: execution must remain paper-only before real adapter review: {cfg}", file=sys.stderr)

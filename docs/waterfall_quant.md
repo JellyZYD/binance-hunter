@@ -33,7 +33,8 @@ The live path is deliberately two-stage:
 2. WebSocket subscribes to each selected symbol's `1m kline` and `aggTrade`.
 3. Closed `1m` candles detect the core waterfall structure.
 4. The same minute's `aggTrade` flow confirms real sell pressure before entry.
-5. Paper execution opens a simulated short and manages stop/trailing exits.
+5. Fresh BookDepth can promote the same entry to `bookdepth_strong`.
+6. Paper execution opens a simulated short and manages stop/trailing exits.
 
 Direct partial-minute agg entries are not enabled. Same-window replay showed
 they were faster but too noisy. aggTrade is used as a confirmation filter.
@@ -84,6 +85,28 @@ aggTrade confirmation checks:
   `m0_50s_close_pos <= 0.15`.
 
 The strong tier is low-frequency but historically much cleaner.
+
+## BookDepth Paper Enhancement
+
+BookDepth is an enhancement tier inside the existing Codex core5 paper
+account. It does not create a separate account, position, or duplicate signal.
+
+- `collect-micro` polls a balanced 60-symbol depth pool every 30 seconds. The
+  pool is split across current gainers, losers, and high-turnover contracts.
+- The collector atomically publishes `storage/micro/latest_depth.json` with
+  top-20 bid/ask notional, current imbalance, a roughly two-minute baseline,
+  and the imbalance delta.
+- A core5 + agg entry whose fresh depth delta is at least `0.0` is labeled
+  `bookdepth_strong` and receives a small confidence boost.
+- Missing, stale, or rejected depth is fail-open: the original core5 + agg
+  paper signal remains `normal`/`strong`. Every entry records the depth reason
+  in evidence so the paper results can be compared by tier.
+
+The historical `core5+agg+bookDepth` result used Binance Vision percentage
+depth, while live collection uses REST top-20 depth. This live tier is therefore
+an explicit paper validation of the proxy, not a claim that the two feeds are
+identical. The collector needs about two minutes after restart to build its
+first baseline.
 
 ## Paper Execution
 
@@ -152,6 +175,7 @@ The best same-window comparison so far:
 | 1m + agg fast stop | 14 | 2.00/day | 35.7% | 1.94 | +1.55% | 2.07% |
 | 1m + agg sell filter | 10 | 1.43/day | 50.0% | 3.57 | +3.23% | 1.84% |
 | strong agg tier | 4 | 0.57/day | 75.0% | 15.18 | +9.35% | 1.76% |
+| core5 + agg + historical BookDepth gate | 163 | 2.06/day | 62.6% | 2.82 | +1.92% | - |
 
 Direct strict scanning remains research-only until it beats core5+agg on the
 same symbols and same dates.
