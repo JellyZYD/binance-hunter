@@ -15,8 +15,18 @@ class Store:
         self.init_db()
 
     def connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        # WAL + busy_timeout: the monitor writes candles constantly; without WAL
+        # a writer blocks the read-only API process → "database is locked" and
+        # the dashboard drops. WAL lets readers and the writer run concurrently;
+        # busy_timeout waits for a lock instead of erroring immediately.
+        conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=8000")
+            conn.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.Error:
+            pass
         return conn
 
     def init_db(self) -> None:

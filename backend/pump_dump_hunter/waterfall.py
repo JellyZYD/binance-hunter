@@ -1123,7 +1123,13 @@ def prewarm_waterfall_symbols(
                 _sym, candles = fut.result()
                 total += len(candles)
                 store.save_candles(candles)
-                changed.extend(engine.prime_candles(candles))
+                # prime_candles emits a watch row per candle (~1260 for a 1500
+                # window); we only need the symbol's FINAL state. Keeping the last
+                # row per symbol turns a ~460k-row upsert (which spiked RAM to
+                # ~900MB and held a huge write lock) into one row per symbol.
+                rows = engine.prime_candles(candles)
+                if rows:
+                    changed.append(rows[-1])
                 for eng in extra_engines or []:
                     eng.prime_candles(candles)
             except Exception as exc:
