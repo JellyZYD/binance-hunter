@@ -5,6 +5,10 @@ the same 1m WebSocket stream, with its own independent 100U paper account.
 Engine: `backend/pump_dump_hunter/board_waterfall.py`, strategy id
 `claude_board_wf_1m`.
 
+> For the full research trail and the transferable lessons behind every design
+> choice here (label, entry timing, exit, cooldown, and the backtest traps we
+> hit), see **[waterfall_lessons.md](waterfall_lessons.md)**.
+
 ## Why a second engine
 
 Three days of independent research (audit → label refinement → walk-forward)
