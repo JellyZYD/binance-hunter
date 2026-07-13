@@ -154,6 +154,7 @@ def waterfall_settings(settings: dict[str, Any]) -> dict[str, Any]:
     cfg.setdefault("paper_initial_balance_usdt", 100.0)
     cfg.setdefault("paper_margin_fraction", 0.20)
     cfg.setdefault("leverage", 10.0)
+    cfg.setdefault("slippage_bps", 10)  # one-sided market-order slippage (latency folded in); ~0.20% round trip
     cfg.setdefault("max_open_positions", 5)
     cfg.setdefault("fee_rate", DEFAULT_FEE_RATE)
     cfg.setdefault("same_symbol_cooldown_hours", 4.0)
@@ -608,7 +609,10 @@ class WaterfallEngine:
             profile = self.profiles[rule.exit_profile]
             recent = list(self.candles[symbol])[-rule.break_lookback:]
             recent_high = max((max(x.open, x.close) for x in recent), default=candle.high)
-            entry = candle.close
+            # Realistic entry fill: market SELL-to-open crosses the spread below
+            # the signal close (latency during a fast dump folded into slippage).
+            slip = float(self.cfg.get("slippage_bps", 10)) / 10000.0
+            entry = candle.close * (1.0 - slip)
             stop = min(max(candle.high, recent_high) * (1.0 + profile.stop_body_high_buffer), entry * (1.0 + profile.stop_cap))
             position_id = f"wf-{symbol}-{now}-{rule.name}"
             evidence = [
@@ -780,11 +784,15 @@ class WaterfallEngine:
             elif pos.trail_price > 0:
                 pos.trail_price = min(pos.trail_price, pos.best_price * (1.0 + profile.trail_rebound))
             return None
+        # Realistic exit fill: market BUY-to-cover crosses the spread above the
+        # trigger level, adverse to the short.
+        slip = float(self.cfg.get("slippage_bps", 10)) / 10000.0
+        fill = exit_price * (1.0 + slip)
         pos.status = "closed"
         pos.exit_time = now
-        pos.exit_price = exit_price
+        pos.exit_price = fill
         pos.exit_reason = reason
-        pos.pnl_pct = 1.0 - exit_price / pos.entry_price - pos.fee_rate if exit_price > 0 and pos.entry_price > 0 else 0.0
+        pos.pnl_pct = 1.0 - fill / pos.entry_price - pos.fee_rate if fill > 0 and pos.entry_price > 0 else 0.0
         pos.pnl_usdt = pos.notional_usdt * pos.pnl_pct
         self.realized_pnl_usdt += pos.pnl_usdt
         if reason.startswith("stop"):

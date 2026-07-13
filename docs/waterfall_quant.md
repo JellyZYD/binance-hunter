@@ -93,7 +93,11 @@ Default paper account:
 - margin per new trade: 20% of current equity;
 - leverage: 10x;
 - max open positions: 5;
-- fee assumption: 0.08% round trip;
+- fee assumption: 0.08% round trip (exchange fee);
+- execution: market orders with `slippage_bps` one-sided slippage (default 10 =
+  0.10%/side, latency folded in) — entry fills below the signal close, exit
+  fills above the trigger, both adverse to the short. ~0.28% realistic round
+  trip; set to 0 for idealized fills;
 - same-symbol cooldown: 4h;
 - after-stop cooldown: 6h;
 - max trades per symbol per day: 2.

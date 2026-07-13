@@ -45,6 +45,7 @@ def board_waterfall_settings(settings: dict[str, Any]) -> dict[str, Any]:
     cfg.setdefault("leverage", 10.0)
     cfg.setdefault("max_open_positions", 5)
     cfg.setdefault("fee_rate", DEFAULT_FEE_RATE)
+    cfg.setdefault("slippage_bps", 10)  # one-sided market-order slippage (latency folded in); ~0.20% round trip
     cfg.setdefault("min_ret_24h", 0.40)
     cfg.setdefault("break_window_min", 60)
     cfg.setdefault("break_drop", 0.07)
@@ -177,7 +178,11 @@ class BoardWaterfallEngine:
             return None
         low_i = min(range(len(window)), key=lambda k: window[k].low)
         bounce_high = max(x.high for x in window[low_i:])
-        entry = close
+        # Realistic entry: a market SELL-to-open fills below the signal close
+        # (crossing the spread + adverse drift during the ~sub-second latency of
+        # a fast dump). slippage_bps is one-sided; latency is folded in.
+        slip = float(self.cfg.get("slippage_bps", 10)) / 10000.0
+        entry = close * (1.0 - slip)
         stop = max(bounce_high * (1.0 + float(self.cfg["stop_bounce_buffer"])), entry * (1.0 + float(self.cfg["stop_min_pct"])))
         sizing = self.paper_sizing()
         position_id = f"cbwf-{symbol}-{now}"
@@ -287,11 +292,16 @@ class BoardWaterfallEngine:
             elif pos.trail_price > 0:
                 pos.trail_price = min(pos.trail_price, pos.best_price * (1.0 + float(self.cfg["trail_rebound"])))
             return None
+        # Realistic exit: a market BUY-to-cover fills above the trigger level
+        # (crossing the spread; stops during a fast move are worse still). Same
+        # one-sided slippage_bps, adverse to the short.
+        slip = float(self.cfg.get("slippage_bps", 10)) / 10000.0
+        fill = exit_price * (1.0 + slip)
         pos.status = "closed"
         pos.exit_time = now
-        pos.exit_price = exit_price
+        pos.exit_price = fill
         pos.exit_reason = reason
-        pos.pnl_pct = 1.0 - exit_price / pos.entry_price - pos.fee_rate if exit_price > 0 and pos.entry_price > 0 else 0.0
+        pos.pnl_pct = 1.0 - fill / pos.entry_price - pos.fee_rate if fill > 0 and pos.entry_price > 0 else 0.0
         pos.pnl_usdt = pos.notional_usdt * pos.pnl_pct
         pos.best_price = min(prev_best, candle.low)
         self.realized_pnl_usdt += pos.pnl_usdt

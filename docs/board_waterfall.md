@@ -83,8 +83,15 @@ exits; +2h relay tested −0.14% over 1471 samples).
 }
 ```
 
-- `fee_rate` deliberately matches core5_agg's 0.08% for A/B parity; the honest
-  research figure is 0.30% — deduct ~0.2pp/trade when judging real edge.
+- `fee_rate` (0.08% round trip) is the exchange fee only.
+- **Execution model**: entries and exits are modeled as **market orders** (a
+  waterfall needs immediate fills; a resting limit risks non-fills). Fills cross
+  the spread adversely by `slippage_bps` per side (default 10 = 0.10%), which
+  also folds in the sub-second latency between the 1m-close signal and the fill
+  (during a fast dump the price drifts against a short). Entry fills below the
+  signal close, exits fill above the trigger. Total realistic round trip ≈ fee
+  0.08% + slippage 0.20% = ~0.28%, matching the 0.30% research cost. Set
+  `slippage_bps` to 0 for the old idealized fills.
 - Turn off with `"enabled": false` and restart monitor.
 - Paper-only: shares the same `WaterfallExecutionAdapter`, never places live
   orders.
