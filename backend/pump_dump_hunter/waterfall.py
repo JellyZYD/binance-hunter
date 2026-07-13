@@ -1327,6 +1327,7 @@ def strategy_label(strategy: str) -> str:
 def signal_tier_label(tier: str) -> str:
     return {
         "bookdepth_strong": "BookDepth增强",
+        "depth_confirmed": "深度确认",
         "strong": "强信号",
         "normal": "普通",
     }.get(tier, tier)

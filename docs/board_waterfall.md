@@ -50,12 +50,21 @@ exits; +2h relay tested −0.14% over 1471 samples).
 
 - naked label + E1: **3.28 trades/day, 67% win, +0.40%/trade, PF 1.21**,
   train/verdict near-zero decay.
+- **near-book order-flow tier (LIVE-ready, wired)**: confirm the short when the
+  top-20 book does NOT stack bids over the last 2m (imbalance delta ≤ 0). Near-bid
+  laddering during a −7% break is a knife-catch → bounce → worse short, so this
+  is the OPPOSITE sign to what boosts codex's core5_agg (same shared cache, own
+  sign). Champion-label backtest: **train PF 1.40 / verdict PF 1.49, win 69–71%,
+  ~1 trade/day**. See "BookDepth near-book tier" below.
 - with far-depth gate (skip when 30s book far-side −3~−5% thickens ≥5%):
-  **+0.64%/trade, PF 1.36, 1.76/day** — the gate needs live depth polling
-  (see `micro-collector.md`), configurable after paper A/B.
-- agg sell-pressure gates (which help core5_agg) were tested and **do not help**
-  this label — the deep-waterfall label already selects violent selling, so the
-  gate only cuts frequency. Kept off.
+  **+0.64%/trade, PF 1.36, 1.76/day** — stronger per-trade but needs a DEEPER
+  live snapshot (limit≥500) than the current collector's `limit=20`, and adds
+  nothing in the train split (verdict-only gain). Deferred; the near-book tier is
+  the live enhancement.
+- agg sell-pressure gates (which help core5_agg) and agg/sustained-trigger early
+  entry were tested and **do not help** this label — the deep-waterfall label
+  already selects violent selling, and 59% of intra-minute breaks are wicks that
+  only resolve at the 1m close. Kept off.
 
 ## Config
 
@@ -100,6 +109,38 @@ exits; +2h relay tested −0.14% over 1471 samples).
   `Candle(slots=True)` the whole monitor's candle store is ~80MB, not ~700MB.
   When shared, its `_append`/`prime_candles` are no-ops (codex populates the
   dict before board reads each tick).
+
+## BookDepth near-book tier
+
+A non-destructive order-flow enhancement on this engine's own account, reusing
+the SAME live cache the codex micro-collector publishes
+(`storage/micro/latest_depth.json`, top-20 book imbalance + 2m baseline) — zero
+new data infrastructure. The board engine reads that cache with its own sign
+(`DepthSignalCache(confirm_direction="ask_heavy")`): confirm when the near book
+is NOT becoming bid-heavy (`imbalance_delta_2m ≤ bookdepth_imbalance_delta_max`,
+default 0.0), i.e. sellers stay in control. This is deliberately the opposite of
+codex's `bid_heavy` sign — the same feature is inverted across the two
+populations (recurring "the population decides whether a feature works" law).
+
+Behaviour:
+
+- **non-destructive by default** (`bookdepth_filter_mode: false`): every label
+  entry still fires. A depth-confirmed entry is tagged `tier="depth_confirmed"`
+  (`[Claude·冠军标签] … 档位 深度确认` in WeCom) and gets a
+  `bookdepth_confidence_boost` (default +0.10); unconfirmed entries stay
+  `tier="normal"`. This preserves the clean +0.40%/PF1.21 baseline while paper
+  collects live evidence that the confirmed sub-tier really runs at PF≈1.49.
+- **fail-open**: missing / stale / baseline-unready depth never blocks an entry
+  (`bookdepth=bookdepth_missing|stale|baseline_unready` in evidence). The tier
+  only ever activates when a fresh (≤75s) snapshot with a valid 90–210s baseline
+  exists for the symbol — which requires the `collect-micro` service running.
+- **hard-filter upgrade path**: set `bookdepth_filter_mode: true` to only open
+  depth-confirmed entries (captures the PF lift, ~1 trade/day, but drops the
+  marginal-winner trades). Recommended only after a live A/B confirms the
+  sub-tier split.
+
+Config lives in `settings.json → claude_board_waterfall` (`bookdepth_*`). Turn
+the whole tier off with `bookdepth_enhancement_enabled: false`.
 
 ## Where it shows
 
@@ -147,7 +188,9 @@ path.
 
 ## Next (post paper A/B)
 
-1. Enable the far-depth gate once collect-micro depth polling has a 2h baseline.
+1. Watch the live `depth_confirmed` vs `normal` sub-tier split; once it confirms
+   the backtest PF gap, flip `bookdepth_filter_mode` on (or add the deeper
+   far-book gate via a `limit≥500` snapshot) — both need `collect-micro` live.
 2. Per-shape gates (distribution-relay vs vertical-spike) — spike form is 50%
    wicks, the most dangerous; researched, not yet wired.
 3. Tick-level exit (flow still hot vs bid returned) needs the live liquidation

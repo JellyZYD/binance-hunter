@@ -94,12 +94,19 @@ class DepthSignalCache:
         baseline_min_age_ms: int = 90_000,
         baseline_max_age_ms: int = 210_000,
         min_imbalance_delta: float = 0.0,
+        confirm_direction: str = "bid_heavy",
     ):
         self.path = Path(path)
         self.max_age_ms = int(max_age_ms)
         self.baseline_min_age_ms = int(baseline_min_age_ms)
         self.baseline_max_age_ms = int(baseline_max_age_ms)
         self.min_imbalance_delta = float(min_imbalance_delta)
+        # "bid_heavy": confirm when the near book gets MORE bid-heavy (delta >= min)
+        #   -- codex core5_agg default.
+        # "ask_heavy": confirm when the near book does NOT stack bids / sellers
+        #   dominate (delta <= min) -- the champion board label, where stacking
+        #   near bids means a bounce (knife-catch) and a worse short.
+        self.confirm_direction = "ask_heavy" if str(confirm_direction) == "ask_heavy" else "bid_heavy"
         self._mtime_ns = -1
         self._symbols: dict[str, dict[str, Any]] = {}
 
@@ -152,7 +159,10 @@ class DepthSignalCache:
         imbalance = float(row.get("imbalance20") or 0.0)
         baseline = float(row.get("baseline_imbalance20") or 0.0)
         delta = float(row.get("imbalance_delta_2m") or (imbalance - baseline))
-        ok = delta >= self.min_imbalance_delta
+        if self.confirm_direction == "ask_heavy":
+            ok = delta <= self.min_imbalance_delta
+        else:
+            ok = delta >= self.min_imbalance_delta
         return {
             "available": True,
             "ok": ok,

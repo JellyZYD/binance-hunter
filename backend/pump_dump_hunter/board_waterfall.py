@@ -23,8 +23,10 @@ needs depth polling, configurable later).
 from __future__ import annotations
 
 from collections import deque
+from pathlib import Path
 from typing import Any
 
+from .depth_cache import DepthSignalCache
 from .models import Candle, KlineClosed
 from .timeutils import local_day_from_ms
 from .waterfall import (
@@ -57,6 +59,22 @@ def board_waterfall_settings(settings: dict[str, Any]) -> dict[str, Any]:
     cfg.setdefault("max_hold_min", 240)
     cfg.setdefault("same_symbol_cooldown_hours", 6.0)
     cfg.setdefault("max_trades_per_symbol_day", 2)
+    # BookDepth enhancement (near-book order-flow tier). Reuses the SAME
+    # live cache the codex collector publishes (micro/latest_depth.json), but
+    # with the champion label's own sign: confirm when the near book does NOT
+    # stack bids (delta <= max) -- stacking near bids = knife-catch = bounce =
+    # a worse short, the OPPOSITE of what helps codex's core5_agg. Validated on
+    # the champion label (train PF 1.40 / verdict PF 1.49, win 69-71%, ~1/day).
+    # Non-destructive by default: confirmed entries are tagged and get a small
+    # confidence boost; entries still fire when depth is unavailable (fail-open)
+    # or unconfirmed. Flip bookdepth_filter_mode to make it a hard entry filter.
+    cfg.setdefault("bookdepth_enhancement_enabled", True)
+    cfg.setdefault("bookdepth_filter_mode", False)
+    cfg.setdefault("bookdepth_max_age_seconds", 75)
+    cfg.setdefault("bookdepth_baseline_min_age_seconds", 90)
+    cfg.setdefault("bookdepth_baseline_max_age_seconds", 210)
+    cfg.setdefault("bookdepth_imbalance_delta_max", 0.0)
+    cfg.setdefault("bookdepth_confidence_boost", 0.10)
     return cfg
 
 
@@ -81,6 +99,24 @@ class BoardWaterfallEngine:
         self.initial_balance_usdt = float(self.cfg["paper_initial_balance_usdt"])
         self.leverage = float(self.cfg["leverage"])
         self.margin_fraction = float(self.cfg["paper_margin_fraction"])
+        # BookDepth near-book tier: read the same cache codex's collector
+        # publishes, but confirm on the champion label's sign (ask-heavy).
+        depth_path = self.cfg.get("bookdepth_cache_path")
+        if not depth_path:
+            depth_path = Path(settings["paths"]["db_path"]).parent / "micro" / "latest_depth.json"
+        self.depth_cache = DepthSignalCache(
+            depth_path,
+            max_age_ms=int(float(self.cfg["bookdepth_max_age_seconds"]) * 1000),
+            baseline_min_age_ms=int(float(self.cfg["bookdepth_baseline_min_age_seconds"]) * 1000),
+            baseline_max_age_ms=int(float(self.cfg["bookdepth_baseline_max_age_seconds"]) * 1000),
+            min_imbalance_delta=float(self.cfg["bookdepth_imbalance_delta_max"]),
+            confirm_direction="ask_heavy",
+        )
+
+    def bookdepth_decision(self, symbol: str, now_ms: int) -> dict[str, Any]:
+        if not bool(self.cfg.get("bookdepth_enhancement_enabled", True)):
+            return {"available": False, "ok": False, "reason": "bookdepth_disabled"}
+        return self.depth_cache.decision(symbol, now_ms)
 
     # -- state loading (same shape as WaterfallEngine) ------------------
 
@@ -187,6 +223,14 @@ class BoardWaterfallEngine:
         sizing = self.paper_sizing()
         if sizing["margin_usdt"] <= 0 or sizing["notional_usdt"] <= 0:
             return None
+        depth = self.bookdepth_decision(symbol, now)
+        # Hard-filter mode only rejects when depth data is present and NOT
+        # confirmed; missing/stale depth stays fail-open (never blocks entry).
+        if bool(self.cfg.get("bookdepth_filter_mode", False)) and depth["available"] and not depth["ok"]:
+            return None
+        depth_ok = bool(depth["ok"])
+        tier = "depth_confirmed" if depth_ok else "normal"
+        confidence = min(0.99, 0.67 + (float(self.cfg["bookdepth_confidence_boost"]) if depth_ok else 0.0))
         position_id = f"cbwf-{symbol}-{now}"
         evidence = [
             f"strategy={self.strategy}",
@@ -194,9 +238,17 @@ class BoardWaterfallEngine:
             f"break60m={(close / hi - 1.0) * 100:.1f}%",
             f"qv60={qv60:.0f}",
             f"bounce_high={bounce_high:.10g}",
+            f"tier={tier}",
+            f"bookdepth={depth['reason']}",
             f"paper_margin={sizing['margin_usdt']:.2f}",
             f"paper_notional={sizing['notional_usdt']:.2f}",
         ]
+        if depth["available"]:
+            evidence.extend([
+                f"bookdepth_imbalance20={depth['imbalance20']:.4f}",
+                f"bookdepth_imbalance_delta_2m={depth['imbalance_delta_2m']:.4f}",
+                f"bookdepth_age_seconds={depth['age_seconds']:.1f}",
+            ])
         pos = WaterfallPosition(
             position_id=position_id,
             symbol=symbol,
@@ -231,8 +283,8 @@ class BoardWaterfallEngine:
             decision_time=now,
             price=entry,
             stop_price=stop,
-            confidence=0.67,
-            tier="normal",
+            confidence=confidence,
+            tier=tier,
             notional_usdt=sizing["notional_usdt"],
             margin_usdt=sizing["margin_usdt"],
             leverage=sizing["leverage"],
