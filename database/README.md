@@ -12,6 +12,23 @@
 | `watchlist` | 当前 WebSocket 应盯盘的 symbol 摘要 |
 | `alerts` | `early_alert` 和 `short_signal` 报警 |
 | `backtest_runs` | 回测参数和指标归档 |
+| `waterfall_watch` | 当前 1m 瀑布监控特征和最新价格 |
+| `waterfall_positions` | 两套瀑布策略的纸面持仓、退出结果、保证金和盈亏 |
+| `waterfall_signals` | 瀑布开空、止盈、止损和超时退出信号 |
+| `waterfall_shadow_micro` | 可选的 aggTrade/bookTicker 原始影子事件 |
+
+## 双策略状态隔离
+
+`waterfall_positions.strategy` 和 `waterfall_signals.strategy` 是恢复状态与
+账户统计的强制边界。当前两个生产策略 ID：
+
+- `waterfall_core5_agg_1m`
+- `claude_board_wf_1m`
+
+监控进程重启时，各引擎只读取自己的活跃持仓和完整历史持仓。完整历史用于
+恢复累计已实现盈亏；不能重新加回 `LIMIT 1000`，否则长期运行后早期盈亏会
+从纸面账户中消失。API 顶部总账户由两个独立账户相加，不是给全局查询硬加
+一份 100U 初始资金。
 
 ## 迁移方式
 

@@ -5,6 +5,24 @@ local training and offline comparison only. The server can later load an
 exported `model.pt` bundle for inference, but no live path imports these files
 today.
 
+## Exact production Board replay
+
+`backtest_board_waterfall.py` is the exception to the research-only rule: it
+imports the production `BoardWaterfallEngine` directly so replay and live paper
+logic cannot drift. It merges symbols in timestamp order and preserves global
+account equity, free margin, position limits and cooldowns.
+
+```powershell
+python backend/ml_experiments/backtest_board_waterfall.py `
+  --klines-dir "E:\A\bb\data\klines" `
+  --start 2026-01-01 --end 2026-06-30 `
+  --split-date 2026-04-01
+```
+
+This runner is the authoritative path for validating the Board strategy's
+headline metrics. Other scripts in this directory remain exploratory unless a
+production document explicitly says otherwise.
+
 ## Models worth testing
 
 Use these after the rule engine has already found pump/watch candidates:

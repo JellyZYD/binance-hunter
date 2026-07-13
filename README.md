@@ -1,104 +1,131 @@
 # Binance Hunter
 
-币安 USD-M 合约「妖币冲高回落做空猎手」。第一阶段只做选币、监控、报警和可视化，不自动下单。
+Binance USD-M perpetual waterfall monitor and paper-trading research system.
+The current production runtime detects high-quality short opportunities from
+closed 1m candles and aggTrade flow. It does not place real orders.
 
-> 仓库原本是 Pixel Canvas 画板项目，现已整体改造为本项目并按功能模块重新整理目录。
+## Current production runtime
 
-## 目录结构
+`backend/config/settings.json` sets:
 
-| 路径 | 作用 |
+```json
+{
+  "runtime": { "active_strategy": "waterfall_quant" }
+}
+```
+
+Two independent engines consume the same 1m WebSocket candle store:
+
+| Engine | Strategy id | Entry | Paper account |
+| --- | --- | --- | ---: |
+| Codex core5 + agg | `waterfall_core5_agg_1m` | closed 1m core structure plus aggTrade sell-pressure confirmation | 100 USDT |
+| Board Waterfall | `claude_board_wf_1m` | 24h gain >= 40%, 60m drawdown >= 7%, 60m quote volume >= 300k USDT | 100 USDT |
+
+The accounts are isolated. Positions, realized PnL, cooldowns, trade counts and
+exit profiles are restored by strategy id after restart. The dashboard total
+starts from 200 USDT and `accounts[]` exposes both 100 USDT accounts separately.
+
+Real execution is disabled by both `execution_mode="paper"` and
+`real_order_enabled=false`.
+
+## Repository layout
+
+| Path | Purpose |
 | --- | --- |
-| `backend/` | Python 策略后端：REST discovery、WebSocket 监控、SQLite、回测、只读报警 API |
-| `frontend/` | Next.js 轻量面板（中文单语言）：流动性榜、活跃妖币池、报警、回测记录 |
-| `frontend/src/app/api/hunter/` | Next API 代理：把网页请求转发到 Python 只读 API |
-| `database/` | SQLite schema 和数据库说明 |
-| `deploy/` | Ubuntu 一键部署、systemd、Nginx、Vercel 说明 |
-| `docs/` | 策略和前端说明 |
+| `backend/` | Python strategy engines, REST/WebSocket data, SQLite, replay and read-only API |
+| `frontend/` | Next.js waterfall dashboard |
+| `database/` | SQLite schema reference and storage notes |
+| `deploy/` | Ubuntu, systemd, Nginx and update scripts |
+| `docs/` | Production strategy, collector, frontend and historical research documentation |
+| `waterfall_strategy_review_pack/` | Offline review evidence and research artifacts; not imported by production |
 
-后端可独立运行，不依赖前端。Binance REST 代理/梯子通过 `HUNTER_NETWORK_PROXY` 环境变量配置，不提交真实代理地址。
+## Local startup
 
-## 本地启动
+Backend API:
 
-先启动 Python 后端 API：
-
-```bash
-cd backend
+```powershell
+cd E:\A\pixel-canvas\backend
 python -m venv .venv
-. .venv/Scripts/activate  # Windows PowerShell 用 .venv\Scripts\Activate.ps1
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
 python run.py web --host 127.0.0.1 --port 8787
 ```
 
-另开终端启动网页：
+Monitor:
 
-```bash
-cd frontend
+```powershell
+cd E:\A\pixel-canvas\backend
+python run.py monitor
+```
+
+Frontend:
+
+```powershell
+cd E:\A\pixel-canvas\frontend
 npm install
-cp .env.example .env
+Copy-Item .env.example .env
 npm run dev
 ```
 
-访问 `http://localhost:3000`。
+Open `http://localhost:3000`.
 
-## 实盘监控
+## Reproducible Board replay
 
-```bash
-cd backend
-python run.py monitor --top 120 --broad-top 220 --discover-every 15m --max-workers 8
+The replay imports the production `BoardWaterfallEngine` and merges every
+selected symbol by candle close time. Account equity, free margin, maximum open
+positions, cooldowns, fees and slippage therefore follow the live paper path.
+
+```powershell
+python backend/ml_experiments/backtest_board_waterfall.py `
+  --klines-dir "E:\A\bb\data\klines" `
+  --start 2026-01-01 --end 2026-06-30 `
+  --split-date 2026-04-01
 ```
 
-2 核 2G 服务器先用 `top=120 broad-top=220 max-workers=8`，稳定后再提高到 150/200。监控只处理 Binance kline `x=true` 的已收线 K 线，回测和实盘共用同一个 `SignalEngine`。
+The output contains a trade CSV and JSON metrics for all/train/holdout periods,
+including frequency, win rate, PF, average/median return, MAE/MFE, 3%/5% winner
+rates and PF after removing the largest winner.
 
-## 配置
+## Verification
 
-| 环境变量 | 说明 |
-| --- | --- |
-| `HUNTER_API_BASE_URL` | 前端访问 Python API 的地址，默认 `http://127.0.0.1:8787` |
-| `HUNTER_NETWORK_PROXY` | Binance REST 代理/梯子，例如 `http://127.0.0.1:7890` |
-| `HUNTER_DB_PATH` | SQLite 路径，默认 `backend/storage/hunter.db` |
-| `WECOM_WEBHOOK_URL` | 企业微信报警 webhook，可选 |
-| `NEXT_PUBLIC_APP_URL` | 网页公开地址，可选 |
+```powershell
+cd E:\A\pixel-canvas\backend
+python -m pytest tests -q
 
-## 验证
-
-```bash
-cd backend
-python -m unittest discover -s tests
-python -m compileall pump_dump_hunter
-
-cd ../frontend
+cd ..\frontend
 npm run build
 ```
 
-## 部署
-
-服务器直接执行：
+Production verification after deployment:
 
 ```bash
-sudo DOMAIN=your.domain.com bash deploy/setup.sh
+cd /opt/binance-hunter
+python3 deploy/verify-live.py
 ```
 
-只更新代码：
+The verifier requires the 1m waterfall runtime, core5 families, aggTrade gate,
+paper-only execution, both independent accounts and a combined 200 USDT initial
+balance.
 
-```bash
-sudo bash deploy/update.sh
-```
+## Deployment and update
 
-如果前端部署到 Vercel，服务器只跑 `binance-hunter-monitor` 和 `binance-hunter-api`，然后把 Vercel 的 `HUNTER_API_BASE_URL` 指到服务器公开 API 地址。详见 `deploy/README.md`。
-## Current Production Strategy
-
-当前默认生产策略是 `lifecycle_expert`：
-
-- WebSocket 订阅 `5m` + `15m` 已收线 K 线；
-- 做多信号：5m lifecycle long combo；
-- 顶部/做空信号：15m `fast_dump` / `slow_distribution` 专家模型；
-- 同类 PumpWatch 信号冷却：2h；
-- 前端标题：合约主力动向监控；
-- 企业微信、Markdown 和网页都会显示 `lifecycle_mode`、`behavior_state`、`model_name`、`model_score`、`signal_interval`。
-
-更新服务器：
+Initial deployment is documented in [`deploy/README.md`](deploy/README.md).
+Update an existing server with:
 
 ```bash
 cd /opt/binance-hunter
 sudo bash deploy/update.sh
 ```
+
+The monitor uses DB-first prewarm. If Binance universe REST is unavailable or
+rate-limited, it falls back to known SQLite symbols in strict DB-only mode and
+does not continue per-symbol kline REST calls during that fallback.
+
+## Documentation map
+
+- [`docs/waterfall_quant.md`](docs/waterfall_quant.md): core5 + agg production strategy.
+- [`docs/board_waterfall.md`](docs/board_waterfall.md): Board Waterfall strategy and replay.
+- [`docs/micro-collector.md`](docs/micro-collector.md): aggTrade, book/depth and OI collection.
+- [`docs/frontend.md`](docs/frontend.md): dashboard routes and API proxy.
+- [`docs/production-fix-20260713.md`](docs/production-fix-20260713.md): dual-engine recovery fix and release checks.
+- [`deploy/README.md`](deploy/README.md): server operations and resource limits.

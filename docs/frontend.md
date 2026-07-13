@@ -25,6 +25,15 @@ Browser requests use:
 /api/hunter/waterfall/replay-results
 ```
 
+The summary response has two levels:
+
+- top-level fields are the combined paper account;
+- `accounts[]` contains the independent core5 and Board Waterfall accounts.
+
+With both engines enabled, top-level `paper_initial_balance_usdt` is 200 while
+each account remains 100. Position and signal cards must use their `strategy`
+field and must not merge strategy-specific PnL or status.
+
 Next.js forwards them to:
 
 ```text
