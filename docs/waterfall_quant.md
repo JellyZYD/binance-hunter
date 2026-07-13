@@ -190,8 +190,13 @@ Dashboard:
 ## Health & Memory (2G box)
 
 - `/api/system` exposes CPU/mem/disk/network, Binance stream health (1m candle
-  freshness), data sizes, and the monitor process's own RSS/heartbeat; shown on
-  the `/waterfall` metrics row.
+  freshness), data sizes, and the monitor process's own RSS/heartbeat (written
+  every 30s to `storage/monitor_health.json`); shown on the `/waterfall` row.
 - Candle memory is kept small by `Candle(slots=True)` + a single candle store
-  shared between both engines (~80MB total). systemd `MemoryMax` is the hard
-  OOM backstop. See `../deploy/README.md` → 内存与防死机.
+  shared between both engines (~80MB total); prewarm writes one watch row per
+  symbol (not per candle). systemd `MemoryMax` is the hard OOM backstop.
+- REST prewarm is weight-throttled (`rest_weight_per_sec`, default 20) so
+  restarts and 15m refreshes never trip Binance's 2400/min ban; if the REST
+  universe call is banned, the monitor falls back to the DB's known symbols.
+- SQLite runs in WAL mode so the read-only API never blocks on candle writes.
+- See `../deploy/README.md` → 内存与防死机 / 限流与重启 for the full playbook.

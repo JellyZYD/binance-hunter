@@ -24,9 +24,13 @@ curl -s https://pixia.cc/api/hunter/waterfall/summary | python3 -m json.tool | g
 **病根**：monitor 每次启动要 REST 预热 ~400 币的 1m K 线，接近币安权重上限。**连续重启**（或重启时采集器同时全量请求）会叠加超限 → IP 被 418 封禁 → 旧代码把限流当致命错误崩溃 → systemd 5 秒重启 → 再预热 → 封禁续期，形成自我 DDoS 死循环（曾连崩 14 次）。
 
 **已修复的三道防线**（3cf48e3 / a874db4 / 439d875）：
-1. **DB-first 预热**：预热先读本地 SQLite，只从 REST 补缺口尾巴。快速重启权重从 ~4000 降到 ~400，单次重启不再触发封禁。
-2. **限流自愈**：启动 discovery 遇错退避 180s 重试而非崩溃；采集器 OI/盘口遇 418/429 退避 200s。封禁自然过期后自动恢复，**无需人工干预**。
-3. **采集器错峰**：OI/盘口轮询延后 90s/120s 启动，避开 monitor 预热窗口。
+1. **DB-first + 权重限速预热**：预热先读本地 SQLite，只从 REST 补停机缺口/薄币回填（缺口必须补，websocket 补不了停机期）；且所有 klines 调用走**共享权重限速器**（`rest_weight_per_sec=20` ≈ 1200 权重/分钟），即使 15 分钟刷新 383 个币也稳在币安 2400/分钟上限内、给采集器（~570/分钟同 IP）留余量。**根因**：websocket 的 1m K 线零权重、永不封禁；封禁全来自 REST 预热突发。
+2. **币池 REST 兜底**：连币池列表（ticker/exchangeInfo）都被封时，回退到数据库已知的币，监控用 websocket+DB 直接跑起来，不再卡在重试循环等解封。
+3. **限流自愈**：启动 discovery 遇错退避 180s 重试而非崩溃；采集器 OI/盘口遇 418/429 退避 200s。封禁自然过期后自动恢复，**无需人工干预**。
+4. **采集器错峰**：OI/盘口轮询延后 90s/120s 启动，避开 monitor 预热窗口。
+5. **watch 池回填**：薄历史币（新上市/轮入轮出）在预热时限速补齐到完整窗口 → 监控合约数从卡住的 ~245 爬到全量 ~383（之前是补历史撞封禁、补一半就断）。
+
+数据库并发：`store.connect` 启用 **WAL 模式 + busy_timeout=8s**，只读 API 进程不再被监控写 K 线锁住（消除 `database is locked` / 网页断联）。
 
 **运维守则**：
 - 更新代码走轻量三连即可，**不要连续 restart**：
@@ -46,9 +50,10 @@ curl -s https://pixia.cc/api/hunter/waterfall/summary | python3 -m json.tool | g
 
 ### 内存与防死机（2026-07-12 加固，2G 机器必读）
 
-这台 2G 机器曾因内存爆连环假死（前端 npm 构建 OOM、双引擎 K 线翻倍）。已建三道防线，正常运行监控进程内存 ~150-250MB：
+这台 2G 机器曾因内存爆连环假死（前端 npm 构建 OOM、双引擎 K 线翻倍、预热字典炸弹）。已建多道防线，正常运行监控进程内存 ~250-300MB（含 pandas/numpy 导入基线 ~250MB）：
 
 1. **K 线内存降 90%**：①`Candle` 用 `@dataclass(slots=True)`（600→136 字节/对象，slots 不改任何逻辑、属性访问略快）；②Claude/Codex 两引擎**共享同一份 K 线字典**（board 引擎不再存第二份）。合计监控进程 K 线内存 ~700MB→~80MB。
+1b. **预热字典去重**：`prime_candles` 原本给每个币每根 K 线都生成一条 watch 行（一个币 1500 根≈1260 条），366 币累积 ~46 万条字典再一次性写库——曾把 RSS 顶到 894MB 并造成巨型写锁。改成每个币只留最终一条 → 峰值 RSS 回落到 ~267MB。
 2. **systemd 内存硬限（cgroup 兜底）**：超限只重启该服务、**绝不触发系统级 OOM 拖垮 sshd**。一次性配置：
    ```bash
    mkdir -p /etc/systemd/system/binance-hunter-monitor.service.d
