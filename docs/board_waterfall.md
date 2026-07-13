@@ -31,20 +31,52 @@ Tick-early entry was **rejected**: 62% of intra-minute −7% breaks are wicks th
 close back above, and the wick tax eats the entry-price improvement. Entry
 waits for the 1m close.
 
-## Exit (E1, winner of an 8-variant battle)
+## Exit (E1 base + flow-gated hold-through)
+
+Base structure (E1, winner of an 8-variant battle):
 
 - **structure stop** at `B × 1.01` where B = highest price after the 60m low
   (min `entry × 1.015`). This is the user's "bounce back to origin = wick" rule.
+  Always active — the catastrophic-loss backstop, never gated.
 - **trailing profit**: activate at MFE ≥ 3.5%, rebound 3.0%, prev-bar-confirmed
   (no same-bar lookahead).
 - **time stop**: 240 minutes.
 
-Variants that lost: fixed tight/wide trail, stall-exit, half-take-profit, tight
-B, hold-4h, win-relay re-entry, flow-adaptive trail. Each "eat more" tweak bled
-elsewhere — 14% big-meat capture is the 1m information-set ceiling.
+**Flow-gated hold-through** (`exit_flow_gate_enabled`, default on): the trailing
+take-profit is SKIPPED when taker-sell over the prior `exit_flow_window` (=10)
+closed bars is still ≥ `exit_flow_sell_threshold` (=0.48) — sellers in control ⇒
+the bounce is fake ⇒ hold for the next leg down. When buyers return (flow drops
+below the threshold) the trail fires as normal. The stop is never gated, so a
+held-through trade can never lose more than E1 would.
 
-Cooldown 6h per symbol; win-relay re-entry was rejected (bounce follows our
-exits; +2h relay tested −0.14% over 1471 samples).
+This reopens the "big-meat ceiling". E1 exits on the FIRST bounce, and on the
+champion label **94% of big-meat trades make a new low AFTER E1 exits** (median
+−13% further; super-meat −31.7%). The exit-moment discriminator was tested
+head-to-head: **bookDepth does NOT separate fake/real bounces (AUC 0.5), but 1m
+taker-sell flow does** — so this needs no depth data, just the 1m klines the
+engine already has. Backtest (full timeline, train/verdict + ex-top-3-days
+robust): W=10 / θ=0.48 → **~+1.44%/trade at 61% win**, vs the E1 exit's ~+0.19%
+on the same detector; the gain is concentrated in the big/super-meat tiers and
+small/mid meat is untouched (the stop protects them). This supersedes the earlier
+"8 variants all lost, 14% capture = 1m ceiling" conclusion — none of those
+variants gated the take-profit on flow; e8's flow-adaptive trail failed because
+it added an EARLY exit on flow-death (cut winners), whereas this only ever DELAYS
+the take-profit.
+
+**Cooldown 6h → 20m** (`same_symbol_cooldown_hours` = 0.3333,
+`max_trades_per_symbol_day` = 8): a genuine SECOND waterfall (a fresh +40%/−7%
+break after we exit) is as profitable as any first entry, so the long cooldown
+was leaving second/third legs on the table. With the flow hold-through, shrinking
+the cooldown to 20–25m keeps per-trade EV flat (robust to ex-top-3-days) and
+~doubles total captured PnL. This is NOT the old rejected relay: that was a blind
++2h re-entry (−0.14%); this re-enters only on a real fresh −7% break.
+
+> The absolute EVs above use a full-timeline entry detector and idealized
+> exit-then-reenter fills; the very-short-cooldown edge is exactly where a
+> backtest is most optimistic (rapid re-fill slippage on a fast dump). Treat the
+> per-trade numbers as directional and validate in live paper. Set
+> `exit_flow_gate_enabled: false` and `same_symbol_cooldown_hours: 6` to fall
+> back to the original E1 + 6h behavior for an A/B.
 
 ## Verdict-period stats (2026H1, honest 0.30% cost)
 
@@ -87,8 +119,11 @@ exits; +2h relay tested −0.14% over 1471 samples).
   "trail_activate": 0.035,
   "trail_rebound": 0.030,
   "max_hold_min": 240,
-  "same_symbol_cooldown_hours": 6.0,
-  "max_trades_per_symbol_day": 2
+  "same_symbol_cooldown_hours": 0.3333,
+  "max_trades_per_symbol_day": 8,
+  "exit_flow_gate_enabled": true,
+  "exit_flow_window": 10,
+  "exit_flow_sell_threshold": 0.48
 }
 ```
 

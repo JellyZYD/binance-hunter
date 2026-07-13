@@ -57,8 +57,26 @@ def board_waterfall_settings(settings: dict[str, Any]) -> dict[str, Any]:
     cfg.setdefault("trail_activate", 0.035)
     cfg.setdefault("trail_rebound", 0.030)
     cfg.setdefault("max_hold_min", 240)
-    cfg.setdefault("same_symbol_cooldown_hours", 6.0)
-    cfg.setdefault("max_trades_per_symbol_day", 2)
+    # Cooldown shortened 6h -> 20m so a genuine SECOND waterfall (a fresh +40%/
+    # -7% break after we exit) can re-enter without waiting out a long cooldown.
+    # Backtest: with the flow hold-through exit, shrinking the cooldown from 6h to
+    # 20-25m keeps per-trade EV flat (robust to ex-top-3-days) and ~doubles total
+    # captured PnL -- the extra legs are same-quality second/third waterfalls, not
+    # dilution. The daily cap is raised to let the relay actually fire.
+    cfg.setdefault("same_symbol_cooldown_hours", 20.0 / 60.0)  # = 20 minutes
+    cfg.setdefault("max_trades_per_symbol_day", 8)
+    # Flow-gated hold-through exit: skip the trailing take-profit when taker-sell
+    # over the prior W closed bars is still >= threshold (sellers in control =
+    # fake bounce, the dump continues). The B-structure stop is always kept as the
+    # backstop, so held-through trades can never turn into a bigger loss than E1.
+    # Backtest (champion label, full timeline, train/verdict + ex-top-3-days
+    # robust): W=10 / theta=0.48 -> ~+1.44%/trade verdict at 61% win, vs E1's
+    # ~+0.19% on the same detector; gains concentrate in the big/super-meat tiers.
+    # bookDepth at the exit moment does NOT separate fake/real bounces (AUC 0.5);
+    # only taker-sell flow does, so this needs no depth data -- just 1m klines.
+    cfg.setdefault("exit_flow_gate_enabled", True)
+    cfg.setdefault("exit_flow_window", 10)
+    cfg.setdefault("exit_flow_sell_threshold", 0.48)
     # BookDepth enhancement (near-book order-flow tier). Reuses the SAME
     # live cache the codex collector publishes (micro/latest_depth.json), but
     # with the champion label's own sign: confirm when the near book does NOT
@@ -296,6 +314,26 @@ class BoardWaterfallEngine:
         self.last_signal_time[symbol] = now
         return pos, sig
 
+    def _flow_hold_through(self, symbol: str) -> bool:
+        """True when taker-sell over the prior W CLOSED bars is still >= the
+        threshold (sellers dominant -> the bounce is fake, keep holding). Uses the
+        W bars BEFORE the current one (no same-bar lookahead), matching the
+        prev-bar-confirmed trail. Returns False (=> behave like E1) when the gate
+        is disabled or there is not enough history / volume."""
+        if not bool(self.cfg.get("exit_flow_gate_enabled", True)):
+            return False
+        w = int(self.cfg["exit_flow_window"])
+        dq = self.candles.get(symbol)
+        if not dq or len(dq) < w + 1:
+            return False
+        vals = [
+            (1.0 - b.taker_buy_quote / b.quote_volume) if b.quote_volume > 0 else 0.5
+            for b in list(dq)[-(w + 1):-1]
+        ]
+        if not vals:
+            return False
+        return (sum(vals) / len(vals)) >= float(self.cfg["exit_flow_sell_threshold"])
+
     def _cooldown_ok(self, symbol: str, now: int) -> bool:
         day = local_day_from_ms(now)
         if self.trade_count_day.get((symbol, day), 0) >= int(self.cfg["max_trades_per_symbol_day"]):
@@ -334,7 +372,11 @@ class BoardWaterfallEngine:
         if candle.high >= pos.stop_price:
             exit_price = pos.stop_price
             reason = "stop_loss"
-        elif prev_trail > 0 and candle.high >= prev_trail:
+        elif prev_trail > 0 and candle.high >= prev_trail and not self._flow_hold_through(pos.symbol):
+            # trailing take-profit fires only when sellers are NOT still dominant
+            # (a real bounce). If flow says sellers are in control we skip the
+            # take-profit and fall through -- the trail re-arms below and we keep
+            # holding for the second leg down (the stop still caps the downside).
             exit_price = prev_trail
             reason = "take_profit_trailing"
         else:

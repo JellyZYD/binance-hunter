@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from collections import deque
 from unittest.mock import patch
 
 from pump_dump_hunter.board_waterfall import BoardWaterfallEngine, STRATEGY_NAME
@@ -120,7 +121,9 @@ class WaterfallRuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(sizing["notional_usdt"], 0.0)
 
     def test_board_engine_entry_and_trailing_exit_lifecycle(self) -> None:
-        engine = BoardWaterfallEngine(self.settings)
+        # flow gate off: this test verifies the base E1 trailing-exit mechanics.
+        settings = {**self.settings, "claude_board_waterfall": {"exit_flow_gate_enabled": False}}
+        engine = BoardWaterfallEngine(settings)
         start = 1_700_000_000_000
         history: list[Candle] = []
         for i in range(1381):
@@ -227,6 +230,73 @@ class WaterfallRuntimeRegressionTests(unittest.TestCase):
             taker_buy_base=40.0,
             taker_buy_quote=quote_volume * 0.4,
         )
+
+
+class BoardFlowGateExitTests(unittest.TestCase):
+    START = 1_700_000_000_000
+
+    @staticmethod
+    def _flow_candle(open_time: int, tsell: float) -> Candle:
+        qv = 10_000.0
+        return Candle(
+            symbol="SYM", interval="1m", open_time=open_time, open=100.0, high=100.0,
+            low=100.0, close=100.0, volume=100.0, close_time=open_time + 59_999,
+            quote_volume=qv, trades=100, taker_buy_base=1.0,
+            taker_buy_quote=qv * (1.0 - tsell),  # tsell = 1 - tbq/qv
+        )
+
+    def _engine(self, tsell: float, **cfg) -> BoardWaterfallEngine:
+        settings = {**temp_settings(), "claude_board_waterfall": cfg}
+        eng = BoardWaterfallEngine(settings)
+        dq: deque = deque(maxlen=eng.maxlen)
+        for i in range(20):
+            dq.append(self._flow_candle(self.START + i * 60_000, tsell))
+        eng.candles["SYM"] = dq
+        return eng
+
+    def test_flow_hold_through_threshold_and_guards(self) -> None:
+        self.assertTrue(self._engine(0.60)._flow_hold_through("SYM"))    # sellers dominant -> hold
+        self.assertFalse(self._engine(0.30)._flow_hold_through("SYM"))   # buyers back -> exit
+        self.assertFalse(self._engine(0.60, exit_flow_gate_enabled=False)._flow_hold_through("SYM"))
+        eng = self._engine(0.60)
+        eng.candles["SYM"] = deque(list(eng.candles["SYM"])[:3], maxlen=eng.maxlen)  # < W+1 bars
+        self.assertFalse(eng._flow_hold_through("SYM"))
+
+    def _position(self) -> WaterfallPosition:
+        return WaterfallPosition(
+            position_id="cbwf-SYM-1", symbol="SYM", strategy=STRATEGY_NAME,
+            family="board_waterfall", rule="board40_drop7_60m", exit_profile="claude_e1",
+            status="open", side="SHORT", entry_time=self.START, entry_price=100.0,
+            notional_usdt=200.0, stop_price=103.0, best_price=94.0, worst_price=100.0,
+            trail_price=96.0, fee_rate=0.0008, margin_usdt=20.0, leverage=10.0,
+            capital_fraction=0.2, updated_time=self.START,
+        )
+
+    def test_rebound_held_when_sellers_dominant(self) -> None:
+        eng = self._engine(0.60)  # tsell 0.60 >= 0.48 -> hold through the take-profit
+        eng.positions["SYM"] = self._position()
+        rebound = Candle("SYM", "1m", self.START + 20 * 60_000, 95.0, 97.0, 94.5, 96.0,
+                         100.0, self.START + 20 * 60_000 + 59_999, 10_000.0, 100, 1.0, 4000.0)
+        _, _, signals = eng.on_kline(KlineClosed("SYM", "1m", rebound))
+        self.assertEqual(signals, [])                       # take-profit skipped
+        self.assertIn("SYM", eng.positions)                 # still holding
+
+    def test_rebound_takes_profit_when_buyers_return(self) -> None:
+        eng = self._engine(0.30)  # tsell 0.30 < 0.48 -> real bounce -> take profit
+        eng.positions["SYM"] = self._position()
+        rebound = Candle("SYM", "1m", self.START + 20 * 60_000, 95.0, 97.0, 94.5, 96.0,
+                         100.0, self.START + 20 * 60_000 + 59_999, 10_000.0, 100, 1.0, 7000.0)
+        _, changed, signals = eng.on_kline(KlineClosed("SYM", "1m", rebound))
+        self.assertEqual([s.action for s in signals], ["take_profit"])
+        self.assertNotIn("SYM", eng.positions)
+
+    def test_stop_loss_never_gated_by_flow(self) -> None:
+        eng = self._engine(0.60)  # sellers dominant, but a stop must still fire
+        eng.positions["SYM"] = self._position()
+        spike = Candle("SYM", "1m", self.START + 20 * 60_000, 102.0, 104.0, 101.0, 103.5,
+                       100.0, self.START + 20 * 60_000 + 59_999, 10_000.0, 100, 1.0, 4000.0)
+        _, _, signals = eng.on_kline(KlineClosed("SYM", "1m", spike))
+        self.assertEqual([s.action for s in signals], ["stop_loss"])
 
 
 if __name__ == "__main__":
