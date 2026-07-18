@@ -82,18 +82,23 @@ class DashboardHandler(BaseHTTPRequestHandler):
             elif parsed.path == "/api/waterfall/summary":
                 self.write_json(self.api_waterfall_summary())
             elif parsed.path == "/api/waterfall/watch":
-                self.write_json({"rows": self.store.waterfall_watch_rows(limit=int_param(query, "limit", 300))})
+                from .board_waterfall import STRATEGY_NAME as CLAUDE_STRATEGY
+                self.write_json({"rows": self.store.waterfall_watch_rows(
+                    limit=int_param(query, "limit", 300), strategy=CLAUDE_STRATEGY
+                )})
             elif parsed.path == "/api/waterfall/positions":
+                from .board_waterfall import STRATEGY_NAME as CLAUDE_STRATEGY
                 rows = self.store.waterfall_position_rows(
                     status=query.get("status", [""])[0],
                     limit=int_param(query, "limit", 200),
-                    strategy=query.get("strategy", [""])[0],
+                    strategy=CLAUDE_STRATEGY,
                 )
                 self.write_json({"rows": enrich_waterfall_positions(self.store, rows)})
             elif parsed.path == "/api/waterfall/signals":
+                from .board_waterfall import STRATEGY_NAME as CLAUDE_STRATEGY
                 self.write_json({"rows": self.store.waterfall_signal_rows(
                     limit=int_param(query, "limit", 200),
-                    strategy=query.get("strategy", [""])[0],
+                    strategy=CLAUDE_STRATEGY,
                 )})
             elif parsed.path == "/api/waterfall/shadow":
                 self.write_json({
@@ -174,58 +179,36 @@ class DashboardHandler(BaseHTTPRequestHandler):
     def api_waterfall_summary(self) -> dict[str, Any]:
         from .board_waterfall import STRATEGY_NAME as CLAUDE_STRATEGY
         from .board_waterfall import board_waterfall_settings
-        from .waterfall import strategy_label
 
-        cfg = waterfall_settings(self.settings)
-        out = self.store.waterfall_summary(0.0)
         board_cfg = board_waterfall_settings(self.settings)
-        accounts = []
-        known = [f"waterfall_{cfg.get('variant', 'core5_agg')}_1m"]
-        if bool(board_cfg.get("enabled", True)):
-            known.append(CLAUDE_STRATEGY)
-        strategies = list(dict.fromkeys([*known, *(self.store.waterfall_strategies() or [])]))
-        for strat in strategies:
-            init = (
-                float(board_cfg.get("paper_initial_balance_usdt") or 0.0)
-                if strat == CLAUDE_STRATEGY
-                else float(cfg.get("paper_initial_balance_usdt") or 0.0)
-            )
-            acc = self.store.waterfall_summary(init, strategy=strat)
-            acc["strategy"] = strat
-            acc["strategy_label"] = strategy_label(strat)
-            accounts.append(acc)
-        out = combine_waterfall_accounts(out, accounts)
+        master = self.store.waterfall_summary(0.0, strategy=CLAUDE_STRATEGY)
+        accounts = self.store.waterfall_paper_account_summaries()
+        out = combine_waterfall_accounts(master, accounts)
         out["accounts"] = accounts
-        runtime = self.settings.get("runtime", {})
-        out["active_strategy"] = runtime.get("active_strategy", "waterfall_quant")
+        out["active_strategy"] = CLAUDE_STRATEGY
         out["config"] = {
-            "variant": cfg.get("variant"),
-            "broad_top": cfg.get("broad_top"),
-            "watch_interval": cfg.get("watch_interval"),
-            "discover_every": cfg.get("discover_every"),
-            "prewarm_limit": cfg.get("prewarm_limit"),
-            "same_symbol_cooldown_hours": cfg.get("same_symbol_cooldown_hours"),
-            "after_stop_cooldown_hours": cfg.get("after_stop_cooldown_hours"),
-            "family_gap_minutes": cfg.get("family_gap_minutes"),
-            "max_trades_per_symbol_day": cfg.get("max_trades_per_symbol_day"),
-            "notional_usdt": cfg.get("notional_usdt"),
-            "paper_initial_balance_usdt": cfg.get("paper_initial_balance_usdt"),
-            "paper_margin_fraction": cfg.get("paper_margin_fraction"),
-            "leverage": cfg.get("leverage"),
-            "max_open_positions": cfg.get("max_open_positions"),
-            "enabled_families": cfg.get("enabled_families", []),
-            "micro_streams": cfg.get("micro_streams", []),
-            "require_agg_confirmation": bool(cfg.get("require_agg_confirmation", True)),
-            "agg_sell_ratio_min": cfg.get("agg_sell_ratio_min"),
-            "agg_low_time_frac_min": cfg.get("agg_low_time_frac_min"),
-            "strong_agg_sell_ratio_min": cfg.get("strong_agg_sell_ratio_min"),
-            "strong_agg_close_pos_max": cfg.get("strong_agg_close_pos_max"),
-            "bookdepth_enhancement_enabled": bool(cfg.get("bookdepth_enhancement_enabled", True)),
-            "bookdepth_max_age_seconds": cfg.get("bookdepth_max_age_seconds"),
-            "bookdepth_imbalance_delta_min": cfg.get("bookdepth_imbalance_delta_min"),
-            "execution_mode": cfg.get("execution_mode", "paper"),
-            "real_order_enabled": bool(cfg.get("real_order_enabled", False)),
-            "push_wecom": bool(cfg.get("push_wecom", True)),
+            "variant": "claude_champion_three_accounts",
+            "broad_top": waterfall_settings(self.settings).get("broad_top"),
+            "watch_interval": "1m",
+            "discover_every": waterfall_settings(self.settings).get("discover_every"),
+            "prewarm_limit": board_cfg.get("prewarm_limit"),
+            "same_symbol_cooldown_hours": board_cfg.get("same_symbol_cooldown_hours"),
+            "max_trades_per_symbol_day": board_cfg.get("max_trades_per_symbol_day"),
+            "paper_initial_balance_usdt": board_cfg.get("paper_initial_balance_usdt"),
+            "paper_margin_fraction": board_cfg.get("paper_margin_fraction"),
+            "leverage": board_cfg.get("leverage"),
+            "max_open_positions": board_cfg.get("max_open_positions"),
+            "enabled_families": ["board_waterfall"],
+            "micro_streams": [],
+            "bookdepth_enhancement_enabled": bool(board_cfg.get("bookdepth_enhancement_enabled", True)),
+            "bookdepth_filter_mode": bool(board_cfg.get("bookdepth_filter_mode", False)),
+            "bookdepth_max_age_seconds": board_cfg.get("bookdepth_max_age_seconds"),
+            "execution_mode": "paper",
+            "real_order_enabled": False,
+            "push_wecom": bool(waterfall_settings(self.settings).get("push_wecom", True)),
+            "core5_enabled": bool(waterfall_settings(self.settings).get("enabled", False)),
+            "account_count": len(accounts),
+            "backfill_from": board_cfg.get("paper_account_backfill_from"),
         }
         return out
 
@@ -243,10 +226,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
 def combine_waterfall_accounts(base: dict[str, Any], accounts: list[dict[str, Any]]) -> dict[str, Any]:
     """Build the dashboard total from independent paper accounts."""
     out = dict(base)
-    sum_fields = (
-        "open_positions",
-        "closed_positions",
-        "signals",
+    financial_fields = (
         "paper_initial_balance_usdt",
         "paper_realized_pnl_usdt",
         "paper_unrealized_pnl_usdt",
@@ -254,9 +234,22 @@ def combine_waterfall_accounts(base: dict[str, Any], accounts: list[dict[str, An
         "paper_used_margin_usdt",
         "paper_free_balance_usdt",
     )
-    for field in sum_fields:
+    for field in financial_fields:
         out[field] = sum(float(account.get(field) or 0.0) for account in accounts)
     out["paper_pnl_usdt"] = out["paper_realized_pnl_usdt"]
+    account_strategies = {str(account.get("strategy") or "") for account in accounts if account.get("strategy")}
+    shared_signal_path = len(account_strategies) == 1 and bool(accounts)
+    if shared_signal_path:
+        # Three sizing ledgers execute one Claude signal stream. Do not report
+        # one master trade as three separate strategy signals.
+        out["open_positions"] = int(base.get("open_positions") or 0)
+        out["closed_positions"] = int(base.get("closed_positions") or 0)
+        out["signals"] = int(base.get("signals") or 0)
+        out["win_rate"] = float(base.get("win_rate") or 0.0)
+        out["avg_pnl_pct"] = float(base.get("avg_pnl_pct") or 0.0)
+        return out
+    for field in ("open_positions", "closed_positions", "signals"):
+        out[field] = sum(float(account.get(field) or 0.0) for account in accounts)
     closed = int(out["closed_positions"])
     if closed:
         wins = sum(

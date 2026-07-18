@@ -10,20 +10,23 @@ closed 1m candles and aggTrade flow. It does not place real orders.
 
 ```json
 {
-  "runtime": { "active_strategy": "waterfall_quant" }
+  "runtime": { "active_strategy": "claude_board_wf_1m" }
 }
 ```
 
-Two independent engines consume the same 1m WebSocket candle store:
+Production runs one signal engine and three independent paper ledgers:
 
-| Engine | Strategy id | Entry | Paper account |
-| --- | --- | --- | ---: |
-| Codex core5 + agg | `waterfall_core5_agg_1m` | closed 1m core structure plus aggTrade sell-pressure confirmation | 100 USDT |
-| Board Waterfall | `claude_board_wf_1m` | 24h gain >= 40%, 60m drawdown >= 7%, 60m quote volume >= 300k USDT | 100 USDT |
+| Signal engine | Strategy id | Entry |
+| --- | --- | --- |
+| Board Waterfall | `claude_board_wf_1m` | 24h gain >= 40%, 60m drawdown >= 7%, 60m quote volume >= 300k USDT |
 
-The accounts are isolated. Positions, realized PnL, cooldowns, trade counts and
-exit profiles are restored by strategy id after restart. The dashboard total
-starts from 200 USDT and `accounts[]` exposes both 100 USDT accounts separately.
+The retired Codex core5 engine is disabled. Its historical SQLite rows are kept
+for audit but are not loaded, displayed or allowed to generate signals.
+
+The three Claude ledgers all start at 100 USDT and replay the same master trades
+from 2026-07-13 07:37 CST: 20% fixed margin, 10% fixed margin, and 10% base
+margin with a realized-equity drawdown ladder. Signals and WeCom notifications
+are emitted once; each notification contains all three account changes.
 
 Real execution is disabled by both `execution_mode="paper"` and
 `real_order_enabled=false`.
@@ -103,9 +106,9 @@ cd /opt/binance-hunter
 python3 deploy/verify-live.py
 ```
 
-The verifier requires the 1m waterfall runtime, core5 families, aggTrade gate,
-paper-only execution, both independent accounts and a combined 200 USDT initial
-balance.
+The verifier requires the Claude 1m champion runtime, disabled core5 execution,
+paper-only execution, all three independent accounts and a combined 300 USDT
+initial balance.
 
 ## Deployment and update
 
@@ -123,7 +126,8 @@ does not continue per-symbol kline REST calls during that fallback.
 
 ## Documentation map
 
-- [`docs/waterfall_quant.md`](docs/waterfall_quant.md): core5 + agg production strategy.
+- [`docs/claude-paper-accounts.md`](docs/claude-paper-accounts.md): three-account sizing, replay and notification design.
+- [`docs/waterfall_quant.md`](docs/waterfall_quant.md): retired core5 + agg strategy kept for research history.
 - [`docs/board_waterfall.md`](docs/board_waterfall.md): Board Waterfall strategy and replay.
 - [`docs/micro-collector.md`](docs/micro-collector.md): aggTrade, book/depth and OI collection.
 - [`docs/frontend.md`](docs/frontend.md): dashboard routes and API proxy.

@@ -27,12 +27,12 @@ Browser requests use:
 
 The summary response has two levels:
 
-- top-level fields are the combined paper account;
-- `accounts[]` contains the independent core5 and Board Waterfall accounts.
+- top-level fields combine the three Claude paper accounts;
+- `accounts[]` contains 20% fixed, 10% fixed and 10% drawdown-ladder ledgers.
 
-With both engines enabled, top-level `paper_initial_balance_usdt` is 200 while
-each account remains 100. Position and signal cards must use their `strategy`
-field and must not merge strategy-specific PnL or status.
+Top-level `paper_initial_balance_usdt` is 300 while each account remains 100.
+Positions and signals are the single Claude master path and are not triplicated.
+Historical core5 database rows are excluded by default from the API and UI.
 
 Next.js forwards them to:
 

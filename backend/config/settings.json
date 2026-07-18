@@ -16,7 +16,7 @@
     "reports_dir": "reports"
   },
   "runtime": {
-    "active_strategy": "waterfall_quant"
+    "active_strategy": "claude_board_wf_1m"
   },
   "universe": {
     "quote_asset": "USDT",
@@ -190,6 +190,7 @@
     "min_signals": 5
   },
   "waterfall_quant": {
+    "enabled": false,
     "variant": "core5_agg",
     "broad_top": 450,
     "watch_interval": "1m",
@@ -211,9 +212,7 @@
       "other"
     ],
     "max_trades_per_symbol_day": 2,
-    "micro_streams": [
-      "aggTrade"
-    ],
+    "micro_streams": [],
     "require_agg_confirmation": true,
     "agg_sell_ratio_min": 0.6,
     "agg_low_time_frac_min": 0.55,
@@ -261,6 +260,39 @@
     "bookdepth_baseline_min_age_seconds": 90,
     "bookdepth_baseline_max_age_seconds": 210,
     "bookdepth_imbalance_delta_max": 0.0,
-    "bookdepth_confidence_boost": 0.1
+    "bookdepth_confidence_boost": 0.1,
+    "paper_account_backfill_from": "2026-07-13T07:37:00+08:00",
+    "paper_accounts": [
+      {
+        "account_id": "claude_fixed20",
+        "label": "Claude·冠军 20%固定",
+        "initial_balance_usdt": 100.0,
+        "base_margin_fraction": 0.2,
+        "leverage": 10.0,
+        "sizing_mode": "fixed"
+      },
+      {
+        "account_id": "claude_fixed10",
+        "label": "Claude·冠军 10%固定",
+        "initial_balance_usdt": 100.0,
+        "base_margin_fraction": 0.1,
+        "leverage": 10.0,
+        "sizing_mode": "fixed"
+      },
+      {
+        "account_id": "claude_drawdown10",
+        "label": "Claude·冠军 10%回撤缩仓",
+        "initial_balance_usdt": 100.0,
+        "base_margin_fraction": 0.1,
+        "leverage": 10.0,
+        "sizing_mode": "realized_drawdown_ladder",
+        "drawdown_ladder": [
+          {"below": 0.05, "factor": 1.0},
+          {"below": 0.1, "factor": 0.75},
+          {"below": 0.15, "factor": 0.5},
+          {"below": null, "factor": 0.25}
+        ]
+      }
+    ]
   }
 }

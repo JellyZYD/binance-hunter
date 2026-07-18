@@ -1,7 +1,8 @@
 # Board-Waterfall Strategy (Claude·冠军标签)
 
-The second waterfall engine, running in parallel with Codex's `core5_agg` on
-the same 1m WebSocket stream, with its own independent 100U paper account.
+The sole production waterfall signal engine, consuming closed 1m WebSocket
+candles and driving three independent 100U paper accounts. The former Codex
+`core5_agg` engine is disabled and retained only as research history.
 Engine: `backend/pump_dump_hunter/board_waterfall.py`, strategy id
 `claude_board_wf_1m`.
 
@@ -9,13 +10,11 @@ Engine: `backend/pump_dump_hunter/board_waterfall.py`, strategy id
 > choice here (label, entry timing, exit, cooldown, and the backtest traps we
 > hit), see **[waterfall_lessons.md](waterfall_lessons.md)**.
 
-## Why a second engine
+## Why this is the production engine
 
 Three days of independent research (audit → label refinement → walk-forward)
-converged on a label that overlaps only ~30% with core5_agg: core5_agg catches
-"already-falling downtrend continuation" (no board requirement); this engine
-catches "board-coin deep waterfalls". Complementary, not competing — combined
-frequency ~4 trades/day.
+converged on the board-coin deep-waterfall label. Subsequent audit found the
+core5 path overfit, so production no longer combines it with this engine.
 
 ## Label (walk-forward validated 2023-2025 select / 2026H1 verdict)
 
@@ -127,7 +126,9 @@ the cooldown to 20–25m keeps per-trade EV flat (robust to ex-top-3-days) and
   "max_trades_per_symbol_day": 8,
   "exit_flow_gate_enabled": true,
   "exit_flow_window": 10,
-  "exit_flow_sell_threshold": 0.48
+  "exit_flow_sell_threshold": 0.48,
+  "paper_account_backfill_from": "2026-07-13T07:37:00+08:00",
+  "paper_accounts": ["20% fixed", "10% fixed", "10% drawdown ladder"]
 }
 ```
 
@@ -143,11 +144,8 @@ the cooldown to 20–25m keeps per-trade EV flat (robust to ex-top-3-days) and
 - Turn off with `"enabled": false` and restart monitor.
 - Paper-only: shares the same `WaterfallExecutionAdapter`, never places live
   orders.
-- **Memory**: this engine shares the codex engine's candle deques by reference
-  (`shared_candles=engine.candles`) instead of keeping a second copy — with
-  `Candle(slots=True)` the whole monitor's candle store is ~80MB, not ~700MB.
-  When shared, its `_append`/`prime_candles` are no-ops (codex populates the
-  dict before board reads each tick).
+- **Memory**: this engine now owns the single `Candle(slots=True)` deque store;
+  disabling core5 removes the duplicate strategy lifecycle and aggTrade stream.
 
 ## BookDepth near-book tier
 
@@ -183,23 +181,23 @@ the whole tier off with `bookdepth_enhancement_enabled: false`.
 
 ## Where it shows
 
-- WeCom push title: `[Claude·冠军标签] 瀑布开空/止盈/止损 ...`
-- `/waterfall`: an "独立账户 · Claude·冠军标签" card (equity/realized/
-  unrealized/win-rate), plus per-strategy tags on position cards and signals.
+- WeCom pushes once per master open/exit and lists all three account changes.
+- `/waterfall`: separate 20% fixed, 10% fixed and 10% drawdown-ladder cards,
+  plus one shared master position/signal stream.
 - API: `/api/hunter/waterfall/positions?strategy=claude_board_wf_1m`,
   `.../signals?strategy=...`, and `accounts[]` in `/api/hunter/waterfall/summary`.
 
 ## State isolation and restart recovery
 
-- The Board and core5 engines restore positions, realized PnL, cooldowns and
-  trade counts using their own strategy id only. A `claude_e1` position can
-  never be loaded by the core5 engine.
+- Only Board positions restore into the live engine. Historical core5 rows are
+  preserved but excluded from execution and default API queries.
 - Closed-position history is restored without the old 1000-row cap, so paper
   equity does not lose early realized PnL after a long-running restart.
 - Position sizing is capped by free paper equity. No position is created when
   equity or free margin is zero.
-- The dashboard total is the sum of both independent 100U accounts; each
-  account remains available separately in `accounts[]`.
+- On startup the three ledgers deterministically replay Board master trades from
+  2026-07-13 07:37 CST. The dashboard total starts at 300U and each account is
+  available separately in `accounts[]`.
 
 ## Reproducible production-engine replay
 

@@ -236,6 +236,49 @@ class Store:
                 CREATE INDEX IF NOT EXISTS idx_waterfall_signals_time
                     ON waterfall_signals(decision_time DESC);
 
+                CREATE TABLE IF NOT EXISTS waterfall_paper_accounts(
+                    account_id TEXT PRIMARY KEY,
+                    strategy TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    initial_balance_usdt REAL NOT NULL,
+                    base_margin_fraction REAL NOT NULL,
+                    leverage REAL NOT NULL,
+                    sizing_mode TEXT NOT NULL,
+                    drawdown_ladder_json TEXT NOT NULL DEFAULT '[]',
+                    realized_pnl_usdt REAL NOT NULL DEFAULT 0,
+                    peak_equity_usdt REAL NOT NULL DEFAULT 0,
+                    max_drawdown_pct REAL NOT NULL DEFAULT 0,
+                    backfill_from INTEGER NOT NULL,
+                    updated_time INTEGER NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS waterfall_account_positions(
+                    account_id TEXT NOT NULL,
+                    master_position_id TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    entry_time INTEGER NOT NULL,
+                    entry_price REAL NOT NULL,
+                    exit_time INTEGER,
+                    exit_price REAL NOT NULL DEFAULT 0,
+                    exit_reason TEXT NOT NULL DEFAULT '',
+                    margin_usdt REAL NOT NULL,
+                    notional_usdt REAL NOT NULL,
+                    leverage REAL NOT NULL,
+                    sizing_fraction REAL NOT NULL,
+                    drawdown_at_entry REAL NOT NULL DEFAULT 0,
+                    pnl_pct REAL NOT NULL DEFAULT 0,
+                    pnl_usdt REAL NOT NULL DEFAULT 0,
+                    equity_before_usdt REAL NOT NULL,
+                    equity_after_usdt REAL NOT NULL,
+                    updated_time INTEGER NOT NULL,
+                    PRIMARY KEY(account_id, master_position_id),
+                    FOREIGN KEY(account_id) REFERENCES waterfall_paper_accounts(account_id)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_waterfall_account_positions_status
+                    ON waterfall_account_positions(account_id, status, updated_time);
+
                 CREATE TABLE IF NOT EXISTS waterfall_shadow_micro(
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     symbol TEXT NOT NULL,
@@ -918,13 +961,19 @@ class Store:
         finally:
             conn.close()
 
-    def waterfall_watch_rows(self, limit: int = 300) -> list[dict[str, Any]]:
+    def waterfall_watch_rows(self, limit: int = 300, strategy: str = "") -> list[dict[str, Any]]:
         conn = self.connect()
         try:
-            rows = conn.execute(
-                "SELECT * FROM waterfall_watch ORDER BY updated_time DESC LIMIT ?",
-                (int(limit),),
-            ).fetchall()
+            if strategy:
+                rows = conn.execute(
+                    "SELECT * FROM waterfall_watch WHERE strategy=? ORDER BY updated_time DESC LIMIT ?",
+                    (strategy, int(limit)),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM waterfall_watch ORDER BY updated_time DESC LIMIT ?",
+                    (int(limit),),
+                ).fetchall()
             return [decode_waterfall_row(dict(r)) for r in rows]
         finally:
             conn.close()
@@ -1056,6 +1105,189 @@ class Store:
                 "paper_used_margin_usdt": used_margin,
                 "paper_free_balance_usdt": equity - used_margin,
             }
+        finally:
+            conn.close()
+
+    def replace_waterfall_paper_accounts(
+        self,
+        accounts: list[dict[str, Any]],
+        positions: list[dict[str, Any]],
+    ) -> None:
+        """Atomically replace derived account ledgers after a history replay."""
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            conn.execute("DELETE FROM waterfall_account_positions")
+            conn.execute("DELETE FROM waterfall_paper_accounts")
+            self._upsert_waterfall_paper_rows(conn, accounts, positions)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    def upsert_waterfall_paper_state(
+        self,
+        accounts: list[dict[str, Any]],
+        positions: list[dict[str, Any]],
+    ) -> None:
+        conn = self.connect()
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            self._upsert_waterfall_paper_rows(conn, accounts, positions)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.close()
+
+    @staticmethod
+    def _upsert_waterfall_paper_rows(
+        conn: sqlite3.Connection,
+        accounts: list[dict[str, Any]],
+        positions: list[dict[str, Any]],
+    ) -> None:
+        conn.executemany(
+            """INSERT INTO waterfall_paper_accounts(
+                account_id, strategy, label, initial_balance_usdt,
+                base_margin_fraction, leverage, sizing_mode, drawdown_ladder_json,
+                realized_pnl_usdt, peak_equity_usdt, max_drawdown_pct,
+                backfill_from, updated_time
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(account_id) DO UPDATE SET
+                strategy=excluded.strategy,
+                label=excluded.label,
+                initial_balance_usdt=excluded.initial_balance_usdt,
+                base_margin_fraction=excluded.base_margin_fraction,
+                leverage=excluded.leverage,
+                sizing_mode=excluded.sizing_mode,
+                drawdown_ladder_json=excluded.drawdown_ladder_json,
+                realized_pnl_usdt=excluded.realized_pnl_usdt,
+                peak_equity_usdt=excluded.peak_equity_usdt,
+                max_drawdown_pct=excluded.max_drawdown_pct,
+                backfill_from=excluded.backfill_from,
+                updated_time=excluded.updated_time""",
+            [
+                (
+                    row["account_id"], row["strategy"], row["label"],
+                    float(row["initial_balance_usdt"]), float(row["base_margin_fraction"]),
+                    float(row["leverage"]), row["sizing_mode"],
+                    json.dumps(row.get("drawdown_ladder", []), ensure_ascii=False),
+                    float(row.get("realized_pnl_usdt") or 0.0),
+                    float(row.get("peak_equity_usdt") or 0.0),
+                    float(row.get("max_drawdown_pct") or 0.0),
+                    int(row["backfill_from"]), int(row["updated_time"]),
+                )
+                for row in accounts
+            ],
+        )
+        conn.executemany(
+            """INSERT OR REPLACE INTO waterfall_account_positions(
+                account_id, master_position_id, symbol, status, entry_time,
+                entry_price, exit_time, exit_price, exit_reason, margin_usdt,
+                notional_usdt, leverage, sizing_fraction, drawdown_at_entry,
+                pnl_pct, pnl_usdt, equity_before_usdt, equity_after_usdt, updated_time
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            [
+                (
+                    row["account_id"], row["master_position_id"], row["symbol"],
+                    row["status"], int(row["entry_time"]), float(row["entry_price"]),
+                    row.get("exit_time"), float(row.get("exit_price") or 0.0),
+                    str(row.get("exit_reason") or ""), float(row["margin_usdt"]),
+                    float(row["notional_usdt"]), float(row["leverage"]),
+                    float(row["sizing_fraction"]), float(row.get("drawdown_at_entry") or 0.0),
+                    float(row.get("pnl_pct") or 0.0), float(row.get("pnl_usdt") or 0.0),
+                    float(row["equity_before_usdt"]), float(row["equity_after_usdt"]),
+                    int(row["updated_time"]),
+                )
+                for row in positions
+            ],
+        )
+
+    def waterfall_paper_account_summaries(self) -> list[dict[str, Any]]:
+        conn = self.connect()
+        try:
+            account_rows = conn.execute(
+                "SELECT * FROM waterfall_paper_accounts ORDER BY rowid"
+            ).fetchall()
+            out: list[dict[str, Any]] = []
+            for raw in account_rows:
+                account = dict(raw)
+                account_id = str(account["account_id"])
+                stats = conn.execute(
+                    """SELECT COUNT(*) AS trades,
+                              SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END) AS closed,
+                              SUM(CASE WHEN status='open' THEN 1 ELSE 0 END) AS opened,
+                              SUM(CASE WHEN status='closed' AND pnl_pct>0 THEN 1 ELSE 0 END) AS wins,
+                              AVG(CASE WHEN status='closed' THEN pnl_pct END) AS avg_pnl_pct,
+                              SUM(CASE WHEN status='open' THEN margin_usdt ELSE 0 END) AS used_margin
+                       FROM waterfall_account_positions WHERE account_id=?""",
+                    (account_id,),
+                ).fetchone()
+                open_rows = conn.execute(
+                    """SELECT a.entry_price, a.notional_usdt,
+                              COALESCE(w.last_price, p.entry_price, a.entry_price) AS mark_price,
+                              COALESCE(p.fee_rate, 0.0008) AS fee_rate
+                       FROM waterfall_account_positions a
+                       LEFT JOIN waterfall_positions p ON p.position_id=a.master_position_id
+                       LEFT JOIN waterfall_watch w ON w.symbol=a.symbol
+                       WHERE a.account_id=? AND a.status='open'""",
+                    (account_id,),
+                ).fetchall()
+                unrealized = 0.0
+                for pos in open_rows:
+                    entry = float(pos["entry_price"] or 0.0)
+                    mark = float(pos["mark_price"] or entry)
+                    if entry > 0 and mark > 0:
+                        unrealized += float(pos["notional_usdt"] or 0.0) * (
+                            1.0 - mark / entry - float(pos["fee_rate"] or 0.0)
+                        )
+                initial = float(account["initial_balance_usdt"] or 0.0)
+                realized = float(account["realized_pnl_usdt"] or 0.0)
+                realized_equity = initial + realized
+                equity = realized_equity + unrealized
+                peak = float(account["peak_equity_usdt"] or initial)
+                current_dd = max(0.0, 1.0 - realized_equity / peak) if peak > 0 else 0.0
+                closed = int(stats["closed"] or 0)
+                used = float(stats["used_margin"] or 0.0)
+                account.update({
+                    "strategy_label": account["label"],
+                    "open_positions": int(stats["opened"] or 0),
+                    "closed_positions": closed,
+                    "signals": int(stats["trades"] or 0) * 2 - int(stats["opened"] or 0),
+                    "win_rate": float(stats["wins"] or 0) / closed if closed else 0.0,
+                    "avg_pnl_pct": float(stats["avg_pnl_pct"] or 0.0),
+                    "paper_initial_balance_usdt": initial,
+                    "paper_realized_pnl_usdt": realized,
+                    "paper_unrealized_pnl_usdt": unrealized,
+                    "paper_pnl_usdt": realized,
+                    "paper_equity_usdt": equity,
+                    "paper_used_margin_usdt": used,
+                    "paper_free_balance_usdt": equity - used,
+                    "current_drawdown_pct": current_dd,
+                    "drawdown_ladder": json.loads(account.pop("drawdown_ladder_json") or "[]"),
+                })
+                out.append(account)
+            return out
+        finally:
+            conn.close()
+
+    def waterfall_account_position_rows(self, account_id: str, status: str = "", limit: int = 200) -> list[dict[str, Any]]:
+        conn = self.connect()
+        try:
+            clauses = ["account_id=?"]
+            args: list[Any] = [account_id]
+            if status:
+                clauses.append("status=?")
+                args.append(status)
+            args.append(int(limit))
+            rows = conn.execute(
+                f"SELECT * FROM waterfall_account_positions WHERE {' AND '.join(clauses)} ORDER BY updated_time DESC LIMIT ?",
+                tuple(args),
+            ).fetchall()
+            return [dict(row) for row in rows]
         finally:
             conn.close()
 

@@ -1,15 +1,17 @@
-## Waterfall Quant 双策略生产版（当前默认，2026-07-12）
+## Claude 冠军策略三账户生产版（当前默认）
 
-默认监控策略已切到 `runtime.active_strategy = "waterfall_quant"`，同一条 1m WebSocket 流上**并行跑两套独立引擎**，各自独立纸面账户（初始 100U / 20% 权益保证金 / 10x / 最多 5 仓 / 实盘关闭），互不干扰、独立署名：
+默认监控策略是 `runtime.active_strategy = "claude_board_wf_1m"`。一套 Claude 冠军信号驱动三套独立 100U 纸面账户，Core5 已停用且不会实例化：
 
-| 策略 | 引擎 | 触发 | 出场 | 频率(裁决期) |
-|---|---|---|---|---|
-| **Codex·core5_agg** | `waterfall.py` | 1m 收线 core5 结构 + aggTrade 卖压分族门控 | 分档追踪止盈 | ~1.5 笔/天 |
-| **Claude·冠军标签** | `board_waterfall.py` | 板上涨≥40% + 60m 跌≥7% + 量≥30万U（纯 1m 收线） | B 结构止损(60m 低点后反弹高×1.01) + 3.5%/3% 追踪 + 4h | ~3.3 笔/天 |
+| 账户 | 保证金控制 | 杠杆 |
+|---|---|---:|
+| `claude_fixed20` | 固定权益 20% | 10x |
+| `claude_fixed10` | 固定权益 10% | 10x |
+| `claude_drawdown10` | 10% 基础，按已实现回撤缩到 7.5%/5%/2.5% | 10x |
 
-- 两套重叠仅 ~30%（core5_agg 抓"已跌趋势中继"，冠军标签抓"板上深瀑布"），互补而非竞争。
-- 企微推送标题带 `[Codex·core5_agg]` / `[Claude·冠军标签]` 署名；`/waterfall` 页显示两张独立账户卡（从开机即显示，不等首笔交易）。
-- 开关：`claude_board_waterfall.enabled`（Claude 侧）、`waterfall_quant.require_agg_confirmation`（Codex 侧 agg 门）。参数全在 `backend/config/settings.json`，本地改后 push 再 `update.sh`。
+- 触发：24h 涨幅≥40% + 距 60m 高点跌≥7% + 60m 成交额≥30万U，等 1m 收线。
+- 出场：B 结构止损 + 3.5%/3% 追踪 + 10 根主动卖盘延迟止盈 + 4h 超时。
+- 企微每个主信号只推一次，正文同时列出三账户变化。
+- 三账户启动时从 2026-07-13 07:37 CST 的 Claude 主交易历史幂等重放。
 - 实盘安全：`WaterfallExecutionAdapter` 默认 paper，`real_order_enabled=false`；改 live 会启动即抛异常拒绝下单。
 
 部署后检查：
@@ -17,10 +19,9 @@
 journalctl -u binance-hunter-monitor -n 20 --no-pager   # 应有 websocket connected streams=... 无 418
 curl -s https://pixia.cc/api/hunter/waterfall/summary | python3 -m json.tool | grep -A6 strategy_label
 ```
-`accounts` 应含 `Codex·core5_agg` 和 `Claude·冠军标签` 两段，各 100U。
+`accounts` 应只含 `claude_fixed20`、`claude_fixed10`、`claude_drawdown10`，合计初始 300U。
 
-重启恢复按 `strategy` 严格隔离：两套引擎不会加载对方的持仓、退出配置、
-冷却或盈亏；顶部总账户是两个独立 100U 账户的合计。若币池 REST 请求被
+重启只恢复 Claude 主仓位，三套资金账本由主历史重放。旧 Core5 数据保留审计但不参与运行。若币池 REST 请求被
 418/429 拒绝，预热会切到严格 DB-only，不再继续逐币请求 K 线。
 
 ### 限流与重启（2026-07-12 血泪教训，务必读）
@@ -81,17 +82,20 @@ curl -s https://pixia.cc/api/hunter/waterfall/summary | python3 -m json.tool | g
 
 服务器侧：`systemctl stop binance-hunter-web && systemctl disable binance-hunter-web`（停本地前端省内存）。代价：`pixia.cc/` 首页 502（`location /` 指向已停的本地前端，预期），改用 Vercel 网址；`pixia.cc/hunter-api/` 照常给 Vercel 供数据。**数据经 /hunter-api/ 公开无鉴权**（纸面/行情，不敏感；需要时可加 token）。
 
-用 Vercel 后更新只需后端轻量三连（无 npm）：
+用 Vercel 后通过标准更新脚本升级，但跳过服务器上的 Next.js 构建：
 ```bash
-cd /opt/binance-hunter && git fetch origin && git reset --hard origin/main
-systemctl restart binance-hunter-monitor binance-hunter-api
+cd /opt/binance-hunter
+sudo env INSTALL_FRONTEND=0 bash deploy/update.sh
 ```
+
+该命令仍会重启 `monitor`、`api` 和 `micro`，并执行生产策略校验；Vercel
+在 `main` 更新后会独立自动构建前端。
 
 ---
 
 ## Lifecycle Expert Production Version（历史，已非默认）
 
-以下为上一代生命周期专家版记录，当前 `active_strategy` 已切到 `waterfall_quant`（见上）。生命周期版：
+以下为上一代生命周期专家版记录；当前 `active_strategy` 是 `claude_board_wf_1m`（见上）。生命周期版：
 
 - `signals.strategy_version=lifecycle_expert`
 - WebSocket 周期：`5m`, `15m`

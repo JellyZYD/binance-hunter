@@ -1,7 +1,7 @@
 """Claude board-waterfall strategy engine (champion label).
 
-Independent paper strategy running alongside the codex core5_agg engine on
-the same 1m candle stream and infrastructure, with its own paper account.
+Production paper strategy consuming one 1m candle stream and driving three
+independent account ledgers. The retired core5_agg strategy is disabled.
 
 Label (validated 2023-2025 selection / 2026H1 verdict, walk-forward clean):
   * board coin: 24h return >= +40%
@@ -14,7 +14,7 @@ Exit (E1, winner of an 8-variant battle):
     (min entry*1.015)
   * trailing profit: activate at MFE>=3.5%, rebound 3.0%, prev-bar-confirmed
   * time stop 240 minutes
-Cooldown 6h per symbol (relay re-entry rejected: bounce follows our exits).
+Cooldown 20m per symbol, with a maximum of 8 trades per symbol/day.
 
 Verdict-period stats (2026H1, 0.30% round-trip cost): 3.28 trades/day,
 win 67%, +0.40%/trade, PF 1.21; with far-depth gate +0.64%/PF1.36 (gate
@@ -41,6 +41,7 @@ STRATEGY_NAME = "claude_board_wf_1m"
 
 def board_waterfall_settings(settings: dict[str, Any]) -> dict[str, Any]:
     cfg = dict(settings.get("claude_board_waterfall") or {})
+    runtime_cfg = dict(settings.get("waterfall_quant") or {})
     cfg.setdefault("enabled", True)
     cfg.setdefault("paper_initial_balance_usdt", 100.0)
     cfg.setdefault("paper_margin_fraction", 0.2)
@@ -93,6 +94,8 @@ def board_waterfall_settings(settings: dict[str, Any]) -> dict[str, Any]:
     cfg.setdefault("bookdepth_baseline_max_age_seconds", 210)
     cfg.setdefault("bookdepth_imbalance_delta_max", 0.0)
     cfg.setdefault("bookdepth_confidence_boost", 0.10)
+    cfg.setdefault("prewarm_limit", int(runtime_cfg.get("prewarm_limit", 1500)))
+    cfg.setdefault("rest_weight_per_sec", float(runtime_cfg.get("rest_weight_per_sec", 20)))
     return cfg
 
 
@@ -104,10 +107,8 @@ class BoardWaterfallEngine:
         self.cfg = board_waterfall_settings(settings)
         self.strategy = STRATEGY_NAME
         self.maxlen = 1500
-        # Share the codex engine's candle deques instead of keeping a second
-        # full copy — two independent 1500-candle-per-symbol stores doubled the
-        # candle memory and OOM'd the 2G box. When shared, this engine never
-        # appends (the codex engine populates the dict before we read it).
+        # Shared deques remain available for research compatibility. Production
+        # Claude-only mode owns this single candle store.
         self._shared = shared_candles is not None
         self.candles: dict[str, deque[Candle]] = shared_candles if shared_candles is not None else {}
         self.positions: dict[str, WaterfallPosition] = {}
@@ -171,7 +172,10 @@ class BoardWaterfallEngine:
             return []  # codex engine already primed the shared dict
         for candle in sorted(candles, key=lambda c: (c.symbol, c.open_time)):
             self._append(candle)
-        return []
+        if not candles:
+            return []
+        row = self.watch_row(candles[-1].symbol)
+        return [row] if row else []
 
     def on_kline(self, event: KlineClosed) -> tuple[list[dict[str, Any]], list[WaterfallPosition], list[WaterfallSignal]]:
         if event.interval != "1m":
@@ -197,7 +201,8 @@ class BoardWaterfallEngine:
                 self.positions[candle.symbol] = position
                 changed_positions.append(position)
                 signals.append(signal)
-        return [], changed_positions, signals
+        watch = self.watch_row(candle.symbol)
+        return ([watch] if watch else []), changed_positions, signals
 
     def _append(self, candle: Candle) -> None:
         dq = self.candles.setdefault(candle.symbol, deque(maxlen=self.maxlen))
@@ -205,6 +210,49 @@ class BoardWaterfallEngine:
             dq[-1] = candle
         elif not dq or candle.open_time > dq[-1].open_time:
             dq.append(candle)
+
+    def watch_row(self, symbol: str) -> dict[str, Any] | None:
+        values = list(self.candles.get(symbol, []))
+        if len(values) < 31:
+            return None
+        last = values[-1]
+
+        def ret(minutes: int) -> float:
+            if len(values) <= minutes or values[-minutes - 1].close <= 0:
+                return 0.0
+            return last.close / values[-minutes - 1].close - 1.0
+
+        day = values[-min(len(values), 1441):]
+        high24 = max(x.high for x in day)
+        low24 = min(x.low for x in day)
+        qv30 = sum(x.quote_volume for x in values[-30:])
+        qv20 = [x.quote_volume for x in values[-21:-1]]
+        mean20 = sum(qv20) / len(qv20) if qv20 else 0.0
+        tsell = (
+            1.0 - sum(x.taker_buy_quote for x in values[-10:]) / sum(x.quote_volume for x in values[-10:])
+            if sum(x.quote_volume for x in values[-10:]) > 0 else 0.5
+        )
+        ret24 = ret(1440)
+        return {
+            "symbol": symbol,
+            "strategy": self.strategy,
+            "status": "in_position" if symbol in self.positions else ("armed" if ret24 >= float(self.cfg["min_ret_24h"]) else "scanning"),
+            "family": "board_waterfall",
+            "last_time": last.close_time,
+            "last_price": last.close,
+            "ret_30m": ret(30),
+            "ret_2h": ret(120),
+            "ret_4h": ret(240),
+            "ret_24h": ret24,
+            "runup_24h": high24 / low24 - 1.0 if low24 > 0 else 0.0,
+            "dd_from_24h_high": 1.0 - last.close / high24 if high24 > 0 else 0.0,
+            "qv30": qv30,
+            "volr20": last.quote_volume / mean20 if mean20 > 0 else 0.0,
+            "volr5_20": sum(x.quote_volume for x in values[-5:]) / 5.0 / mean20 if mean20 > 0 else 0.0,
+            "tsell": tsell,
+            "updated_time": last.close_time,
+            "evidence": ["claude_champion_universe"],
+        }
 
     # -- label -----------------------------------------------------------
 

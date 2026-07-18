@@ -15,8 +15,15 @@ type SystemStat = {
 };
 
 type StrategyAccount = {
+  account_id: string;
   strategy: string;
+  label?: string;
   strategy_label: string;
+  sizing_mode?: string;
+  base_margin_fraction?: number;
+  leverage?: number;
+  current_drawdown_pct?: number;
+  max_drawdown_pct?: number;
   open_positions: number;
   closed_positions: number;
   signals: number;
@@ -222,7 +229,12 @@ function replayModeText(row: ReplayResult) {
 
 function strategyTag(strategy?: string) {
   if (!strategy) return '';
-  return strategy === 'claude_board_wf_1m' ? 'Claude·冠军标签' : 'Codex·core5_agg';
+  return strategy === 'claude_board_wf_1m' ? 'Claude·冠军标签' : strategy;
+}
+
+function sizingText(account: StrategyAccount) {
+  const base = `${fmt(Number(account.base_margin_fraction || 0) * 100, 1)}% / ${fmt(account.leverage || 1, 1)}x`;
+  return account.sizing_mode === 'realized_drawdown_ladder' ? `${base} · 回撤缩仓梯` : `${base} · 固定仓位`;
 }
 
 function tierText(tier?: string) {
@@ -296,10 +308,10 @@ export default function WaterfallDashboard() {
     <main className="waterfall-shell">
       <header className="waterfall-header">
         <div>
-          <p className="eyebrow">CORE5 + AGG WATERFALL QUANT</p>
+          <p className="eyebrow">CLAUDE CHAMPION · THREE PAPER ACCOUNTS</p>
           <h1>合约瀑布量化监控</h1>
           <p className="subtitle">
-            TopN 山寨合约 · 1m 收线确认结构 · aggTrade 卖压强过滤 · 纸面账户模拟 · 真实下单接口预埋关闭
+            同一套冠军信号 · 20%固定 / 10%固定 / 10%回撤缩仓 · 独立权益路径 · 纸面模拟
           </p>
         </div>
         <div className="header-actions">
@@ -315,12 +327,12 @@ export default function WaterfallDashboard() {
         <span>当前策略：{summary?.active_strategy || '-'}</span>
         <span>版本：{String(cfg.variant || '-')}</span>
         <span>扫描：Top {String(cfg.broad_top || '-')} 流动性山寨合约</span>
-        <span>触发：{String(cfg.watch_interval || '1m')} 收线 + aggTrade</span>
-        <span>BookDepth增强：{cfg.bookdepth_enhancement_enabled ? '开启' : '关闭'}</span>
-        <span>仓位：权益 {fmt(Number(cfg.paper_margin_fraction || 0) * 100, 0)}% / {String(cfg.leverage || '-')}x</span>
+        <span>触发：{String(cfg.watch_interval || '1m')} 收线确认</span>
+        <span>BookDepth增强：{cfg.bookdepth_enhancement_enabled ? '开启（标记）' : '关闭'}</span>
+        <span>账户：{String(cfg.account_count || 3)} 套独立资金控制 / 同一信号</span>
         <span>最多持仓：{String(cfg.max_open_positions || '-')}</span>
         <span>类型：{Array.isArray(cfg.enabled_families) ? cfg.enabled_families.join(', ') : '-'}</span>
-        <span>agg过滤：sell {fmt(cfg.agg_sell_ratio_min, 2)} / low {fmt(cfg.agg_low_time_frac_min, 2)}</span>
+        <span>Core5：{cfg.core5_enabled ? '开启' : '已停用'}</span>
         <span>实盘下单：{cfg.real_order_enabled ? '已开启' : '关闭'}</span>
       </section>
 
@@ -403,11 +415,12 @@ export default function WaterfallDashboard() {
             const accRealized = acc.paper_realized_pnl_usdt ?? 0;
             const accUnrealized = acc.paper_unrealized_pnl_usdt ?? 0;
             return (
-              <Panel title={`独立账户 · ${acc.strategy_label || strategyTag(acc.strategy)}`} count={acc.closed_positions} key={acc.strategy}>
+              <Panel title={`独立账户 · ${acc.strategy_label || acc.label || strategyTag(acc.strategy)}`} count={acc.closed_positions} key={acc.account_id}>
                 <div className="waterfall-metrics">
-                  <Metric label="账户权益" value={usdt(accEquity)} tone="cyan" sub={`初始 ${usdt(acc.paper_initial_balance_usdt ?? 0)}`} />
+                  <Metric label="账户权益" value={usdt(accEquity)} tone="cyan" sub={sizingText(acc)} />
                   <Metric label="已实现 PnL" value={usdt(accRealized)} tone={accRealized >= 0 ? 'green' : 'red'} />
                   <Metric label="未实现 PnL" value={usdt(accUnrealized)} tone={accUnrealized >= 0 ? 'green' : 'red'} />
+                  <Metric label="已实现回撤" value={pct(acc.current_drawdown_pct ?? 0)} tone={(acc.current_drawdown_pct ?? 0) >= 0.15 ? 'red' : 'neutral'} sub={`历史最大 ${pct(acc.max_drawdown_pct ?? 0)}`} />
                   <Metric label="持仓中" value={acc.open_positions} tone="red" />
                   <Metric label="已平仓" value={acc.closed_positions} tone="neutral" />
                   <Metric label="胜率" value={pct(acc.win_rate ?? 0)} tone="green" sub={`均值 ${pct(acc.avg_pnl_pct ?? 0)}`} />

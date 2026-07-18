@@ -81,7 +81,10 @@ def print_discovery_sections(selected, pumps) -> None:
 def cmd_monitor(args) -> int:
     settings = load_settings(args.config or args.settings)
     active_strategy = str((settings.get("runtime") or {}).get("active_strategy", "waterfall_quant")).lower()
-    if active_strategy in {"waterfall", "waterfall_quant", "waterfall_core", "waterfall_high_pf"}:
+    if active_strategy in {
+        "waterfall", "waterfall_quant", "waterfall_core", "waterfall_high_pf",
+        "claude_board_wf_1m", "claude_champion",
+    }:
         asyncio.run(
             waterfall_monitor(
                 settings,

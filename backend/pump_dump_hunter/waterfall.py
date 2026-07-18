@@ -135,6 +135,7 @@ class WaterfallSignal:
     leverage: float = 1.0
     account_equity_usdt: float = 0.0
     evidence: list[str] = field(default_factory=list)
+    account_updates: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -142,6 +143,7 @@ class WaterfallSignal:
 
 def waterfall_settings(settings: dict[str, Any]) -> dict[str, Any]:
     cfg = dict(settings.get("waterfall_quant") or {})
+    cfg.setdefault("enabled", True)
     cfg.setdefault("variant", "core5_agg")
     cfg.setdefault("broad_top", 450)
     cfg.setdefault("min_24h_quote_volume", settings.get("universe", {}).get("min_24h_quote_volume", 1_000_000))
@@ -868,6 +870,27 @@ class WaterfallEngine:
         )
 
 
+def build_waterfall_engines(settings: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], Any, list[Any]]:
+    """Create exactly the engines allowed by the selected runtime."""
+    from .board_waterfall import BoardWaterfallEngine, board_waterfall_settings
+
+    cfg = waterfall_settings(settings)
+    board_cfg = board_waterfall_settings(settings)
+    validate_waterfall_runtime(settings, cfg, board_cfg)
+    core_enabled = bool(cfg.get("enabled", True))
+    board_enabled = bool(board_cfg.get("enabled", True))
+    if not core_enabled and not board_enabled:
+        raise RuntimeError("at least one waterfall strategy must be enabled")
+    extra_engines: list[Any] = []
+    if core_enabled:
+        engine: Any = WaterfallEngine(settings)
+        if board_enabled:
+            extra_engines.append(BoardWaterfallEngine(settings, shared_candles=engine.candles))
+    else:
+        engine = BoardWaterfallEngine(settings)
+    return cfg, board_cfg, engine, extra_engines
+
+
 async def waterfall_monitor(
     settings: dict[str, Any],
     broad_top: int | None = None,
@@ -880,24 +903,25 @@ async def waterfall_monitor(
     client = BinanceRestClient(settings)
     sink = WaterfallSignalSink(dirs["alerts"], settings)
     executor = WaterfallExecutionAdapter(settings)
-    engine = WaterfallEngine(settings)
-    engine.load_positions(store.active_waterfall_positions(strategy=engine.strategy))
-    engine.load_recent_state(
-        store.waterfall_position_rows(limit=0, strategy=engine.strategy),
-        store.waterfall_signal_rows(limit=1000, strategy=engine.strategy),
-    )
-    extra_engines: list[Any] = []
-    from .board_waterfall import BoardWaterfallEngine, board_waterfall_settings
+    from .paper_accounts import ClaudePaperAccounts
 
-    if bool(board_waterfall_settings(settings).get("enabled", True)):
-        board_engine = BoardWaterfallEngine(settings, shared_candles=engine.candles)
-        board_engine.load_positions(store.active_waterfall_positions(strategy=board_engine.strategy))
-        board_engine.load_recent_state(
-            store.waterfall_position_rows(limit=0, strategy=board_engine.strategy),
-            store.waterfall_signal_rows(limit=1000, strategy=board_engine.strategy),
+    cfg, board_cfg, engine, extra_engines = build_waterfall_engines(settings)
+    core_enabled = bool(cfg.get("enabled", True))
+    board_enabled = bool(board_cfg.get("enabled", True))
+
+    all_engines = [engine, *extra_engines]
+    for eng in all_engines:
+        eng.load_positions(store.active_waterfall_positions(strategy=eng.strategy))
+        eng.load_recent_state(
+            store.waterfall_position_rows(limit=0, strategy=eng.strategy),
+            store.waterfall_signal_rows(limit=1000, strategy=eng.strategy),
         )
-        extra_engines.append(board_engine)
-    cfg = waterfall_settings(settings)
+
+    paper_accounts: ClaudePaperAccounts | None = None
+    if board_enabled:
+        paper_accounts = ClaudePaperAccounts(store, settings)
+        board_strategy = extra_engines[0].strategy if core_enabled else engine.strategy
+        paper_accounts.rebuild(store.waterfall_position_rows(limit=0, strategy=board_strategy))
     top = int(broad_top or cfg["broad_top"])
     interval = str(cfg["watch_interval"])
     if interval != "1m":
@@ -955,6 +979,8 @@ async def waterfall_monitor(
                     print(f"[{local_stamp()}] WARNING waterfall rss {rss:.0f}MB over soft limit; systemd MemoryMax will restart cleanly if it climbs further", flush=True)
             if isinstance(event, dict):
                 engine.on_micro(event)
+                for eng in extra_engines:
+                    eng.on_micro(event)
                 if bool(cfg.get("store_micro_events", False)):
                     store.save_waterfall_shadow_events([event])
                 if processed % int(settings.get("websocket", {}).get("heartbeat_events", 250)) == 0:
@@ -978,8 +1004,11 @@ async def waterfall_monitor(
                 # is best-effort and cannot raise out of this loop.
                 for pos in positions:
                     store.upsert_waterfall_position(pos.to_dict())
+                changed_by_id = {pos.position_id: pos.to_dict() for pos in positions}
                 for signal in signals:
                     executor.handle_signal(signal)
+                    if paper_accounts is not None:
+                        paper_accounts.apply_signal(signal, changed_by_id.get(signal.position_id))
                     try:
                         pushed, msg = sink.emit(signal)
                     except Exception as pexc:
@@ -994,6 +1023,72 @@ async def waterfall_monitor(
         await source.close()
         await agen.aclose()
         print(f"[{local_stamp()}] waterfall monitor stopped events={processed}", flush=True)
+
+
+def validate_waterfall_runtime(
+    settings: dict[str, Any],
+    cfg: dict[str, Any] | None = None,
+    board_cfg: dict[str, Any] | None = None,
+) -> None:
+    """Fail closed when production could accidentally run the retired engine."""
+    from .board_waterfall import STRATEGY_NAME, board_waterfall_settings
+    from .paper_accounts import paper_account_settings
+
+    runtime = str((settings.get("runtime") or {}).get("active_strategy") or "").lower()
+    active_aliases = {STRATEGY_NAME, "claude_champion"}
+    core = cfg or waterfall_settings(settings)
+    board = board_cfg or board_waterfall_settings(settings)
+    if runtime not in active_aliases:
+        return
+    errors: list[str] = []
+    if bool(core.get("enabled", True)):
+        errors.append("waterfall_quant.enabled must be false")
+    if not bool(board.get("enabled", True)):
+        errors.append("claude_board_waterfall.enabled must be true")
+    if str(core.get("watch_interval")) != "1m":
+        errors.append("watch_interval must be 1m")
+    if int(board.get("prewarm_limit") or 0) < 1441:
+        errors.append("prewarm_limit must be at least 1441")
+    if int(board.get("max_open_positions") or 0) <= 0:
+        errors.append("max_open_positions must be positive")
+    if str(core.get("execution_mode") or "paper").lower() != "paper":
+        errors.append("execution_mode must remain paper")
+    if bool(core.get("real_order_enabled", False)):
+        errors.append("real_order_enabled must remain false")
+    if core.get("micro_streams"):
+        errors.append("Claude-only monitor must not subscribe to unused core5 micro streams")
+    # This also validates timezone, unique account IDs, sizing and ladder order.
+    accounts, _ = paper_account_settings(settings)
+    required_ids = {"claude_fixed20", "claude_fixed10", "claude_drawdown10"}
+    actual_ids = {str(row["account_id"]) for row in accounts}
+    if actual_ids != required_ids:
+        errors.append(f"paper account IDs must be {sorted(required_ids)}")
+    else:
+        by_id = {str(row["account_id"]): row for row in accounts}
+        expected = {
+            "claude_fixed20": (0.20, 10.0, "fixed"),
+            "claude_fixed10": (0.10, 10.0, "fixed"),
+            "claude_drawdown10": (0.10, 10.0, "realized_drawdown_ladder"),
+        }
+        for account_id, (fraction, leverage, mode) in expected.items():
+            row = by_id[account_id]
+            if (
+                abs(float(row.get("base_margin_fraction") or 0.0) - fraction) > 1e-9
+                or abs(float(row.get("leverage") or 0.0) - leverage) > 1e-9
+                or str(row.get("sizing_mode")) != mode
+            ):
+                errors.append(f"unexpected sizing for {account_id}")
+        ladder = by_id["claude_drawdown10"].get("drawdown_ladder") or []
+        expected_ladder = [
+            {"below": 0.05, "factor": 1.0},
+            {"below": 0.10, "factor": 0.75},
+            {"below": 0.15, "factor": 0.50},
+            {"below": None, "factor": 0.25},
+        ]
+        if ladder != expected_ladder:
+            errors.append("unexpected drawdown ladder")
+    if errors:
+        raise RuntimeError("invalid Claude production configuration: " + "; ".join(errors))
 
 
 async def waterfall_shadow_collect(
@@ -1109,7 +1204,7 @@ def _throttle_rest(weight: int, per_sec: float) -> None:
 def refresh_waterfall_universe(
     client: BinanceRestClient,
     store: Store,
-    engine: WaterfallEngine,
+    engine: Any,
     settings: dict[str, Any],
     broad_top: int,
     max_workers: int,
@@ -1128,7 +1223,21 @@ def refresh_waterfall_universe(
         allow_rest_prewarm = False
         symbols = store.candle_symbols("1m")
         print(f"[{local_stamp()}] waterfall universe REST failed ({type(exc).__name__}); falling back to {len(symbols)} DB symbols", flush=True)
-    active = [str(r["symbol"]) for r in store.active_waterfall_positions()]
+    active_strategies = {engine.strategy, *(eng.strategy for eng in extra_engines or [])}
+    try:
+        active = [
+            str(row["symbol"])
+            for strategy in active_strategies
+            for row in store.active_waterfall_positions(strategy=strategy)
+        ]
+    except TypeError:
+        # Lightweight test/adapter stores written before strategy isolation may
+        # not accept the filter argument.
+        active = [
+            str(row["symbol"])
+            for row in store.active_waterfall_positions()
+            if not row.get("strategy") or str(row.get("strategy")) in active_strategies
+        ]
     symbols = sorted(set(symbols) | set(active))
     print(f"[{local_stamp()}] waterfall universe symbols={len(symbols)} broad_top={broad_top}", flush=True)
     prewarm_waterfall_symbols(
@@ -1147,7 +1256,7 @@ def refresh_waterfall_universe(
 def prewarm_waterfall_symbols(
     client: BinanceRestClient,
     store: Store,
-    engine: WaterfallEngine,
+    engine: Any,
     symbols: list[str],
     limit: int,
     max_workers: int,
@@ -1296,8 +1405,7 @@ def render_waterfall_console(signal: WaterfallSignal) -> str:
 
 
 def render_waterfall_markdown(signal: WaterfallSignal) -> str:
-    return "\n".join(
-        [
+    lines = [
             f"### WATERFALL {signal.action} {signal.symbol} {iso_from_ms(signal.decision_time)}",
             f"- price: {signal.price:.12g}",
             f"- stop: {signal.stop_price:.12g}",
@@ -1311,8 +1419,14 @@ def render_waterfall_markdown(signal: WaterfallSignal) -> str:
             f"- leverage: {signal.leverage:.2f}x",
             f"- account_equity_usdt: {signal.account_equity_usdt:.4f}",
             f"- evidence: {'; '.join(signal.evidence)}",
-        ]
-    )
+    ]
+    for account in signal.account_updates:
+        lines.append(
+            f"- {account['label']}: equity={account['equity_usdt']:.4f}, "
+            f"margin={account['margin_usdt']:.4f}, pnl={account['pnl_usdt']:.4f}, "
+            f"drawdown={account['current_drawdown_pct'] * 100:.2f}%"
+        )
+    return "\n".join(lines)
 
 
 STRATEGY_LABELS = {
@@ -1347,9 +1461,21 @@ def render_waterfall_wecom(signal: WaterfallSignal) -> str:
         f"> 类型 {signal.family} | 规则 {signal.rule}",
     ]
     if signal.action != "open_short":
-        lines.append(f"> 收益 {signal.pnl_pct * 100:.2f}% | 权益 {signal.account_equity_usdt:.2f}U")
-    else:
-        lines.append(f"> 保证金 {signal.margin_usdt:.2f}U | 名义 {signal.notional_usdt:.2f}U | {signal.leverage:.1f}x")
+        lines.append(f"> 标的收益 {signal.pnl_pct * 100:.2f}%")
+    for account in signal.account_updates:
+        if signal.action == "open_short":
+            lines.append(
+                f"> {account['label']}：权益 {account['equity_usdt']:.2f}U | "
+                f"保证金 {account['margin_usdt']:.2f}U ({account['sizing_fraction'] * 100:.1f}%)"
+            )
+        else:
+            sign = "+" if account["pnl_usdt"] >= 0 else ""
+            lines.append(
+                f"> {account['label']}：权益 {account['equity_usdt']:.2f}U | "
+                f"本笔 {sign}{account['pnl_usdt']:.2f}U | 回撤 {account['current_drawdown_pct'] * 100:.1f}%"
+            )
+    if not signal.account_updates:
+        lines.append(f"> 权益 {signal.account_equity_usdt:.2f}U")
     return "\n".join(lines)
 
 

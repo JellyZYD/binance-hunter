@@ -1,14 +1,15 @@
-# Waterfall Quant Production Mode
+# Waterfall Quant (Retired Core5 Research)
 
-This server mode runs the latest waterfall short strategies. The old
-lifecycle/long-short monitor is not the default runtime anymore.
+Production no longer instantiates this strategy. `waterfall_quant.enabled` is
+false and `runtime.active_strategy` is `claude_board_wf_1m`. This document is
+retained to audit the former Core5 experiments.
 
-> **Two engines run in parallel** on the same 1m stream, each with its own
+> **Historical design:** two engines ran in parallel on the same 1m stream, each with its own
 > independent 100U paper account (see `board_waterfall.md` for the Claude
 > engine). This doc covers the **Codex core5_agg** engine. Both are labeled
 > per strategy in pushes and on `/waterfall`.
 
-## Active Runtime
+## Historical Runtime (Do Not Deploy)
 
 `backend/config/settings.json`
 
