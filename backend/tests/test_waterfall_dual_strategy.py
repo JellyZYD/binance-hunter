@@ -7,6 +7,7 @@ from unittest.mock import patch
 from pump_dump_hunter.board_waterfall import BoardWaterfallEngine, STRATEGY_NAME
 from pump_dump_hunter.data.store import Store
 from pump_dump_hunter.models import Candle, KlineClosed
+from pump_dump_hunter.timeutils import closed_candle_cutoff_ms, utc_ms
 from pump_dump_hunter.waterfall import WaterfallEngine, WaterfallPosition, prewarm_waterfall_symbols, refresh_waterfall_universe
 from pump_dump_hunter.web import combine_waterfall_accounts
 
@@ -186,6 +187,47 @@ class WaterfallRuntimeRegressionTests(unittest.TestCase):
         client = FakeClient()
         prewarm_waterfall_symbols(client, FakeStore(), engine, ["ALTUSDT"], 1500, 1, allow_rest=False)
         self.assertEqual(client.calls, 0)
+
+    def test_db_only_prewarm_does_not_rewrite_cached_candles(self) -> None:
+        engine = WaterfallEngine(self.settings)
+        cached = self._candle("ALTUSDT", 1_700_000_000_000, 1.0, 1.0, 1000.0)
+
+        class FakeStore:
+            saved: list[list[Candle]] = []
+
+            def load_candles(self, *_args, **_kwargs):
+                return [cached]
+
+            def save_candles(self, rows):
+                self.saved.append(list(rows))
+
+            def upsert_waterfall_watch(self, _rows):
+                return None
+
+        store = FakeStore()
+        prewarm_waterfall_symbols(object(), store, engine, ["ALTUSDT"], 1500, 1, allow_rest=False)
+        self.assertEqual(store.saved, [[]])
+
+    def test_periodic_refresh_skips_resident_symbols_and_prunes_removed(self) -> None:
+        engine = WaterfallEngine(self.settings)
+        cutoff = closed_candle_cutoff_ms(utc_ms(), "1m")
+        engine._append(self._candle("KEEPUSDT", cutoff - 59_999, 1.0, 1.0, 1000.0))
+        engine._append(self._candle("REMOVEUSDT", cutoff - 59_999, 1.0, 1.0, 1000.0))
+
+        class FakeStore:
+            def active_waterfall_positions(self, strategy=""):
+                return []
+
+        with patch(
+            "pump_dump_hunter.waterfall.build_broad_universe",
+            return_value=[{"symbol": "KEEPUSDT"}],
+        ), patch("pump_dump_hunter.waterfall.prewarm_waterfall_symbols") as prewarm:
+            symbols = refresh_waterfall_universe(object(), FakeStore(), engine, self.settings, 450, 1)
+
+        self.assertEqual(symbols, ["KEEPUSDT"])
+        self.assertFalse(prewarm.called)
+        self.assertIn("KEEPUSDT", engine.candles)
+        self.assertNotIn("REMOVEUSDT", engine.candles)
 
     def test_rest_universe_failure_uses_db_only_prewarm(self) -> None:
         engine = WaterfallEngine(self.settings)

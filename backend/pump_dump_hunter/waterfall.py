@@ -943,6 +943,10 @@ async def waterfall_monitor(
     source = WebSocketMarketSource(settings, symbols, ["1m"], micro_streams=micro_streams)
     agen = source.market_events()
     next_discovery = utc_ms() + every * 1000
+    last_candle_close_ms = max(
+        (dq[-1].close_time for dq in engine.candles.values() if dq),
+        default=0,
+    )
     print(f"waterfall strategy={engine.strategy} symbols={len(symbols)}", flush=True)
     try:
         while samples <= 0 or processed < samples:
@@ -974,6 +978,7 @@ async def waterfall_monitor(
                 write_monitor_health(Path(dirs["db"]).parent, {
                     "events": processed, "open_positions": open_n,
                     "universe": len(symbols), "watch_symbols": len(engine.candles),
+                    "last_candle_close_ms": last_candle_close_ms,
                 })
                 if rss > float(cfg.get("rss_soft_limit_mb", 1100)):
                     print(f"[{local_stamp()}] WARNING waterfall rss {rss:.0f}MB over soft limit; systemd MemoryMax will restart cleanly if it climbs further", flush=True)
@@ -990,6 +995,7 @@ async def waterfall_monitor(
             # monitor — log and move on. Position + signal writes stay atomic per
             # symbol so a failure can't leave a half-open paper trade.
             try:
+                last_candle_close_ms = max(last_candle_close_ms, event.candle.close_time)
                 store.save_candles([event.candle])
                 watch, positions, signals = engine.on_kline(event)
                 for eng in extra_engines:
@@ -1239,17 +1245,48 @@ def refresh_waterfall_universe(
             if not row.get("strategy") or str(row.get("strategy")) in active_strategies
         ]
     symbols = sorted(set(symbols) | set(active))
-    print(f"[{local_stamp()}] waterfall universe symbols={len(symbols)} broad_top={broad_top}", flush=True)
-    prewarm_waterfall_symbols(
-        client,
-        store,
-        engine,
-        symbols,
-        int(engine.cfg["prewarm_limit"]),
-        max_workers,
-        extra_engines=extra_engines,
-        allow_rest=allow_rest_prewarm,
+    keep = set(symbols)
+    engines = [engine, *(extra_engines or [])]
+    seen_candle_stores: set[int] = set()
+    pruned = 0
+    for eng in engines:
+        candle_store = eng.candles
+        identity = id(candle_store)
+        if identity not in seen_candle_stores:
+            seen_candle_stores.add(identity)
+            for symbol in list(candle_store):
+                if symbol not in keep:
+                    candle_store.pop(symbol, None)
+                    pruned += 1
+        today = local_day_from_ms(utc_ms())
+        if hasattr(eng, "trade_count_day"):
+            eng.trade_count_day = {
+                key: value for key, value in eng.trade_count_day.items()
+                if len(key) > 1 and key[1] == today
+            }
+
+    cutoff = closed_candle_cutoff_ms(utc_ms(), "1m")
+    prewarm_symbols = [
+        symbol for symbol in symbols
+        if not engine.candles.get(symbol)
+        or engine.candles[symbol][-1].close_time < cutoff
+    ]
+    print(
+        f"[{local_stamp()}] waterfall universe symbols={len(symbols)} broad_top={broad_top} "
+        f"prewarm={len(prewarm_symbols)} pruned={pruned}",
+        flush=True,
     )
+    if prewarm_symbols:
+        prewarm_waterfall_symbols(
+            client,
+            store,
+            engine,
+            prewarm_symbols,
+            int(engine.cfg["prewarm_limit"]),
+            max_workers,
+            extra_engines=extra_engines,
+            allow_rest=allow_rest_prewarm,
+        )
     return symbols
 
 
@@ -1271,7 +1308,7 @@ def prewarm_waterfall_symbols(
     with _rest_lock:
         _rest_next[0] = time.monotonic()  # start each prewarm burst with a fresh budget
 
-    def fetch(symbol: str) -> tuple[str, list[Candle]]:
+    def fetch(symbol: str) -> tuple[str, list[Candle], list[Candle]]:
         # DB-first + weight-throttled: reuse candles persisted by the previous
         # run, and fetch ONLY the gap since shutdown (or the full window for a
         # thin/new symbol) from REST — but rate-limited so the aggregate weight
@@ -1285,10 +1322,10 @@ def prewarm_waterfall_symbols(
         ]
         last_close = cached[-1].close_time if cached else 0
         gap_min = int((cutoff - last_close) / 60_000) if last_close else limit
-        if len(cached) >= limit - 5 and gap_min <= 1:
-            return symbol, cached  # full & current → nothing to fetch
+        if len(cached) >= limit - 5 and gap_min <= 0:
+            return symbol, cached, []  # full & current -> nothing to persist
         if not allow_rest:
-            return symbol, cached  # REST is banned/unavailable: websocket + DB only
+            return symbol, cached, []  # REST is banned/unavailable: websocket + DB only
         if len(cached) < limit - 5:
             fetch_limit = limit  # thin history → backfill the whole window
         else:
@@ -1296,16 +1333,16 @@ def prewarm_waterfall_symbols(
         _throttle_rest(_klines_weight(fetch_limit), per_sec)
         fresh = [c for c in client.klines(symbol, "1m", limit=fetch_limit) if c.close_time <= cutoff]
         merged = {c.open_time: c for c in [*cached, *fresh]}
-        return symbol, [merged[k] for k in sorted(merged)][-limit:]
+        return symbol, [merged[k] for k in sorted(merged)][-limit:], fresh
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futs = {pool.submit(fetch, s): s for s in symbols}
         for fut in as_completed(futs):
-            symbol = futs[fut]
+            symbol = futs.pop(fut)
             try:
-                _sym, candles = fut.result()
+                _sym, candles, fresh = fut.result()
                 total += len(candles)
-                store.save_candles(candles)
+                store.save_candles(fresh)
                 # prime_candles emits a watch row per candle (~1260 for a 1500
                 # window); we only need the symbol's FINAL state. Keeping the last
                 # row per symbol turns a ~460k-row upsert (which spiked RAM to

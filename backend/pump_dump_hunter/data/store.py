@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,9 @@ class Store:
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._candle_stat_lock = threading.Lock()
+        self._candle_stat_cached_at = 0.0
+        self._candle_stat_cache: dict[str, Any] | None = None
         self.init_db()
 
     def connect(self) -> sqlite3.Connection:
@@ -50,6 +55,9 @@ class Store:
                     taker_buy_quote REAL NOT NULL,
                     PRIMARY KEY(symbol, interval, open_time)
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_candles_interval_close
+                    ON candles(interval, close_time);
 
                 CREATE TABLE IF NOT EXISTS liquidity_snapshots(
                     run_id TEXT NOT NULL,
@@ -1025,21 +1033,37 @@ class Store:
         finally:
             conn.close()
 
-    def candle_stat_1m(self) -> dict[str, Any]:
-        conn = self.connect()
-        try:
-            row = conn.execute(
-                "SELECT COUNT(*) AS n, MIN(close_time) AS lo, MAX(close_time) AS hi FROM candles WHERE interval='1m'"
-            ).fetchone()
-            lo = int(row["lo"]) if row and row["lo"] else 0
-            hi = int(row["hi"]) if row and row["hi"] else 0
-            return {
-                "count": int(row["n"]) if row and row["n"] else 0,
-                "last_close_ms": hi,
-                "span_days": round((hi - lo) / 86_400_000, 1) if (lo and hi) else 0.0,
-            }
-        finally:
-            conn.close()
+    def candle_stat_1m(self, cache_seconds: float = 300.0) -> dict[str, Any]:
+        """Return dashboard-only candle totals without rescanning on every poll.
+
+        The dashboard requests /api/system every few seconds. Serializing those
+        identical full-table aggregates through SQLite used to leave dozens of
+        blocked HTTP threads behind while the monitor was writing its prewarm
+        batch. One process-wide Store instance serves the API, so a small shared
+        cache is sufficient and candle freshness is overlaid from monitor health.
+        """
+        now = time.monotonic()
+        with self._candle_stat_lock:
+            if self._candle_stat_cache is not None and now - self._candle_stat_cached_at < cache_seconds:
+                return dict(self._candle_stat_cache)
+            conn = self.connect()
+            try:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n, MIN(close_time) AS lo, MAX(close_time) AS hi "
+                    "FROM candles WHERE interval='1m'"
+                ).fetchone()
+                lo = int(row["lo"]) if row and row["lo"] else 0
+                hi = int(row["hi"]) if row and row["hi"] else 0
+                result = {
+                    "count": int(row["n"]) if row and row["n"] else 0,
+                    "last_close_ms": hi,
+                    "span_days": round((hi - lo) / 86_400_000, 1) if (lo and hi) else 0.0,
+                }
+            finally:
+                conn.close()
+            self._candle_stat_cache = result
+            self._candle_stat_cached_at = now
+            return dict(result)
 
     def waterfall_strategies(self) -> list[str]:
         conn = self.connect()

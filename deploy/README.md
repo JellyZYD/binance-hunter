@@ -71,6 +71,8 @@ curl -s https://pixia.cc/api/hunter/waterfall/summary | python3 -m json.tool | g
 
 **监控进程健康自报**：监控进程每 ~30s 把 RSS/事件数/持仓/币数写 `storage/monitor_health.json`，`/api/system` 读出，`/waterfall` 页"监控进程"卡显示监控 RSS + 存活。`waterfall_quant.rss_soft_limit_mb`（默认 1100）超限日志告警。
 
+**内存保持有界**：启动时会为当前币池加载策略所需的 24h 1m 历史；此后每 15 分钟刷新只预热新增或断档币，并释放已离池且无持仓币种的 K 线，不再重放全市场历史。`/api/system` 的全库 K 线统计缓存 5 分钟，K 线新鲜度直接使用监控心跳。2 核 2G 服务器预热并发固定为 `--max-workers 3`。
+
 ## 前端部署：Vercel（推荐，2G 机器免构建）
 
 2G 机器构建 Next.js 易 OOM。前端已可完全托管在 Vercel，服务器只跑后端：
