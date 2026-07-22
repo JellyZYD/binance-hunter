@@ -150,6 +150,42 @@ class WaterfallRuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(changed[0].status, "closed")
         self.assertNotIn("BOARDUSDT", engine.positions)
 
+    def test_board_24h_return_uses_timestamp_not_row_offset(self) -> None:
+        engine = BoardWaterfallEngine(self.settings)
+        start = 1_700_000_000_000
+        rows = []
+        for i in range(-1, 1441):
+            if i == 100:
+                continue
+            close = 80.0 if i == -1 else (140.0 if i == 1440 else 100.0)
+            rows.append(self._candle("GAPUSDT", start + i * 60_000, close, close, 10_000.0))
+        engine.prime_candles(rows)
+
+        watch = engine.watch_row("GAPUSDT")
+        self.assertIsNotNone(watch)
+        self.assertAlmostEqual(watch["ret_24h"], 0.40)
+
+    def test_board_entry_fails_closed_until_24h_gap_is_repaired(self) -> None:
+        engine = BoardWaterfallEngine(self.settings)
+        start = 1_700_000_000_000
+        history = [
+            self._candle("GAPUSDT", start + i * 60_000, 100.0, 100.0, 10_000.0)
+            for i in range(-1, 1440)
+            if i != 100
+        ]
+        engine.prime_candles(history)
+        trigger = self._candle(
+            "GAPUSDT", start + 1440 * 60_000, 160.0, 148.0, 20_000.0,
+            high=160.0, low=147.0,
+        )
+        _, _, signals = engine.on_kline(KlineClosed("GAPUSDT", "1m", trigger))
+        self.assertEqual(signals, [])
+
+        engine.prime_candles([
+            self._candle("GAPUSDT", start + 100 * 60_000, 100.0, 100.0, 10_000.0),
+        ])
+        self.assertIn(start + 100 * 60_000, {c.open_time for c in engine.candles["GAPUSDT"]})
+
     def test_db_only_prewarm_never_calls_rest(self) -> None:
         engine = WaterfallEngine(self.settings)
         now = 1_700_000_000_000

@@ -1275,10 +1275,19 @@ def refresh_waterfall_universe(
             }
 
     cutoff = closed_candle_cutoff_ms(utc_ms(), "1m")
+    def needs_prewarm(symbol: str) -> bool:
+        dq = engine.candles.get(symbol)
+        if not dq or dq[-1].close_time < cutoff:
+            return True
+        values = list(dq)
+        return any(
+            b.open_time - a.open_time != MINUTE_MS
+            for a, b in zip(values, values[1:])
+        )
+
     prewarm_symbols = [
         symbol for symbol in symbols
-        if not engine.candles.get(symbol)
-        or engine.candles[symbol][-1].close_time < cutoff
+        if needs_prewarm(symbol)
     ]
     print(
         f"[{local_stamp()}] waterfall universe symbols={len(symbols)} broad_top={broad_top} "
@@ -1331,11 +1340,15 @@ def prewarm_waterfall_symbols(
         ]
         last_close = cached[-1].close_time if cached else 0
         gap_min = int((cutoff - last_close) / 60_000) if last_close else limit
-        if len(cached) >= limit - 5 and gap_min <= 0:
+        has_internal_gap = any(
+            b.open_time - a.open_time != MINUTE_MS
+            for a, b in zip(cached, cached[1:])
+        )
+        if len(cached) >= limit - 5 and gap_min <= 0 and not has_internal_gap:
             return symbol, cached, []  # full & current -> nothing to persist
         if not allow_rest:
             return symbol, cached, []  # REST is banned/unavailable: websocket + DB only
-        if len(cached) < limit - 5:
+        if len(cached) < limit - 5 or has_internal_gap:
             fetch_limit = limit  # thin history → backfill the whole window
         else:
             fetch_limit = max(2, min(limit, gap_min + 2))  # fill the downtime gap
