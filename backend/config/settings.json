@@ -294,5 +294,50 @@
         ]
       }
     ]
+  },
+  "live_trading": {
+    "enabled": false,
+    "mode": "dry_run",
+    "real_order_enabled": false,
+    "ledger_path": "storage/live_trading.db",
+    "strategy_state_path": "storage/live_strategy.db",
+    "account_api": "portfolio_margin",
+    "position_mode": "hedge",
+    "recv_window_ms": 10000,
+    "market_base_url": "https://fapi.binance.com",
+    "rest_base_url": "https://papi.binance.com",
+    "ws_stream_url": "wss://fstream.binance.com/pm",
+    "leverage": 10,
+    "isolated_margin": false,
+    "require_one_way": false,
+    "max_open_positions": 3,
+    "sizing_mode": "realized_drawdown_ladder",
+    "base_margin_fraction": 0.1,
+    "drawdown_ladder": [
+      {"below": 0.05, "factor": 1.0},
+      {"below": 0.1, "factor": 0.75},
+      {"below": 0.15, "factor": 0.5},
+      {"below": null, "factor": 0.25}
+    ],
+    "risk_per_trade": 0.0025,
+    "margin_fraction_cap": 0.1,
+    "max_notional_usdt": 20.0,
+    "liquidation_stop_buffer_pct": 0.05,
+    "max_entry_slippage_bps": 30.0,
+    "ioc_slippage_bps": 12.0,
+    "execution_policy": "market",
+    "maker_wait_ms": 250,
+    "maker_wait_candidates_ms": [150, 250, 350, 500],
+    "protection_timeout_ms": 1000,
+    "reconcile_interval_seconds": 30,
+    "private_stream_stale_seconds": 10,
+    "daily_loss_limit_pct": 0.02,
+    "broad_top": 400,
+    "max_workers": 3,
+    "discover_every": "15m",
+    "allowed_symbols": [],
+    "dashboard_enabled": false,
+    "notify_wecom": true,
+    "notify_dry_run": false
   }
 }

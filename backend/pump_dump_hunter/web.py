@@ -107,6 +107,8 @@ class DashboardHandler(BaseHTTPRequestHandler):
                 })
             elif parsed.path == "/api/waterfall/replay-results":
                 self.write_json(read_waterfall_replay_results(limit=int_param(query, "limit", 20)))
+            elif parsed.path == "/api/live/summary":
+                self.write_json(self.api_live_summary(limit=int_param(query, "limit", 30)))
             elif parsed.path == "/api/system":
                 self.write_json(self.api_system())
             elif parsed.path == "/api/candles":
@@ -120,8 +122,11 @@ class DashboardHandler(BaseHTTPRequestHandler):
             else:
                 self.send_error(HTTPStatus.NOT_FOUND, "not found")
         except Exception as exc:
-            self.send_response(HTTPStatus.INTERNAL_SERVER_ERROR)
-            self.write_json({"error": f"{type(exc).__name__}: {exc}"})
+            print(f"dashboard request failed: {type(exc).__name__}: {exc}", flush=True)
+            self.write_json(
+                {"error": "internal server error"},
+                status=HTTPStatus.INTERNAL_SERVER_ERROR,
+            )
 
     def api_summary(self) -> dict[str, Any]:
         data = self.store.dashboard_summary(utc_ms())
@@ -212,9 +217,32 @@ class DashboardHandler(BaseHTTPRequestHandler):
         }
         return out
 
-    def write_json(self, payload: dict[str, Any]) -> None:
+    def api_live_summary(self, limit: int = 30) -> dict[str, Any]:
+        from .live_trading.config import LiveTradingConfig
+        from .live_trading.ledger import LiveLedger
+
+        config = LiveTradingConfig.from_settings(self.settings)
+        base = {
+            "available": config.dashboard_enabled and config.ledger_path.exists(),
+            "dashboard_enabled": config.dashboard_enabled,
+            "mode": config.mode,
+            "enabled": config.enabled,
+            "real_order_enabled": config.real_order_enabled,
+            "leverage": config.leverage,
+            "max_open_positions": config.max_open_positions,
+            "max_notional_usdt": config.max_notional_usdt,
+            "risk_per_trade": config.risk_per_trade,
+            "sizing_mode": config.sizing_mode,
+            "base_margin_fraction": config.base_margin_fraction,
+            "execution_policy": config.execution_policy,
+        }
+        if not base["available"]:
+            return {**base, "account": None, "positions": [], "orders": [], "fills": [], "events": []}
+        return {**base, **LiveLedger(config.ledger_path).dashboard_snapshot(limit=limit)}
+
+    def write_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
         data = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")
-        self.send_response(HTTPStatus.OK)
+        self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Cache-Control", "no-store")
         self.send_header("Access-Control-Allow-Origin", "*")

@@ -7,6 +7,7 @@ from unittest.mock import patch
 from pump_dump_hunter.board_waterfall import BoardWaterfallEngine, STRATEGY_NAME
 from pump_dump_hunter.data.store import Store
 from pump_dump_hunter.models import Candle, KlineClosed
+from pump_dump_hunter.timeutils import closed_candle_cutoff_ms, utc_ms
 from pump_dump_hunter.waterfall import WaterfallEngine, WaterfallPosition, prewarm_waterfall_symbols, refresh_waterfall_universe
 from pump_dump_hunter.web import combine_waterfall_accounts
 
@@ -149,6 +150,36 @@ class WaterfallRuntimeRegressionTests(unittest.TestCase):
         self.assertEqual(changed[0].status, "closed")
         self.assertNotIn("BOARDUSDT", engine.positions)
 
+    def test_board_24h_return_uses_timestamp_not_row_offset(self) -> None:
+        engine = BoardWaterfallEngine(self.settings)
+        start = 1_700_000_000_000
+        rows = []
+        for i in range(-1, 1441):
+            if i == 100:
+                continue
+            close = 80.0 if i == -1 else (140.0 if i == 1440 else 100.0)
+            rows.append(self._candle("GAPUSDT", start + i * 60_000, close, close, 10_000.0))
+        engine.prime_candles(rows)
+        self.assertAlmostEqual(engine.watch_row("GAPUSDT")["ret_24h"], 0.40)
+
+    def test_board_entry_fails_closed_until_24h_gap_is_repaired(self) -> None:
+        engine = BoardWaterfallEngine(self.settings)
+        start = 1_700_000_000_000
+        engine.prime_candles([
+            self._candle("GAPUSDT", start + i * 60_000, 100.0, 100.0, 10_000.0)
+            for i in range(-1, 1440) if i != 100
+        ])
+        trigger = self._candle(
+            "GAPUSDT", start + 1440 * 60_000, 160.0, 148.0, 20_000.0,
+            high=160.0, low=147.0,
+        )
+        _, _, signals = engine.on_kline(KlineClosed("GAPUSDT", "1m", trigger))
+        self.assertEqual(signals, [])
+        engine.prime_candles([
+            self._candle("GAPUSDT", start + 100 * 60_000, 100.0, 100.0, 10_000.0),
+        ])
+        self.assertIn(start + 100 * 60_000, {c.open_time for c in engine.candles["GAPUSDT"]})
+
     def test_db_only_prewarm_never_calls_rest(self) -> None:
         engine = WaterfallEngine(self.settings)
         now = 1_700_000_000_000
@@ -167,11 +198,13 @@ class WaterfallRuntimeRegressionTests(unittest.TestCase):
         )
 
         class FakeStore:
+            save_calls = 0
+
             def load_candles(self, *_args, **_kwargs):
                 return [cached]
 
             def save_candles(self, _rows):
-                return None
+                self.save_calls += 1
 
             def upsert_waterfall_watch(self, _rows):
                 return None
@@ -184,8 +217,75 @@ class WaterfallRuntimeRegressionTests(unittest.TestCase):
                 raise AssertionError("REST must not be called in DB-only mode")
 
         client = FakeClient()
-        prewarm_waterfall_symbols(client, FakeStore(), engine, ["ALTUSDT"], 1500, 1, allow_rest=False)
+        store = FakeStore()
+        prewarm_waterfall_symbols(client, store, engine, ["ALTUSDT"], 1500, 1, allow_rest=False)
         self.assertEqual(client.calls, 0)
+        self.assertEqual(store.save_calls, 0)
+
+    def test_current_thin_new_listing_cache_does_not_refetch_full_history(self) -> None:
+        engine = WaterfallEngine(self.settings)
+        now = closed_candle_cutoff_ms(utc_ms(), "1m") - 59_999
+        cached = self._candle("NEWUSDT", now, 1.0, 1.01, 10_000.0)
+
+        class FakeStore:
+            save_calls = 0
+
+            def load_candles(self, *_args, **_kwargs):
+                return [cached]
+
+            def save_candles(self, _rows):
+                self.save_calls += 1
+
+            def upsert_waterfall_watch(self, _rows):
+                return None
+
+        class FakeClient:
+            calls = 0
+
+            def klines(self, *_args, **_kwargs):
+                self.calls += 1
+                raise AssertionError("a current newly-listed cache must not be refetched")
+
+        store = FakeStore()
+        client = FakeClient()
+        prewarm_waterfall_symbols(client, store, engine, ["NEWUSDT"], 1500, 1)
+        self.assertEqual(client.calls, 0)
+        self.assertEqual(store.save_calls, 0)
+
+    def test_stale_near_full_cache_fetches_only_missing_tail(self) -> None:
+        engine = WaterfallEngine(self.settings)
+        cutoff = closed_candle_cutoff_ms(utc_ms(), "1m")
+        target_open = cutoff - 59_999
+        cached = [
+            self._candle("TAILUSDT", target_open - (1499 - i) * 60_000, 1.0, 1.0, 10_000.0)
+            for i in range(1490)
+        ]
+
+        class FakeStore:
+            def load_candles(self, *_args, **_kwargs):
+                return cached
+
+            def save_candles(self, _rows):
+                return None
+
+            def upsert_waterfall_watch(self, _rows):
+                return None
+
+        class FakeClient:
+            limits: list[int] = []
+
+            def klines(self, symbol, interval, limit):
+                self.limits.append(limit)
+                return [
+                    WaterfallRuntimeRegressionTests._candle(
+                        symbol, target_open - (limit - 1 - i) * 60_000, 1.0, 1.0, 10_000.0,
+                    )
+                    for i in range(limit)
+                ]
+
+        client = FakeClient()
+        prewarm_waterfall_symbols(client, FakeStore(), engine, ["TAILUSDT"], 1500, 1)
+        self.assertEqual(client.limits, [11])
 
     def test_rest_universe_failure_uses_db_only_prewarm(self) -> None:
         engine = WaterfallEngine(self.settings)

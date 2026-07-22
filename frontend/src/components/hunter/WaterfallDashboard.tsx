@@ -152,6 +152,72 @@ type ReplayResult = {
   updated_time?: number;
 };
 
+type LiveSummary = {
+  available: boolean;
+  mode: string;
+  enabled: boolean;
+  real_order_enabled: boolean;
+  leverage: number;
+  max_open_positions: number;
+  max_notional_usdt: number;
+  risk_per_trade: number;
+  sizing_mode: string;
+  base_margin_fraction: number;
+  execution_policy: string;
+  safe_halt_reason?: string;
+  sizing?: {
+    start_time: number;
+    initial_equity: string;
+    current_equity: string;
+    peak_equity: string;
+    drawdown_pct: string;
+    factor: string;
+  };
+  service?: {
+    heartbeat_time: number;
+    status: string;
+    pid: number;
+    processed_events: number;
+  };
+  account?: {
+    snapshot_time: number;
+    wallet_balance: string;
+    available_balance: string;
+    margin_balance: string;
+    unrealized_pnl: string;
+  } | null;
+  positions: Array<{
+    position_id: string;
+    symbol: string;
+    status: string;
+    quantity: string;
+    entry_price: string;
+    structure_stop_price: string;
+    trail_price: string;
+    liquidation_price: string;
+    protected: number;
+    updated_time: number;
+  }>;
+  orders: Array<{
+    client_order_id: string;
+    symbol: string;
+    side: string;
+    order_type: string;
+    execution_policy: string;
+    state: string;
+    filled_quantity: string;
+    average_price: string;
+    slippage_bps: string;
+    arrival_slippage_bps: string;
+    signal_to_submit_ms?: number | null;
+    submit_to_ack_ms?: number | null;
+    submit_to_first_fill_ms?: number | null;
+    signal_to_fill_ms?: number | null;
+    signal_to_final_fill_ms?: number | null;
+    updated_time: number;
+  }>;
+};
+
 async function api<T>(path: string): Promise<T> {
   const res = await fetch(path, { cache: 'no-store' });
   if (!res.ok) throw new Error(`${path} ${res.status}`);
@@ -252,12 +318,13 @@ export default function WaterfallDashboard() {
   const [signals, setSignals] = useState<SignalRow[]>([]);
   const [replays, setReplays] = useState<ReplayResult[]>([]);
   const [system, setSystem] = useState<SystemStat | null>(null);
+  const [live, setLive] = useState<LiveSummary | null>(null);
   const [updatedAt, setUpdatedAt] = useState<Date | null>(null);
   const [error, setError] = useState('');
 
   async function refresh() {
     try {
-      const [summaryRes, watchRes, openRes, closedRes, signalRes, replayRes, systemRes] = await Promise.all([
+      const [summaryRes, watchRes, openRes, closedRes, signalRes, replayRes, systemRes, liveRes] = await Promise.all([
         api<WaterfallSummary>('/api/hunter/waterfall/summary'),
         api<{ rows: WatchRow[] }>('/api/hunter/waterfall/watch?limit=450'),
         api<{ rows: PositionRow[] }>('/api/hunter/waterfall/positions?status=open&limit=100'),
@@ -265,6 +332,7 @@ export default function WaterfallDashboard() {
         api<{ rows: SignalRow[] }>('/api/hunter/waterfall/signals?limit=180'),
         api<{ rows: ReplayResult[] }>('/api/hunter/waterfall/replay-results?limit=12'),
         api<SystemStat>('/api/hunter/system').catch(() => null),
+        api<LiveSummary>('/api/hunter/live/summary?limit=30').catch(() => null),
       ]);
       setSummary(summaryRes);
       setWatch(watchRes.rows || []);
@@ -273,6 +341,7 @@ export default function WaterfallDashboard() {
       setSignals(signalRes.rows || []);
       setReplays(replayRes.rows || []);
       setSystem(systemRes);
+      setLive(liveRes);
       setUpdatedAt(new Date());
       setError('');
     } catch (err) {
@@ -322,6 +391,25 @@ export default function WaterfallDashboard() {
       </header>
 
       {error ? <div className="error-box">瀑布 API 不可用：{error}</div> : null}
+
+      {live?.available ? (
+        <section className={`live-execution-strip ${live.safe_halt_reason ? 'live-halted' : ''}`}>
+          <div>
+            <span className="live-kicker">真实执行隔离账户</span>
+            <strong>{live.mode === 'dry_run' ? '只读演练' : live.mode}</strong>
+            <em>{live.safe_halt_reason ? `SAFE HALT · ${live.safe_halt_reason}` : '状态正常'}</em>
+          </div>
+          <div className="live-facts">
+            <span>权益 {usdt(live.account?.margin_balance ?? 0)}</span>
+            <span>可用 {usdt(live.account?.available_balance ?? 0)}</span>
+            <span>持仓 {live.positions.filter((row) => row.status === 'open').length}/{live.max_open_positions}</span>
+            <span>{fmt(live.leverage, 0)}x · 单笔≤{usdt(live.max_notional_usdt)}</span>
+            <span>仓位 {pct(live.base_margin_fraction, 0)} × {fmt(live.sizing?.factor ?? 1, 2)}</span>
+            <span>实现回撤 {pct(live.sizing?.drawdown_pct ?? 0)}</span>
+            <span>{live.execution_policy} · {live.service?.status || '待启动'}</span>
+          </div>
+        </section>
+      ) : null}
 
       <section className="waterfall-config">
         <span>当前策略：{summary?.active_strategy || '-'}</span>
@@ -428,6 +516,31 @@ export default function WaterfallDashboard() {
               </Panel>
             );
           })}
+        </section>
+      ) : null}
+
+      {live?.available ? (
+        <section className="waterfall-grid">
+          <Panel title="真实执行仓位" count={live.positions.length}>
+            {live.positions.length ? <div className="wf-position-list">
+              {live.positions.map((p) => <article className="wf-position-card" key={p.position_id}>
+                <div className="wf-card-head"><strong>{p.symbol}</strong><span>{p.status} · {p.protected ? '已保护' : '未保护'}</span></div>
+                <div className="wf-card-main"><b>{fmt(p.entry_price, 8)}</b><span>止损 {fmt(p.structure_stop_price, 8)} / 追踪 {fmt(p.trail_price, 8)}</span></div>
+                <div className="wf-card-meta"><span>数量 {fmt(p.quantity, 8)}</span><span>强平 {fmt(p.liquidation_price, 8)}</span><span>{date(p.updated_time)}</span></div>
+              </article>)}
+            </div> : <div className="empty-state">暂无真实仓位</div>}
+          </Panel>
+          <Panel title="真实订单状态" count={live.orders.length}>
+            {live.orders.length ? <div className="wf-signal-list">
+              {live.orders.slice(0, 10).map((o) => <article className="wf-signal wf-neutral" key={o.client_order_id}>
+                <div><strong>{o.side} {o.symbol}</strong><span>{date(o.updated_time)}</span></div>
+                <p>{o.order_type} / {o.execution_policy} / {o.state}</p>
+                <p>成交 {fmt(o.filled_quantity, 8)} @ {fmt(o.average_price, 8)}</p>
+                <p>信号→首成 {o.signal_to_fill_ms == null ? '--' : `${o.signal_to_fill_ms}ms`} / 完全成交 {o.signal_to_final_fill_ms == null ? '--' : `${o.signal_to_final_fill_ms}ms`}</p>
+                <p>总滑点 {fmt(o.slippage_bps, 2)}bp / 到达滑点 {fmt(o.arrival_slippage_bps, 2)}bp</p>
+              </article>)}
+            </div> : <div className="empty-state">暂无真实订单</div>}
+          </Panel>
         </section>
       ) : null}
 

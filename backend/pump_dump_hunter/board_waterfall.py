@@ -170,12 +170,19 @@ class BoardWaterfallEngine:
     def prime_candles(self, candles: list[Candle]) -> list[dict[str, Any]]:
         if self._shared:
             return []  # codex engine already primed the shared dict
-        for candle in sorted(candles, key=lambda c: (c.symbol, c.open_time)):
-            self._append(candle)
-        if not candles:
-            return []
-        row = self.watch_row(candles[-1].symbol)
-        return [row] if row else []
+        changed: list[dict[str, Any]] = []
+        by_symbol: dict[str, list[Candle]] = {}
+        for candle in candles:
+            by_symbol.setdefault(candle.symbol, []).append(candle)
+        for symbol, incoming in by_symbol.items():
+            merged = {c.open_time: c for c in self.candles.get(symbol, ())}
+            merged.update({c.open_time: c for c in incoming})
+            ordered = [merged[key] for key in sorted(merged)][-self.maxlen:]
+            self.candles[symbol] = deque(ordered, maxlen=self.maxlen)
+            row = self.watch_row(symbol)
+            if row:
+                changed.append(row)
+        return changed
 
     def on_kline(self, event: KlineClosed) -> tuple[list[dict[str, Any]], list[WaterfallPosition], list[WaterfallSignal]]:
         if event.interval != "1m":
@@ -216,13 +223,16 @@ class BoardWaterfallEngine:
         if len(values) < 31:
             return None
         last = values[-1]
+        by_open_time = {c.open_time: c for c in values}
 
         def ret(minutes: int) -> float:
-            if len(values) <= minutes or values[-minutes - 1].close <= 0:
+            reference = by_open_time.get(last.open_time - minutes * 60_000)
+            if reference is None or reference.close <= 0:
                 return 0.0
-            return last.close / values[-minutes - 1].close - 1.0
+            return last.close / reference.close - 1.0
 
-        day = values[-min(len(values), 1441):]
+        day_start = last.open_time - 1440 * 60_000
+        day = [c for c in values if c.open_time >= day_start]
         high24 = max(x.high for x in day)
         low24 = min(x.low for x in day)
         qv30 = sum(x.quote_volume for x in values[-30:])
@@ -268,10 +278,29 @@ class BoardWaterfallEngine:
         close = candle.close
         if close <= 0:
             return None
-        ref = values[-1441].close
+        ref_time = candle.open_time - 1440 * 60_000
+        day_values = [item for item in values if item.open_time >= ref_time]
+        if (
+            len(day_values) != 1441
+            or day_values[0].open_time != ref_time
+            or any(b.open_time - a.open_time != 60_000 for a, b in zip(day_values, day_values[1:]))
+        ):
+            return None
+        ref_candle = next((item for item in values if item.open_time == ref_time), None)
+        if ref_candle is None:
+            return None
+        ref = ref_candle.close
         if ref <= 0 or close / ref - 1.0 < float(self.cfg["min_ret_24h"]):
             return None
-        window = values[-int(self.cfg["break_window_min"]):]
+        window_size = int(self.cfg["break_window_min"])
+        window_start = candle.open_time - (window_size - 1) * 60_000
+        window = [item for item in values if item.open_time >= window_start]
+        if (
+            len(window) != window_size
+            or window[0].open_time != window_start
+            or any(b.open_time - a.open_time != 60_000 for a, b in zip(window, window[1:]))
+        ):
+            return None
         hi = max(x.high for x in window)
         if close > hi * (1.0 - float(self.cfg["break_drop"])):
             return None
@@ -381,6 +410,37 @@ class BoardWaterfallEngine:
         if not vals:
             return False
         return (sum(vals) / len(vals)) >= float(self.cfg["exit_flow_sell_threshold"])
+
+    def live_protection_state(self, symbol: str) -> dict[str, Any] | None:
+        """Return protection for the next minute using only closed bars.
+
+        The paper engine checks the prior W bars while processing the current
+        candle. At the end of that candle, live execution must include it when
+        deciding whether a trailing stop should be armed for the next minute.
+        """
+        pos = self.positions.get(symbol)
+        if not pos:
+            return None
+        hold_through = False
+        if bool(self.cfg.get("exit_flow_gate_enabled", True)):
+            w = int(self.cfg["exit_flow_window"])
+            values = list(self.candles.get(symbol, []))[-w:]
+            if len(values) >= w:
+                ratios = [
+                    (1.0 - bar.taker_buy_quote / bar.quote_volume) if bar.quote_volume > 0 else 0.5
+                    for bar in values
+                ]
+                hold_through = (
+                    sum(ratios) / len(ratios)
+                    >= float(self.cfg["exit_flow_sell_threshold"])
+                )
+        return {
+            "position_id": pos.position_id,
+            "trail_price": pos.trail_price,
+            "arm_trail": pos.trail_price > 0 and not hold_through,
+            "flow_hold_through": hold_through,
+            "decision_time": pos.updated_time,
+        }
 
     def _cooldown_ok(self, symbol: str, now: int) -> bool:
         day = local_day_from_ms(now)

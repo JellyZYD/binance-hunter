@@ -1,8 +1,9 @@
 # Binance Hunter
 
-Binance USD-M perpetual waterfall monitor and paper-trading research system.
-The current production runtime detects high-quality short opportunities from
-closed 1m candles and aggTrade flow. It does not place real orders.
+Binance USD-M perpetual waterfall monitor, paper-trading research system and
+fail-closed live-execution workbench. The checked-in production runtime remains
+paper-only; the isolated live module is disabled by default and cannot place an
+order without explicit configuration, confirmation, notional cap and one-time nonce.
 
 ## Current production runtime
 
@@ -28,8 +29,39 @@ from 2026-07-13 07:37 CST: 20% fixed margin, 10% fixed margin, and 10% base
 margin with a realized-equity drawdown ladder. Signals and WeCom notifications
 are emitted once; each notification contains all three account changes.
 
-Real execution is disabled by both `execution_mode="paper"` and
-`real_order_enabled=false`.
+Real execution remains disabled by `live_trading.enabled=false` and
+`live_trading.real_order_enabled=false`. The current paper monitor is unchanged.
+
+The verified Binance account is a Portfolio Margin unified account in hedge
+mode. Private account/order calls use `https://papi.binance.com`; public USD-M
+market data still uses `https://fapi.binance.com`. On 2026-07-18, local
+mainnet micro tests passed for account reads, the PM user-data stream, MARKET
+open/close, IOC LIMIT, GTX post-only place/query/cancel, and STOP/TAKE_PROFIT
+Algo orders. The account was left with zero positions and zero open orders.
+Checked-in configuration is still fail-closed.
+
+Every real order is now audited from strategy decision through exchange fill.
+The isolated live ledger records decision-to-submit, submit-to-ACK,
+submit-to-first-fill and decision-to-final-fill latency, plus both total
+signal-price slippage and order-arrival slippage. Positive slippage is adverse;
+negative slippage is price improvement. These fields are exposed only when the
+disabled-by-default live dashboard is explicitly enabled.
+
+The local live-micro sizing path mirrors the `claude_drawdown10` paper ledger:
+10% base margin, 10x exchange leverage, and realized-equity drawdown factors
+`1.0/0.75/0.50/0.25` at 5%/10%/15% drawdown. Deposits, withdrawals and
+transfers do not change strategy equity or its drawdown tier. At most three live
+positions, an explicit notional cap and exchange depth remain hard operational
+limits.
+
+The live reconciliation path is self-healing for connectivity failures. Account,
+position, ordinary-order and Algo-order state form the authoritative critical
+snapshot; time sync and income history are optional catch-up tasks. Read-only
+REST calls reuse persistent HTTPS sessions and retry with exponential backoff
+and jitter. A complete later snapshot automatically clears only recovered
+connectivity halts. Position, protection, margin, daily-loss and unknown-order
+halts remain fail-closed and require authoritative resolution rather than a
+blind restart.
 
 ## Repository layout
 
@@ -42,12 +74,15 @@ Real execution is disabled by both `execution_mode="paper"` and
 | `docs/` | Production strategy, collector, frontend and historical research documentation |
 | `waterfall_strategy_review_pack/` | Offline review evidence and research artifacts; not imported by production |
 
+The live implementation is isolated under `backend/pump_dump_hunter/live_trading/`.
+See [`docs/champion/03-实盘交易系统实施方案.md`](docs/champion/03-实盘交易系统实施方案.md).
+
 ## Local startup
 
 Backend API:
 
 ```powershell
-cd E:\A\pixel-canvas\backend
+cd E:\A\pixel-canvas-v2\backend
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
@@ -57,14 +92,14 @@ python run.py web --host 127.0.0.1 --port 8787
 Monitor:
 
 ```powershell
-cd E:\A\pixel-canvas\backend
+cd E:\A\pixel-canvas-v2\backend
 python run.py monitor
 ```
 
 Frontend:
 
 ```powershell
-cd E:\A\pixel-canvas\frontend
+cd E:\A\pixel-canvas-v2\frontend
 npm install
 Copy-Item .env.example .env
 npm run dev
@@ -92,12 +127,17 @@ rates and PF after removing the largest winner.
 ## Verification
 
 ```powershell
-cd E:\A\pixel-canvas\backend
+cd E:\A\pixel-canvas-v2\backend
 python -m pytest tests -q
 
 cd ..\frontend
 npm run build
 ```
+
+Current local verification: 131 backend tests pass and the Next.js production
+build succeeds. This proves deterministic state-machine behavior under the
+covered fault injections; it does not replace the required 7-14 day / 30-trade
+mainnet micro validation before any larger capital is enabled.
 
 Production verification after deployment:
 

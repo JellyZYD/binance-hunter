@@ -34,6 +34,13 @@ Tick-early entry was **rejected**: 62% of intra-minute −7% breaks are wicks th
 close back above, and the wick tax eats the entry-price improvement. Entry
 waits for the 1m close.
 
+All time windows are timestamp-based, not row-count-based. The 24h return must
+reference the candle exactly 1,440 minutes earlier, and both the 1,441-candle
+24h window and the 60m break window must be contiguous. If any required closed
+1m candle is missing, entry fails closed while prewarm repairs the gap from
+REST. This keeps paper, replay and live execution deterministic even when one
+WebSocket minute was missed.
+
 ## Exit (E1 base + flow-gated hold-through)
 
 Base structure (E1, winner of an 8-variant battle):

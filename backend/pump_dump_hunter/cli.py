@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import copy
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -14,11 +16,148 @@ from .data.store import Store
 from .discovery import build_broad_universe, discover_recent_liquidity
 from .engine.signal_engine import SignalEngine
 from .live import emit_alerts, monitor
+from .live_trading.config import LiveTradingConfig
+from .live_trading.credentials import CredentialError
+from .live_trading.gateway import GatewayError
+from .live_trading.service import (
+    ClaudeLiveTradingService,
+    build_runtime,
+    consume_order_nonce,
+    issue_order_nonce,
+    live_preflight,
+)
+from .live_trading.smoke import smoke_limit_cancel, smoke_roundtrip
 from .models import KlineClosed, SignalParams
 from .notify.alerts import AlertSink, export_day
 from .timeutils import interval_to_ms, iso_now, parse_duration_seconds, utc_ms
 from .waterfall import WaterfallEngine, waterfall_monitor, waterfall_shadow_collect
 from .web import run_web
+
+
+def cmd_live_preflight(args) -> int:
+    settings = load_settings(args.config or args.settings)
+    try:
+        result = asyncio.run(
+            live_preflight(
+                settings,
+                mode_override=args.mode,
+                max_notional_override=args.max_notional_usdt,
+            )
+        )
+    except (CredentialError, GatewayError, RuntimeError, ValueError) as exc:
+        result = {
+            "ok": False,
+            "mode": args.mode,
+            "error_type": type(exc).__name__,
+            "error": str(exc),
+            "error_code": getattr(exc, "code", None),
+            "http_status": getattr(exc, "status", None),
+        }
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0 if result.get("ok") else 2
+
+
+def cmd_live_issue_nonce(args) -> int:
+    settings = load_settings(args.config or args.settings)
+    config = LiveTradingConfig.from_settings(
+        settings, mode_override=args.mode, max_notional_override=args.max_notional_usdt,
+    )
+    result = issue_order_nonce(config.ledger_path, ttl_seconds=args.ttl_seconds)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return 0
+
+
+def cmd_live_run(args) -> int:
+    settings = load_settings(args.config or args.settings)
+    mode = str(args.mode)
+    authorized = False
+    if mode not in {"paper", "dry_run"}:
+        authorization_nonce = (
+            str(args.authorization_nonce or "").strip()
+            or os.environ.pop("BINANCE_ORDER_AUTHORIZATION_NONCE", "").strip()
+        )
+        if not args.confirm_real_orders:
+            raise RuntimeError("real-order mode requires --confirm-real-orders")
+        if not authorization_nonce:
+            raise RuntimeError("real-order mode requires --authorization-nonce")
+        if args.max_notional_usdt is None:
+            raise RuntimeError("real-order mode requires explicit --max-notional-usdt")
+        config = LiveTradingConfig.from_settings(
+            settings, mode_override=mode, max_notional_override=args.max_notional_usdt,
+        )
+        if not config.sends_real_orders:
+            raise RuntimeError("live_trading.enabled and real_order_enabled must both be true")
+        if not consume_order_nonce(config.ledger_path, authorization_nonce):
+            raise RuntimeError("authorization nonce is invalid, expired, or already used")
+        authorized = True
+
+    async def runner() -> None:
+        runtime = await build_runtime(
+            settings,
+            mode_override=mode,
+            max_notional_override=args.max_notional_usdt,
+            orders_authorized=authorized,
+        )
+        service = ClaudeLiveTradingService(
+            settings, runtime, broad_top=args.broad_top, max_workers=args.max_workers,
+        )
+        try:
+            await service.run(samples=args.samples)
+        finally:
+            await runtime.close()
+
+    asyncio.run(runner())
+    return 0
+
+
+def _authorize_smoke(settings: dict[str, Any], args) -> LiveTradingConfig:
+    if not args.confirm_real_orders:
+        raise RuntimeError("smoke test requires --confirm-real-orders")
+    config = LiveTradingConfig.from_settings(
+        settings, mode_override=args.mode, max_notional_override=args.max_notional_usdt,
+    )
+    if not config.sends_real_orders:
+        raise RuntimeError("live_trading.enabled and real_order_enabled must both be true")
+    if not consume_order_nonce(config.ledger_path, args.authorization_nonce):
+        raise RuntimeError("authorization nonce is invalid, expired, or already used")
+    return config
+
+
+def cmd_live_smoke_limit(args) -> int:
+    settings = load_settings(args.config or args.settings)
+    _authorize_smoke(settings, args)
+
+    async def runner() -> dict[str, Any]:
+        runtime = await build_runtime(
+            settings, mode_override=args.mode,
+            max_notional_override=args.max_notional_usdt, orders_authorized=True,
+        )
+        try:
+            return await smoke_limit_cancel(runtime, args.symbol)
+        finally:
+            await runtime.close()
+
+    print(json.dumps(asyncio.run(runner()), ensure_ascii=False, indent=2, default=str))
+    return 0
+
+
+def cmd_live_smoke_roundtrip(args) -> int:
+    settings = copy.deepcopy(load_settings(args.config or args.settings))
+    settings.setdefault("live_trading", {})["execution_policy"] = args.policy
+    _authorize_smoke(settings, args)
+
+    async def runner() -> dict[str, Any]:
+        runtime = await build_runtime(
+            settings, mode_override=args.mode,
+            max_notional_override=args.max_notional_usdt, orders_authorized=True,
+        )
+        try:
+            return await smoke_roundtrip(runtime, args.symbol)
+        finally:
+            await runtime.close()
+
+    print(json.dumps(asyncio.run(runner()), ensure_ascii=False, indent=2, default=str))
+    return 0
 
 
 def make_context(args) -> tuple[dict[str, Any], Store, BinanceRestClient]:
@@ -457,6 +596,45 @@ def build_parser() -> argparse.ArgumentParser:
     wfshadow.add_argument("--seconds", type=int, default=600)
     wfshadow.add_argument("--max-events", type=int, default=0)
     wfshadow.set_defaults(func=cmd_waterfall_shadow)
+
+    live_pf = sub.add_parser("live-preflight", help="read-only Binance account and API preflight")
+    live_pf.add_argument("--config", default=None)
+    live_pf.add_argument("--mode", choices=["dry_run", "testnet", "live_micro", "live"], default="dry_run")
+    live_pf.add_argument("--max-notional-usdt", type=float, default=None)
+    live_pf.set_defaults(func=cmd_live_preflight)
+
+    live_nonce = sub.add_parser("live-issue-nonce", help="issue a one-time short-lived real-order authorization")
+    live_nonce.add_argument("--config", default=None)
+    live_nonce.add_argument("--mode", choices=["testnet", "live_micro", "live"], default="live_micro")
+    live_nonce.add_argument("--max-notional-usdt", type=float, required=True)
+    live_nonce.add_argument("--ttl-seconds", type=int, default=300)
+    live_nonce.set_defaults(func=cmd_live_issue_nonce)
+
+    live_run = sub.add_parser("live-run", help="run isolated Claude live/dry execution service")
+    live_run.add_argument("--config", default=None)
+    live_run.add_argument("--mode", choices=["dry_run", "testnet", "live_micro", "live"], default="dry_run")
+    live_run.add_argument("--max-notional-usdt", type=float, default=None)
+    live_run.add_argument("--broad-top", type=int, default=None)
+    live_run.add_argument("--max-workers", type=int, default=None)
+    live_run.add_argument("--samples", type=int, default=0)
+    live_run.add_argument("--confirm-real-orders", action="store_true")
+    live_run.add_argument("--authorization-nonce", default="")
+    live_run.set_defaults(func=cmd_live_run)
+
+    for name, help_text, func in (
+        ("live-smoke-limit", "real post-only limit/cancel protocol smoke", cmd_live_smoke_limit),
+        ("live-smoke-roundtrip", "real minimum short open/protect/close smoke", cmd_live_smoke_roundtrip),
+    ):
+        smoke = sub.add_parser(name, help=help_text)
+        smoke.add_argument("--config", default=None)
+        smoke.add_argument("--mode", choices=["testnet", "live_micro"], default="live_micro")
+        smoke.add_argument("--symbol", required=True)
+        smoke.add_argument("--max-notional-usdt", type=float, required=True)
+        smoke.add_argument("--confirm-real-orders", action="store_true")
+        smoke.add_argument("--authorization-nonce", required=True)
+        if name == "live-smoke-roundtrip":
+            smoke.add_argument("--policy", choices=["market", "ioc", "maker_first"], required=True)
+        smoke.set_defaults(func=func)
 
     bf = sub.add_parser("backfill")
     bf.add_argument("--config", default=None)

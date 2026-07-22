@@ -1239,17 +1239,77 @@ def refresh_waterfall_universe(
             if not row.get("strategy") or str(row.get("strategy")) in active_strategies
         ]
     symbols = sorted(set(symbols) | set(active))
-    print(f"[{local_stamp()}] waterfall universe symbols={len(symbols)} broad_top={broad_top}", flush=True)
-    prewarm_waterfall_symbols(
-        client,
-        store,
-        engine,
-        symbols,
-        int(engine.cfg["prewarm_limit"]),
-        max_workers,
-        extra_engines=extra_engines,
-        allow_rest=allow_rest_prewarm,
+    keep = set(symbols)
+    engines = [engine, *(extra_engines or [])]
+    seen_candle_stores: set[int] = set()
+    pruned = 0
+    for eng in engines:
+        candle_store = eng.candles
+        identity = id(candle_store)
+        if identity not in seen_candle_stores:
+            seen_candle_stores.add(identity)
+            for symbol in list(candle_store):
+                if symbol not in keep:
+                    candle_store.pop(symbol, None)
+                    pruned += 1
+        today = local_day_from_ms(utc_ms())
+        if hasattr(eng, "trade_count_day"):
+            eng.trade_count_day = {
+                key: value for key, value in eng.trade_count_day.items()
+                if len(key) > 1 and key[1] == today
+            }
+
+    def needs_prewarm(symbol: str) -> bool:
+        cutoff = closed_candle_cutoff_ms(utc_ms(), "1m")
+        dq = engine.candles.get(symbol)
+        if not dq or dq[-1].close_time < cutoff:
+            return True
+        values = list(dq)
+        return any(
+            b.open_time - a.open_time != MINUTE_MS
+            for a, b in zip(values, values[1:])
+        )
+
+    prewarm_symbols = [
+        symbol for symbol in symbols
+        if needs_prewarm(symbol)
+    ]
+    print(
+        f"[{local_stamp()}] waterfall universe symbols={len(symbols)} broad_top={broad_top} "
+        f"prewarm={len(prewarm_symbols)} pruned={pruned}",
+        flush=True,
     )
+    if prewarm_symbols:
+        prewarm_workers = max(max_workers, min(12, len(prewarm_symbols)))
+        prewarm_waterfall_symbols(
+            client,
+            store,
+            engine,
+            prewarm_symbols,
+            int(engine.cfg["prewarm_limit"]),
+            prewarm_workers,
+            extra_engines=extra_engines,
+            allow_rest=allow_rest_prewarm,
+        )
+        # The first pass can span a minute boundary. Catch up the smaller tail
+        # before opening WebSockets so startup itself cannot create a shared
+        # gap across the entire universe.
+        catchup_symbols = [symbol for symbol in symbols if needs_prewarm(symbol)]
+        if catchup_symbols and allow_rest_prewarm:
+            print(
+                f"[{local_stamp()}] waterfall catchup symbols={len(catchup_symbols)}",
+                flush=True,
+            )
+            prewarm_waterfall_symbols(
+                client,
+                store,
+                engine,
+                catchup_symbols,
+                int(engine.cfg["prewarm_limit"]),
+                max(max_workers, min(12, len(catchup_symbols))),
+                extra_engines=extra_engines,
+                allow_rest=True,
+            )
     return symbols
 
 
@@ -1271,7 +1331,7 @@ def prewarm_waterfall_symbols(
     with _rest_lock:
         _rest_next[0] = time.monotonic()  # start each prewarm burst with a fresh budget
 
-    def fetch(symbol: str) -> tuple[str, list[Candle]]:
+    def fetch(symbol: str) -> tuple[str, list[Candle], list[Candle]]:
         # DB-first + weight-throttled: reuse candles persisted by the previous
         # run, and fetch ONLY the gap since shutdown (or the full window for a
         # thin/new symbol) from REST — but rate-limited so the aggregate weight
@@ -1285,27 +1345,48 @@ def prewarm_waterfall_symbols(
         ]
         last_close = cached[-1].close_time if cached else 0
         gap_min = int((cutoff - last_close) / 60_000) if last_close else limit
-        if len(cached) >= limit - 5 and gap_min <= 1:
-            return symbol, cached  # full & current → nothing to fetch
+        gap_starts = [
+            a.open_time + MINUTE_MS
+            for a, b in zip(cached, cached[1:])
+            if b.open_time - a.open_time != MINUTE_MS
+        ]
+        has_internal_gap = bool(gap_starts)
+        if cached and gap_min <= 0 and not has_internal_gap:
+            # A newly listed contract can legitimately have fewer than `limit`
+            # candles. If its cache is current, repeatedly asking Binance for
+            # 1500 rows cannot create pre-listing history and only delays live
+            # startup. Stale or empty caches still take the REST path below.
+            return symbol, cached, []
         if not allow_rest:
-            return symbol, cached  # REST is banned/unavailable: websocket + DB only
-        if len(cached) < limit - 5:
-            fetch_limit = limit  # thin history → backfill the whole window
+            return symbol, cached, []  # REST is banned/unavailable: websocket + DB only
+        target_open = cutoff - (MINUTE_MS - 1)
+        missing_starts = list(gap_starts)
+        if cached and last_close < cutoff:
+            missing_starts.append(cached[-1].open_time + MINUTE_MS)
+        earliest_missing = min(missing_starts) if missing_starts else target_open
+        projected_count = len(cached) + max(0, gap_min)
+        required_start = target_open - 1440 * MINUTE_MS
+        if not cached or (cached[0].open_time > required_start and projected_count < 1441):
+            fetch_limit = limit  # genuinely thin history: rebuild the 24h signal window
         else:
-            fetch_limit = max(2, min(limit, gap_min + 2))  # fill the downtime gap
+            # Fetch only far enough back to cover the oldest actual hole. A
+            # short restart must not turn into 400 full 1500-row downloads.
+            missing_span = max(1, int((target_open - earliest_missing) / MINUTE_MS) + 1)
+            fetch_limit = max(2, min(limit, missing_span + 1))
         _throttle_rest(_klines_weight(fetch_limit), per_sec)
         fresh = [c for c in client.klines(symbol, "1m", limit=fetch_limit) if c.close_time <= cutoff]
         merged = {c.open_time: c for c in [*cached, *fresh]}
-        return symbol, [merged[k] for k in sorted(merged)][-limit:]
+        return symbol, [merged[k] for k in sorted(merged)][-limit:], fresh
 
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futs = {pool.submit(fetch, s): s for s in symbols}
         for fut in as_completed(futs):
-            symbol = futs[fut]
+            symbol = futs.pop(fut)
             try:
-                _sym, candles = fut.result()
+                _sym, candles, fresh = fut.result()
                 total += len(candles)
-                store.save_candles(candles)
+                if fresh:
+                    store.save_candles(fresh)
                 # prime_candles emits a watch row per candle (~1260 for a 1500
                 # window); we only need the symbol's FINAL state. Keeping the last
                 # row per symbol turns a ~460k-row upsert (which spiked RAM to

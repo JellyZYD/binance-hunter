@@ -1,4 +1,5 @@
 websockets>=12.0
+requests>=2.31
 # ML 推理(实盘需要, 2C2G 可装)
 numpy>=1.26
 pandas>=2.0
