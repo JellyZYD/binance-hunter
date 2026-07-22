@@ -1274,8 +1274,8 @@ def refresh_waterfall_universe(
                 if len(key) > 1 and key[1] == today
             }
 
-    cutoff = closed_candle_cutoff_ms(utc_ms(), "1m")
     def needs_prewarm(symbol: str) -> bool:
+        cutoff = closed_candle_cutoff_ms(utc_ms(), "1m")
         dq = engine.candles.get(symbol)
         if not dq or dq[-1].close_time < cutoff:
             return True
@@ -1295,16 +1295,36 @@ def refresh_waterfall_universe(
         flush=True,
     )
     if prewarm_symbols:
+        prewarm_workers = max(max_workers, min(12, len(prewarm_symbols)))
         prewarm_waterfall_symbols(
             client,
             store,
             engine,
             prewarm_symbols,
             int(engine.cfg["prewarm_limit"]),
-            max_workers,
+            prewarm_workers,
             extra_engines=extra_engines,
             allow_rest=allow_rest_prewarm,
         )
+        # The first pass can span a minute boundary. Catch up the smaller tail
+        # before opening WebSockets so startup itself cannot create a shared
+        # gap across the entire universe.
+        catchup_symbols = [symbol for symbol in symbols if needs_prewarm(symbol)]
+        if catchup_symbols and allow_rest_prewarm:
+            print(
+                f"[{local_stamp()}] waterfall catchup symbols={len(catchup_symbols)}",
+                flush=True,
+            )
+            prewarm_waterfall_symbols(
+                client,
+                store,
+                engine,
+                catchup_symbols,
+                int(engine.cfg["prewarm_limit"]),
+                max(max_workers, min(12, len(catchup_symbols))),
+                extra_engines=extra_engines,
+                allow_rest=True,
+            )
     return symbols
 
 
