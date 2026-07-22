@@ -242,7 +242,42 @@ class WaterfallRuntimeRegressionTests(unittest.TestCase):
 
         store = FakeStore()
         prewarm_waterfall_symbols(object(), store, engine, ["ALTUSDT"], 1500, 1, allow_rest=False)
-        self.assertEqual(store.saved, [[]])
+        self.assertEqual(store.saved, [])
+
+    def test_stale_near_full_cache_fetches_only_missing_tail(self) -> None:
+        engine = WaterfallEngine(self.settings)
+        cutoff = closed_candle_cutoff_ms(utc_ms(), "1m")
+        target_open = cutoff - 59_999
+        cached = [
+            self._candle("TAILUSDT", target_open - (1499 - i) * 60_000, 1.0, 1.0, 10_000.0)
+            for i in range(1490)
+        ]
+
+        class FakeStore:
+            def load_candles(self, *_args, **_kwargs):
+                return cached
+
+            def save_candles(self, _rows):
+                return None
+
+            def upsert_waterfall_watch(self, _rows):
+                return None
+
+        class FakeClient:
+            limits: list[int] = []
+
+            def klines(self, symbol, interval, limit):
+                self.limits.append(limit)
+                return [
+                    WaterfallRuntimeRegressionTests._candle(
+                        symbol, target_open - (limit - 1 - i) * 60_000, 1.0, 1.0, 10_000.0,
+                    )
+                    for i in range(limit)
+                ]
+
+        client = FakeClient()
+        prewarm_waterfall_symbols(client, FakeStore(), engine, ["TAILUSDT"], 1500, 1)
+        self.assertEqual(client.limits, [11])
 
     def test_periodic_refresh_skips_resident_symbols_and_prunes_removed(self) -> None:
         engine = WaterfallEngine(self.settings)

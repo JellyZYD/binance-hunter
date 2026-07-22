@@ -1340,18 +1340,32 @@ def prewarm_waterfall_symbols(
         ]
         last_close = cached[-1].close_time if cached else 0
         gap_min = int((cutoff - last_close) / 60_000) if last_close else limit
-        has_internal_gap = any(
-            b.open_time - a.open_time != MINUTE_MS
+        gap_starts = [
+            a.open_time + MINUTE_MS
             for a, b in zip(cached, cached[1:])
-        )
-        if len(cached) >= limit - 5 and gap_min <= 0 and not has_internal_gap:
-            return symbol, cached, []  # full & current -> nothing to persist
+            if b.open_time - a.open_time != MINUTE_MS
+        ]
+        has_internal_gap = bool(gap_starts)
+        if cached and gap_min <= 0 and not has_internal_gap:
+            # A newly listed contract can legitimately have fewer than `limit`
+            # candles. A current cache cannot gain pre-listing history.
+            return symbol, cached, []
         if not allow_rest:
             return symbol, cached, []  # REST is banned/unavailable: websocket + DB only
-        if len(cached) < limit - 5 or has_internal_gap:
-            fetch_limit = limit  # thin history → backfill the whole window
+        target_open = cutoff - (MINUTE_MS - 1)
+        missing_starts = list(gap_starts)
+        if cached and last_close < cutoff:
+            missing_starts.append(cached[-1].open_time + MINUTE_MS)
+        earliest_missing = min(missing_starts) if missing_starts else target_open
+        projected_count = len(cached) + max(0, gap_min)
+        required_start = target_open - 1440 * MINUTE_MS
+        if not cached or (cached[0].open_time > required_start and projected_count < 1441):
+            fetch_limit = limit  # genuinely thin history: rebuild the 24h signal window
         else:
-            fetch_limit = max(2, min(limit, gap_min + 2))  # fill the downtime gap
+            # Fetch only far enough back to cover the oldest actual hole. A
+            # short restart must not turn into 400 full 1500-row downloads.
+            missing_span = max(1, int((target_open - earliest_missing) / MINUTE_MS) + 1)
+            fetch_limit = max(2, min(limit, missing_span + 1))
         _throttle_rest(_klines_weight(fetch_limit), per_sec)
         fresh = [c for c in client.klines(symbol, "1m", limit=fetch_limit) if c.close_time <= cutoff]
         merged = {c.open_time: c for c in [*cached, *fresh]}
@@ -1364,7 +1378,8 @@ def prewarm_waterfall_symbols(
             try:
                 _sym, candles, fresh = fut.result()
                 total += len(candles)
-                store.save_candles(fresh)
+                if fresh:
+                    store.save_candles(fresh)
                 # prime_candles emits a watch row per candle (~1260 for a 1500
                 # window); we only need the symbol's FINAL state. Keeping the last
                 # row per symbol turns a ~460k-row upsert (which spiked RAM to
