@@ -995,8 +995,17 @@ async def waterfall_monitor(
             # monitor — log and move on. Position + signal writes stay atomic per
             # symbol so a failure can't leave a half-open paper trade.
             try:
+                candle_time_advanced = event.candle.close_time > last_candle_close_ms
                 last_candle_close_ms = max(last_candle_close_ms, event.candle.close_time)
                 store.save_candles([event.candle])
+                if candle_time_advanced:
+                    open_n = len(engine.positions) + sum(len(e.positions) for e in extra_engines)
+                    write_monitor_health(Path(dirs["db"]).parent, {
+                        "events": processed, "open_positions": open_n,
+                        "universe": len(symbols), "watch_symbols": len(engine.candles),
+                        "last_candle_close_ms": last_candle_close_ms,
+                    })
+                    last_health_ms = now_ms
                 watch, positions, signals = engine.on_kline(event)
                 for eng in extra_engines:
                     _w2, p2, s2 = eng.on_kline(event)
