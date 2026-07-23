@@ -1038,6 +1038,11 @@ class SharedPaperSignalLiveTradingService(ClaudeLiveTradingService):
         self._processed_signals = int(
             runtime.ledger.get_meta("service_processed_signals", "0") or 0
         )
+        runtime.ledger.set_meta(
+            "service_processed_signals",
+            str(self._processed_signals),
+            utc_ms(),
+        )
         self._consecutive_reconcile_failures = 0
         self._optional_reconcile_failures: set[str] = set()
         self._cursor = SignalCursor()

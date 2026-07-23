@@ -110,7 +110,12 @@ def cmd_live_run(args) -> int:
         finally:
             await runtime.close()
 
-    asyncio.run(runner())
+    try:
+        asyncio.run(runner())
+    except KeyboardInterrupt:
+        # systemd uses SIGINT so asyncio can run service/runtime cleanup. Treat
+        # that controlled shutdown as success instead of printing a traceback.
+        return 0
     return 0
 
 
