@@ -478,14 +478,21 @@ class BoardWaterfallEngine:
         exit_price = 0.0
         reason = ""
         if candle.high >= pos.stop_price:
-            exit_price = pos.stop_price
+            # The trigger may already be behind the market when this closed
+            # candle is processed. A short cannot buy back at the stale stop
+            # after the candle opened above it.
+            exit_price = max(pos.stop_price, candle.open)
             reason = "stop_loss"
         elif prev_trail > 0 and candle.high >= prev_trail and not self._flow_hold_through(pos.symbol):
             # trailing take-profit fires only when sellers are NOT still dominant
             # (a real bounce). If flow says sellers are in control we skip the
             # take-profit and fall through -- the trail re-arms below and we keep
             # holding for the second leg down (the stop still caps the downside).
-            exit_price = prev_trail
+            # Flow can keep the trail disarmed for several bars. When it
+            # re-arms after price has already rebounded through the stale
+            # trigger, model the first executable price (the candle open), not
+            # the historical trigger. This matches the live race guard.
+            exit_price = max(prev_trail, candle.open)
             reason = "take_profit_trailing"
         else:
             age_min = max(0, int((now - pos.entry_time) / MINUTE_MS))

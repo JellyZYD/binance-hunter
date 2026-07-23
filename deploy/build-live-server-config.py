@@ -40,6 +40,7 @@ def main() -> int:
         "max_entry_signal_age_seconds": 30,
         "source_health_stale_seconds": 150,
         "notify_wecom": True,
+        "dashboard_enabled": True,
     })
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(

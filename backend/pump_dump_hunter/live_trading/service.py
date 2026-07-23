@@ -567,6 +567,11 @@ class ClaudeLiveTradingService:
         except Exception as exc:
             self.runtime.oms.safe_halt(f"intent_execution_failed:{type(exc).__name__}")
             result = {"status": "execution_error", "error": type(exc).__name__}
+        if self.runtime.oms.account is not None:
+            result = {
+                **result,
+                "account": self.runtime.oms.account.to_dict(),
+            }
         self._sync_execution_outcome(signal, strategy_position, result)
         self.runtime.ledger.append_event(
             utc_ms(), "STRATEGY_INTENT_RESULT", intent.intent_id,
@@ -1326,6 +1331,8 @@ class SharedPaperSignalLiveTradingService(ClaudeLiveTradingService):
             if self._protection_cache.get(symbol) == cache_value:
                 continue
             decision_time = int(state.get("decision_time") or utc_ms())
+            quote = None
+            depth = None
             if arm and desired > 0:
                 try:
                     quote, depth = await self._fetch_execution_market(symbol)
@@ -1369,14 +1376,126 @@ class SharedPaperSignalLiveTradingService(ClaudeLiveTradingService):
                     continue
             prior_halt = self.runtime.oms.safe_halt_reason
             async with self._oms_lock:
-                await self.runtime.oms.update_trail(
+                update_result = await self.runtime.oms.update_trail(
                     position.position_id,
                     desired,
                     arm,
                     decision_time,
                 )
+            if str(update_result.get("status") or "") == "failed" and arm and desired > 0:
+                handled = await self._recover_failed_trail_update(
+                    position,
+                    desired,
+                    decision_time,
+                    update_result,
+                    fallback_quote=quote,
+                    fallback_depth=depth,
+                )
+                if handled:
+                    self._protection_cache[symbol] = cache_value
+                    continue
             if self.runtime.oms.safe_halt_reason == prior_halt:
                 self._protection_cache[symbol] = cache_value
+
+    async def _recover_failed_trail_update(
+        self,
+        position: Any,
+        desired: Decimal,
+        decision_time: int,
+        failed: dict[str, Any],
+        *,
+        fallback_quote: Any | None = None,
+        fallback_depth: dict[str, Any] | None = None,
+    ) -> bool:
+        """Fail closed when a newly armed profit stop cannot be confirmed.
+
+        A definite exchange rejection may be retried once with a fresh
+        deterministic client id. An unknown execution is never resubmitted:
+        after a fresh quote, either the desired stop has already been crossed
+        or the position is closed to avoid leaving newly protected profit
+        exposed with only the distant structure stop.
+        """
+        try:
+            quote, depth = await self._fetch_execution_market(position.symbol)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.runtime.ledger.append_event(
+                utc_ms(),
+                "TRAIL_FAILURE_MARKET_UNAVAILABLE",
+                position.position_id,
+                {"symbol": position.symbol, "error": f"{type(exc).__name__}: {exc}"[:300]},
+            )
+            if fallback_quote is None or fallback_depth is None:
+                return False
+            quote, depth = fallback_quote, fallback_depth
+            self.runtime.ledger.append_event(
+                utc_ms(),
+                "TRAIL_FAILURE_USING_PRIOR_MARKET",
+                position.position_id,
+                {
+                    "symbol": position.symbol,
+                    "quote_event_time": int(getattr(quote, "event_time", 0) or 0),
+                },
+            )
+
+        old_protection = bool(failed.get("old_protection"))
+        failure_kind = str(failed.get("failure_kind") or "")
+        halt_reason = str(failed.get("halt_reason") or "")
+        if (
+            not old_protection
+            and failure_kind == "GatewayError"
+            and quote.ask_price < desired
+        ):
+            async with self._oms_lock:
+                retry = await self.runtime.oms.update_trail(
+                    position.position_id,
+                    desired,
+                    True,
+                    decision_time + 1,
+                )
+            if str(retry.get("status") or "") in {
+                "updated",
+                "updated_with_old_cancel_unresolved",
+                "unchanged",
+            }:
+                if halt_reason:
+                    self.runtime.oms.clear_safe_halt_reasons({halt_reason})
+                self.runtime.ledger.append_event(
+                    utc_ms(),
+                    "TRAIL_FIRST_ARM_RETRY_CONFIRMED",
+                    position.position_id,
+                    {"symbol": position.symbol, "desired_price": str(desired)},
+                )
+                return True
+
+        if old_protection and quote.ask_price < desired:
+            return False
+
+        reason = (
+            "trailing_price_already_crossed"
+            if quote.ask_price >= desired
+            else "trailing_first_arm_unavailable"
+        )
+        signal = WaterfallSignal(
+            signal_id=f"trail-failsafe-exit-{position.position_id}-{decision_time}",
+            position_id=position.position_id,
+            symbol=position.symbol,
+            strategy=STRATEGY_NAME,
+            action="take_profit",
+            family="shared_live_protection",
+            rule=reason,
+            decision_time=decision_time,
+            price=float(quote.ask_price),
+            stop_price=float(position.structure_stop_price),
+            evidence=["shared_paper_protection", "live_trail_failure_failsafe"],
+        )
+        result = await self._execute_signal_with_market(signal, quote, depth)
+        return str(result.get("status") or "") not in {
+            "execution_error",
+            "rejected",
+            "exchange_rejected",
+        }
 
     async def _start_private_supervision(self) -> None:
         delay = 1.0

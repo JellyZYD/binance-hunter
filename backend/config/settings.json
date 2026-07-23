@@ -336,7 +336,7 @@
     "max_workers": 3,
     "discover_every": "15m",
     "allowed_symbols": [],
-    "dashboard_enabled": false,
+    "dashboard_enabled": true,
     "notify_wecom": true,
     "notify_dry_run": false,
     "signal_source": "shared_paper_db",

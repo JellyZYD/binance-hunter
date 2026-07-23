@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from .config import resolve_path
 from .data.store import Store
 from .timeutils import iso_from_ms, utc_ms
 from .waterfall import waterfall_settings
@@ -224,7 +225,21 @@ class DashboardHandler(BaseHTTPRequestHandler):
         from .live_trading.config import LiveTradingConfig
         from .live_trading.ledger import LiveLedger
 
-        config = LiveTradingConfig.from_settings(self.settings)
+        live_settings = self.settings
+        private_settings_path = resolve_path("config/live.server.json")
+        if private_settings_path.exists():
+            try:
+                private_settings = json.loads(
+                    private_settings_path.read_text(encoding="utf-8")
+                )
+                if isinstance(private_settings, dict):
+                    live_settings = private_settings
+            except (OSError, ValueError, json.JSONDecodeError):
+                # The public dashboard must remain available from the safe base
+                # config if the private runtime config is being atomically
+                # replaced during deployment.
+                pass
+        config = LiveTradingConfig.from_settings(live_settings)
         base = {
             "available": config.dashboard_enabled and config.ledger_path.exists(),
             "dashboard_enabled": config.dashboard_enabled,
@@ -241,7 +256,13 @@ class DashboardHandler(BaseHTTPRequestHandler):
         }
         if not base["available"]:
             return {**base, "account": None, "positions": [], "orders": [], "fills": [], "events": []}
-        return {**base, **LiveLedger(config.ledger_path).dashboard_snapshot(limit=limit)}
+        return {
+            **base,
+            **LiveLedger(config.ledger_path).dashboard_snapshot(
+                limit=limit,
+                leverage=config.leverage,
+            ),
+        }
 
     def write_json(self, payload: dict[str, Any], status: HTTPStatus = HTTPStatus.OK) -> None:
         data = json.dumps(payload, ensure_ascii=False, default=str).encode("utf-8")

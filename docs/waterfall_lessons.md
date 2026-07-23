@@ -5,6 +5,13 @@ Written from the Claude `board_waterfall` engine's research trail so the codex
 lessons instead of re-paying for them. Everything below is backed by scripts and
 a train/verdict + ex-top-days audit; where a claim is fragile it says so.
 
+> **2026-07-24 execution audit:** the historical flow-gate headline in this
+> document is superseded. Its replay filled a stale trailing trigger after the
+> market had already crossed it. Executable-price correction changed the same
+> 3,629-trade path from PF 1.565 to PF 0.958. Treat the flow-gate discussion
+> below as research history, not production performance. See
+> `docs/champion/04-止盈可执行性审计-20260724.md`.
+
 ---
 
 ## 0. TL;DR — the five lessons that would have saved the most time

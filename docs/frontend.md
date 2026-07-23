@@ -23,6 +23,7 @@ Browser requests use:
 /api/hunter/waterfall/positions
 /api/hunter/waterfall/signals
 /api/hunter/waterfall/replay-results
+/api/hunter/live/summary
 ```
 
 The summary response has two levels:
@@ -33,6 +34,24 @@ The summary response has two levels:
 Top-level `paper_initial_balance_usdt` is 300 while each account remains 100.
 Positions and signals are the single Claude master path and are not triplicated.
 Historical core5 database rows are excluded by default from the API and UI.
+
+The live summary is a sanitized read-only view of the independent execution
+ledger. It shows account equity, wallet/available balance, unrealized and net
+realized PnL, commission, funding, realized-equity drawdown, initial margin and
+notional per position/order, protection status, decision-to-fill latency, and
+signal/arrival slippage. Quantity is not the primary user-facing sizing field.
+API keys, secrets, webhook URLs and raw exchange payloads are never returned.
+The public response also omits the service PID and the private SQLite path.
+
+On a server with `backend/config/live.server.json`, the read-only API uses that
+file only to report the effective non-secret execution mode and risk limits.
+The checked-in config still keeps order execution disabled. The server builder
+sets `dashboard_enabled=true` because the user explicitly requested the
+sanitized live account panel.
+
+The 2026-07-24 release pins Next.js and `eslint-config-next` to `16.2.11` and
+overrides Next's bundled PostCSS/Sharp to patched versions. `npm audit` reports
+zero production and development vulnerabilities; the production build passes.
 
 Next.js forwards them to:
 

@@ -52,6 +52,11 @@ Base structure (E1, winner of an 8-variant battle):
   (no same-bar lookahead).
 - **time stop**: 240 minutes.
 
+When a stop or trailing trigger has already been crossed before the next
+closed-bar decision can act, paper execution now fills at the worse of the
+trigger and that candle's open, then applies exit slippage. It never books a
+historical trigger price that was no longer executable.
+
 **Flow-gated hold-through** (`exit_flow_gate_enabled`, default on): the trailing
 take-profit is SKIPPED when taker-sell over the prior `exit_flow_window` (=10)
 closed bars is still ≥ `exit_flow_sell_threshold` (=0.48) — sellers in control ⇒
@@ -59,19 +64,21 @@ the bounce is fake ⇒ hold for the next leg down. When buyers return (flow drop
 below the threshold) the trail fires as normal. The stop is never gated, so a
 held-through trade can never lose more than E1 would.
 
-This reopens the "big-meat ceiling". E1 exits on the FIRST bounce, and on the
-champion label **94% of big-meat trades make a new low AFTER E1 exits** (median
-−13% further; super-meat −31.7%). The exit-moment discriminator was tested
-head-to-head: **bookDepth does NOT separate fake/real bounces (AUC 0.5), but 1m
-taker-sell flow does** — so this needs no depth data, just the 1m klines the
-engine already has. Backtest (full timeline, train/verdict + ex-top-3-days
-robust): W=10 / θ=0.48 → **~+1.44%/trade at 61% win**, vs the E1 exit's ~+0.19%
-on the same detector; the gain is concentrated in the big/super-meat tiers and
-small/mid meat is untouched (the stop protects them). This supersedes the earlier
-"8 variants all lost, 14% capture = 1m ceiling" conclusion — none of those
-variants gated the take-profit on flow; e8's flow-adaptive trail failed because
-it added an EARLY exit on flow-death (cut winners), whereas this only ever DELAYS
-the take-profit.
+The original flow-gate research appeared to reopen the "big-meat ceiling", but
+the 2026-07-24 executable-price audit found that result was not tradable. The
+replay delayed the take-profit while sellers remained dominant, then filled at
+the stale low trigger after price had already rebounded through it. On the same
+3,629-trade path, correcting only that fill assumption changed PF from 1.565 to
+0.958 and average return from +1.372% to -0.112%. The flow gate remains active
+for controlled micro-live observation because the user requested no strategy
+parameter change in this release, but the old `+1.44%/trade` claim is retired
+and must not be used to size capital.
+
+A 15-cell exchange-wide trailing guard grid (5%-8% activation, 4%-5% callback)
+did not improve train and holdout together. Exact aggTrade replay confirmed that
+it reduced some giveback but also cut large winners. No third protection order
+was enabled. See
+[`champion/04-止盈可执行性审计-20260724.md`](champion/04-止盈可执行性审计-20260724.md).
 
 **Cooldown 6h → 20m** (`same_symbol_cooldown_hours` = 0.3333,
 `max_trades_per_symbol_day` = 8): a genuine SECOND waterfall (a fresh +40%/−7%
@@ -88,7 +95,7 @@ the cooldown to 20–25m keeps per-trade EV flat (robust to ex-top-3-days) and
 > `exit_flow_gate_enabled: false` and `same_symbol_cooldown_hours: 6` to fall
 > back to the original E1 + 6h behavior for an A/B.
 
-## Verdict-period stats (2026H1, honest 0.30% cost)
+## Historical label stats and current exit audit
 
 - naked label + E1: **3.28 trades/day, 67% win, +0.40%/trade, PF 1.21**,
   train/verdict near-zero decay.
@@ -107,6 +114,10 @@ the cooldown to 20–25m keeps per-trade EV flat (robust to ex-top-3-days) and
   entry were tested and **do not help** this label — the deep-waterfall label
   already selects violent selling, and 59% of intra-minute breaks are wicks that
   only resolve at the 1m close. Kept off.
+
+The label studies above remain useful for entry selection. They do not validate
+the current flow-gated exit. The authoritative current exit audit is PF 0.958
+on the same fixed entry path after executable-price correction.
 
 ## Config
 

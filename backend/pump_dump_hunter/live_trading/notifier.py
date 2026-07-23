@@ -40,6 +40,13 @@ class LiveEventNotifier:
                 message = message.replace(self.webhook_url, "<WECOM_WEBHOOK_URL>")
             return False, message
 
+    @staticmethod
+    def _number(value: Any, default: float = 0.0) -> float:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     def intent_result(self, intent: TradeIntent, result: dict[str, Any]) -> tuple[bool, str]:
         if self.config.mode == "dry_run" and not self.notify_dry_run:
             return False, "dry_run_suppressed"
@@ -48,7 +55,26 @@ class LiveEventNotifier:
         action = "实盘开空" if intent.action.value == "open_short" else "实盘平空"
         status = str(result.get("status") or order.get("state") or "unknown")
         price = order.get("average_price") or position.get("entry_price") or intent.signal_price
-        quantity = order.get("filled_quantity") or position.get("quantity") or "0"
+        metadata = dict(position.get("metadata") or {})
+        initial_quantity = (
+            metadata.get("initial_quantity")
+            or position.get("initial_quantity")
+            or order.get("filled_quantity")
+            or position.get("quantity")
+            or "0"
+        )
+        entry_price = position.get("entry_price") or price or "0"
+        leverage = self._number(
+            metadata.get("leverage") or self.config.leverage or 1,
+            1.0,
+        )
+        initial_margin = (
+            self._number(entry_price) * self._number(initial_quantity) / leverage
+            if leverage > 0
+            else 0.0
+        )
+        account = dict(result.get("account") or {})
+        equity = account.get("margin_balance") or result.get("account_equity")
         if intent.action.value == "close_short":
             protection = "已平仓" if status == "closed" else "平仓待确认"
         else:
@@ -56,14 +82,17 @@ class LiveEventNotifier:
         lines = [
             f"**{action} {intent.symbol}**",
             f"> 状态 {status} | 模式 {self.config.mode}",
-            f"> 成交 {price} | 数量 {quantity}",
+            f"> 成交 {price} | 初始保证金 {initial_margin:.4f} USDT",
             f"> 策略 {intent.reason} | {protection}",
         ]
+        if equity is not None:
+            lines.append(f"> 账户权益 {self._number(equity):.4f} USDT")
         first_fill_time = int(order.get("first_fill_time") or 0)
         if first_fill_time > 0:
             latency_ms = max(0, first_fill_time - int(intent.decision_time))
             lines.append(
-                f"> 延迟 {latency_ms}ms | 滑点 {order.get('slippage_bps') or '0'}bp"
+                f"> 延迟 {latency_ms}ms | 信号滑点 {order.get('slippage_bps') or '0'}bp"
+                f" | 到达滑点 {order.get('arrival_slippage_bps') or '0'}bp"
             )
         if result.get("reason"):
             lines.append(f"> 原因 {result['reason']}")

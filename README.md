@@ -46,7 +46,8 @@ The isolated live ledger records decision-to-submit, submit-to-ACK,
 submit-to-first-fill and decision-to-final-fill latency, plus both total
 signal-price slippage and order-arrival slippage. Positive slippage is adverse;
 negative slippage is price improvement. These fields are exposed only when the
-disabled-by-default live dashboard is explicitly enabled.
+sanitized live dashboard is enabled. The dashboard never returns credentials,
+webhook URLs or raw exchange responses.
 
 The live sizing path uses 20% base margin, 5x exchange leverage, and
 realized-equity drawdown factors
@@ -70,6 +71,17 @@ connectivity halts. A later exchange snapshot may also clear protection/cancel
 halts only when the expected stop exists or the timed-out order is proven gone.
 External positions/orders, margin risk, daily loss and unknown executions remain
 fail-closed.
+
+The 2026-07-24 executable-price audit invalidated the old flow-gated paper
+headline (`PF 1.56`, `+1.37%/trade`). When flow re-enabled a stale trailing
+price after the market had already crossed it, the old replay filled at the
+historical trigger. Correcting that fill to the first executable price reduced
+the same 3,629-trade path to `PF 0.96`. A 15-cell wide-trailing grid and exact
+aggTrade audit did not produce a robust replacement, so no third protection
+order was enabled. See
+[`docs/champion/04-止盈可执行性审计-20260724.md`](docs/champion/04-止盈可执行性审计-20260724.md).
+The server remains a micro-capital validation runtime, not an approved
+scale-up.
 
 ## Repository layout
 
@@ -142,7 +154,7 @@ cd ..\frontend
 npm run build
 ```
 
-Current local verification: 146 backend tests pass and the Next.js production
+Current local verification: 153 backend tests pass and the Next.js production
 build succeeds. This proves deterministic state-machine behavior under the
 covered fault injections; it does not replace the required 7-14 day / 30-trade
 mainnet micro validation before any larger capital is enabled.
@@ -179,5 +191,6 @@ does not continue per-symbol kline REST calls during that fallback.
 - [`docs/board_waterfall.md`](docs/board_waterfall.md): Board Waterfall strategy and replay.
 - [`docs/micro-collector.md`](docs/micro-collector.md): aggTrade, book/depth and OI collection.
 - [`docs/frontend.md`](docs/frontend.md): dashboard routes and API proxy.
+- [`docs/champion/04-止盈可执行性审计-20260724.md`](docs/champion/04-止盈可执行性审计-20260724.md): executable-price correction and rejected wide profit guard.
 - [`docs/production-fix-20260713.md`](docs/production-fix-20260713.md): dual-engine recovery fix and release checks.
 - [`deploy/README.md`](deploy/README.md): server operations and resource limits.

@@ -8,6 +8,9 @@
 | `claude_fixed10` | 固定权益 10% | 10x |
 | `claude_drawdown10` | 10% 基础，按已实现回撤缩到 7.5%/5%/2.5% | 10x |
 
+上表只描述三套纸面账户。真实微量账户独立使用 20% 基础保证金、5x、
+最多 3 仓、21U 单笔名义上限和同一实现权益回撤缩仓梯。
+
 - 触发：24h 涨幅≥40% + 距 60m 高点跌≥7% + 60m 成交额≥30万U，等 1m 收线。
 - 出场：B 结构止损 + 3.5%/3% 追踪 + 10 根主动卖盘延迟止盈 + 4h 超时。
 - 企微每个主信号只推一次，正文同时列出三账户变化。
@@ -281,6 +284,8 @@ systemctl status binance-hunter-monitor binance-hunter-live --no-pager
 journalctl -u binance-hunter-live -n 100 --no-pager
 sqlite3 backend/storage/live_trading.db \
   "select key,value from live_meta where key like 'service_%' or key='safe_halt_reason';"
+curl -fsS http://127.0.0.1:8787/api/live/summary | \
+  python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["mode"], d["service"]["status"], d["safe_halt_reason"])'
 ```
 
 正常状态应满足：`service_status=running`、心跳小于 10 秒、
@@ -291,6 +296,12 @@ sqlite3 backend/storage/live_trading.db \
 实盘服务不持有第二套公共 K 线流，资源只用于私有用户流、OMS、保护单和
 权威对账；systemd 的 CPU/IO 权重与 OOM 优先级高于默认服务。共享行情源
 异常时只停止增加风险，退出与交易所止损维护继续运行并自动等待恢复。
+
+`build-live-server-config.py` 同时启用脱敏实盘仪表盘。API 进程仍运行安全
+默认配置，但 `/api/live/summary` 在私有 `live.server.json` 存在时读取其
+非敏感模式和风控参数，并读取同一个 `live_trading.db`。接口不返回密钥、
+企微地址或交易所原始响应；前端显示权益、初始保证金、手续费、资金费、
+延迟和滑点。
 
 > 心跳日志频率由 `websocket.heartbeat_events` 控制（当前 7500 ≈ 30s 一条）。
 > API 内网端口 `127.0.0.1:8787`（`/api/hunter/...` 经 Nginx 代理对外）。

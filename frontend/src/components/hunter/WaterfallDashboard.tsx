@@ -176,7 +176,6 @@ type LiveSummary = {
   service?: {
     heartbeat_time: number;
     status: string;
-    pid: number;
     processed_events: number;
   };
   account?: {
@@ -186,6 +185,16 @@ type LiveSummary = {
     margin_balance: string;
     unrealized_pnl: string;
   } | null;
+  performance?: {
+    gross_realized_pnl_usdt: string;
+    commission_usdt: string;
+    commission_cost_usdt: string;
+    funding_fee_usdt: string;
+    insurance_clear_usdt: string;
+    net_realized_pnl_usdt: string;
+    open_positions: number;
+    closed_positions: number;
+  };
   positions: Array<{
     position_id: string;
     symbol: string;
@@ -197,6 +206,9 @@ type LiveSummary = {
     liquidation_price: string;
     protected: number;
     updated_time: number;
+    initial_notional_usdt: string;
+    initial_margin_usdt: string;
+    leverage: string;
   }>;
   orders: Array<{
     client_order_id: string;
@@ -214,6 +226,9 @@ type LiveSummary = {
     submit_to_first_fill_ms?: number | null;
     signal_to_fill_ms?: number | null;
     signal_to_final_fill_ms?: number | null;
+    initial_notional_usdt: string;
+    initial_margin_usdt: string;
+    leverage: string;
     updated_time: number;
   }>;
 };
@@ -372,6 +387,16 @@ export default function WaterfallDashboard() {
   const equity = summary?.paper_equity_usdt ?? summary?.paper_initial_balance_usdt ?? 0;
   const realized = summary?.paper_realized_pnl_usdt ?? summary?.paper_pnl_usdt ?? 0;
   const unrealized = summary?.paper_unrealized_pnl_usdt ?? 0;
+  const liveOpenPositions = useMemo(
+    () => (live?.positions ?? []).filter((row) => row.status === 'open' || row.status === 'closing'),
+    [live],
+  );
+  const lastLiveOrder = useMemo(
+    () => (live?.orders ?? []).find(
+      (row) => row.signal_to_fill_ms != null && Number(row.filled_quantity) > 0,
+    ),
+    [live],
+  );
 
   return (
     <main className="waterfall-shell">
@@ -521,25 +546,100 @@ export default function WaterfallDashboard() {
 
       {live?.available ? (
         <section className="waterfall-grid">
-          <Panel title="真实执行仓位" count={live.positions.length}>
-            {live.positions.length ? <div className="wf-position-list">
-              {live.positions.map((p) => <article className="wf-position-card" key={p.position_id}>
+          <Panel title="实盘独立账户" count={live.performance?.closed_positions ?? 0}>
+            <div className="waterfall-metrics">
+              <Metric
+                label="账户权益"
+                value={usdt(live.account?.margin_balance ?? 0)}
+                tone="cyan"
+                sub={`策略起点 ${usdt(live.sizing?.initial_equity ?? 0)}`}
+              />
+              <Metric
+                label="可用余额"
+                value={usdt(live.account?.available_balance ?? 0)}
+                tone="green"
+                sub={`钱包 ${usdt(live.account?.wallet_balance ?? 0)}`}
+              />
+              <Metric
+                label="净已实现 PnL"
+                value={usdt(live.performance?.net_realized_pnl_usdt ?? 0)}
+                tone={Number(live.performance?.net_realized_pnl_usdt ?? 0) >= 0 ? 'green' : 'red'}
+                sub={`毛利 ${usdt(live.performance?.gross_realized_pnl_usdt ?? 0)}`}
+              />
+              <Metric
+                label="未实现 PnL"
+                value={usdt(live.account?.unrealized_pnl ?? 0)}
+                tone={Number(live.account?.unrealized_pnl ?? 0) >= 0 ? 'green' : 'red'}
+              />
+              <Metric
+                label="手续费"
+                value={usdt(live.performance?.commission_cost_usdt ?? 0, 4)}
+                tone="neutral"
+                sub={`资金费 ${usdt(live.performance?.funding_fee_usdt ?? 0, 4)}`}
+              />
+              <Metric
+                label="实现回撤"
+                value={pct(live.sizing?.drawdown_pct ?? 0)}
+                tone={Number(live.sizing?.drawdown_pct ?? 0) >= 0.15 ? 'red' : 'neutral'}
+                sub={`缩仓系数 ${fmt(live.sizing?.factor ?? 1, 2)}`}
+              />
+              <Metric
+                label="持仓"
+                value={`${liveOpenPositions.length}/${live.max_open_positions}`}
+                tone={liveOpenPositions.length ? 'red' : 'neutral'}
+                sub={`${pct(live.base_margin_fraction, 0)}保证金 · ${fmt(live.leverage, 0)}x`}
+              />
+              <Metric
+                label="最近成交"
+                value={lastLiveOrder?.signal_to_fill_ms == null ? '--' : `${lastLiveOrder.signal_to_fill_ms}ms`}
+                tone="cyan"
+                sub={`信号滑点 ${fmt(lastLiveOrder?.slippage_bps ?? 0, 2)}bp`}
+              />
+            </div>
+          </Panel>
+          <Panel title="真实执行仓位" count={liveOpenPositions.length}>
+            {liveOpenPositions.length ? <div className="wf-position-list">
+              {liveOpenPositions.map((p) => <article className="wf-position-card" key={p.position_id}>
                 <div className="wf-card-head"><strong>{p.symbol}</strong><span>{p.status} · {p.protected ? '已保护' : '未保护'}</span></div>
                 <div className="wf-card-main"><b>{fmt(p.entry_price, 8)}</b><span>止损 {fmt(p.structure_stop_price, 8)} / 追踪 {fmt(p.trail_price, 8)}</span></div>
-                <div className="wf-card-meta"><span>数量 {fmt(p.quantity, 8)}</span><span>强平 {fmt(p.liquidation_price, 8)}</span><span>{date(p.updated_time)}</span></div>
+                <div className="wf-card-meta">
+                  <span>初始保证金 {usdt(p.initial_margin_usdt, 4)}</span>
+                  <span>名义 {usdt(p.initial_notional_usdt, 4)}</span>
+                  <span>{fmt(p.leverage, 0)}x</span>
+                  <span>强平 {fmt(p.liquidation_price, 8)}</span>
+                  <span>{date(p.updated_time)}</span>
+                </div>
               </article>)}
             </div> : <div className="empty-state">暂无真实仓位</div>}
           </Panel>
+        </section>
+      ) : null}
+
+      {live?.available ? (
+        <section className="waterfall-grid">
           <Panel title="真实订单状态" count={live.orders.length}>
             {live.orders.length ? <div className="wf-signal-list">
               {live.orders.slice(0, 10).map((o) => <article className="wf-signal wf-neutral" key={o.client_order_id}>
                 <div><strong>{o.side} {o.symbol}</strong><span>{date(o.updated_time)}</span></div>
                 <p>{o.order_type} / {o.execution_policy} / {o.state}</p>
-                <p>成交 {fmt(o.filled_quantity, 8)} @ {fmt(o.average_price, 8)}</p>
+                <p>成交价 {fmt(o.average_price, 8)} · 初始保证金 {usdt(o.initial_margin_usdt, 4)} · 名义 {usdt(o.initial_notional_usdt, 4)}</p>
+                <p>信号→提交 {o.signal_to_submit_ms == null ? '--' : `${o.signal_to_submit_ms}ms`} / 提交→ACK {o.submit_to_ack_ms == null ? '--' : `${o.submit_to_ack_ms}ms`}</p>
                 <p>信号→首成 {o.signal_to_fill_ms == null ? '--' : `${o.signal_to_fill_ms}ms`} / 完全成交 {o.signal_to_final_fill_ms == null ? '--' : `${o.signal_to_final_fill_ms}ms`}</p>
-                <p>总滑点 {fmt(o.slippage_bps, 2)}bp / 到达滑点 {fmt(o.arrival_slippage_bps, 2)}bp</p>
+                <p>信号滑点 {fmt(o.slippage_bps, 2)}bp / 到达滑点 {fmt(o.arrival_slippage_bps, 2)}bp</p>
               </article>)}
             </div> : <div className="empty-state">暂无真实订单</div>}
+          </Panel>
+          <Panel title="实盘执行边界" count={liveOpenPositions.length}>
+            <div className="waterfall-config live-boundaries">
+              <span>信号源：服务器纸面同源</span>
+              <span>策略：Claude 冠军标签</span>
+              <span>开仓：{live.execution_policy}</span>
+              <span>单笔保证金：{pct(live.base_margin_fraction, 0)} × 缩仓系数</span>
+              <span>杠杆：{fmt(live.leverage, 0)}x</span>
+              <span>最多持仓：{live.max_open_positions}</span>
+              <span>单笔名义上限：{usdt(live.max_notional_usdt)}</span>
+              <span>状态：{live.safe_halt_reason ? `SAFE HALT · ${live.safe_halt_reason}` : live.service?.status || '正常'}</span>
+            </div>
           </Panel>
         </section>
       ) : null}

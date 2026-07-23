@@ -365,10 +365,19 @@ class LiveTradingTests(unittest.TestCase):
         self.assertEqual(stop["quantity"], entry["quantity"])
         self.assertNotIn("closePosition", stop)
         self.assertNotIn("reduceOnly", stop)
-        asyncio.run(manager.handle_intent(intent(IntentAction.CLOSE_SHORT, "hedge-exit"), self.quote))
+        close_result = asyncio.run(
+            manager.handle_intent(
+                intent(IntentAction.CLOSE_SHORT, "hedge-exit"),
+                self.quote,
+            )
+        )
         exit_order = gateway.trade_ws.order_calls[-1]
         self.assertEqual(exit_order["positionSide"], "SHORT")
         self.assertNotIn("reduceOnly", exit_order)
+        self.assertEqual(
+            close_result["position"]["metadata"]["initial_quantity"],
+            entry["quantity"],
+        )
 
     def test_portfolio_market_ack_is_queried_until_filled(self) -> None:
         manager, gateway, _ledger = self.manager()
@@ -965,6 +974,50 @@ class LiveTradingTests(unittest.TestCase):
         self.assertEqual(row["signal_to_final_fill_ms"], 300)
         self.assertGreaterEqual(row["submit_to_ack_ms"], 0)
 
+    def test_dashboard_reports_initial_margin_and_net_live_pnl(self) -> None:
+        manager, _gateway, ledger = self.manager()
+        result = asyncio.run(manager.handle_intent(intent(), self.quote))
+        self.assertEqual(result["status"], "filled")
+        ledger.save_income([
+            {
+                "tranId": 301,
+                "incomeType": "REALIZED_PNL",
+                "asset": "USDT",
+                "symbol": "ALTUSDT",
+                "income": "1.25",
+                "time": 1_700_000_000_100,
+            },
+            {
+                "tranId": 302,
+                "incomeType": "COMMISSION",
+                "asset": "USDT",
+                "symbol": "ALTUSDT",
+                "income": "-0.05",
+                "time": 1_700_000_000_101,
+            },
+        ])
+        snapshot = ledger.dashboard_snapshot(limit=5, leverage=manager.config.leverage)
+        position = snapshot["positions"][0]
+        self.assertEqual(
+            D(position["initial_margin_usdt"]),
+            D(position["initial_notional_usdt"]) / D("3"),
+        )
+        self.assertEqual(D(snapshot["performance"]["gross_realized_pnl_usdt"]), D("1.25"))
+        self.assertEqual(D(snapshot["performance"]["commission_cost_usdt"]), D("0.05"))
+        self.assertEqual(D(snapshot["performance"]["net_realized_pnl_usdt"]), D("1.20"))
+        self.assertNotIn("pid", snapshot["service"])
+        self.assertNotIn("signal_source", snapshot["service"])
+        with ledger.connection() as conn:
+            indexes = {
+                str(row[1])
+                for row in conn.execute("PRAGMA index_list('live_orders')")
+            } | {
+                str(row[1])
+                for row in conn.execute("PRAGMA index_list('live_fills')")
+            }
+        self.assertIn("idx_live_orders_updated", indexes)
+        self.assertIn("idx_live_fills_time", indexes)
+
     def test_live_notification_contains_fill_latency_and_slippage(self) -> None:
         cfg = live_config(self.root)
         notifier = LiveEventNotifier({"live_trading": {"notify_wecom": True}}, cfg)
@@ -977,12 +1030,42 @@ class LiveTradingTests(unittest.TestCase):
                 "average_price": "99.8", "filled_quantity": "0.2",
                 "first_fill_time": measured.decision_time + 240,
                 "slippage_bps": "20.0",
+                "arrival_slippage_bps": "4.5",
             },
-            "position": {"protected": True},
+            "position": {
+                "protected": True,
+                "entry_price": "99.8",
+                "metadata": {"initial_quantity": "0.2", "leverage": "3"},
+            },
+            "account": {"margin_balance": "101.25"},
         })
         self.assertIn("延迟 240ms", sent[0])
-        self.assertIn("滑点 20.0bp", sent[0])
+        self.assertIn("信号滑点 20.0bp", sent[0])
+        self.assertIn("到达滑点 4.5bp", sent[0])
+        self.assertIn("初始保证金 6.6533 USDT", sent[0])
+        self.assertIn("账户权益 101.2500 USDT", sent[0])
         self.assertIn("已保护", sent[0])
+
+    def test_close_notification_uses_original_entry_margin(self) -> None:
+        cfg = live_config(self.root)
+        notifier = LiveEventNotifier({"live_trading": {"notify_wecom": True}}, cfg)
+        sent: list[str] = []
+        notifier._send = lambda content: (sent.append(content) or True, "")
+        closing = intent(IntentAction.CLOSE_SHORT, "close-margin")
+        notifier.intent_result(closing, {
+            "status": "closed",
+            "order": {
+                "average_price": "92", "filled_quantity": "0.2",
+                "first_fill_time": closing.decision_time + 180,
+            },
+            "position": {
+                "entry_price": "100",
+                "metadata": {"initial_quantity": "0.2", "leverage": "5"},
+            },
+            "account": {"margin_balance": "102.5"},
+        })
+        self.assertIn("初始保证金 4.0000 USDT", sent[0])
+        self.assertNotIn("3.6800 USDT", sent[0])
 
     def test_buy_slippage_is_adverse_when_fill_is_above_reference(self) -> None:
         manager, _gateway, _ledger = self.manager()
@@ -1557,6 +1640,138 @@ class SharedPaperSignalExecutionTests(unittest.TestCase):
         call = service._execute_signal_with_market.await_args
         self.assertIs(call.args[1], quote)
         self.assertIs(call.args[2], depth)
+
+    def test_first_trail_arm_unknown_closes_even_before_price_crosses(self) -> None:
+        service = SharedPaperSignalLiveTradingService.__new__(
+            SharedPaperSignalLiveTradingService
+        )
+        service._oms_lock = asyncio.Lock()
+        position = SimpleNamespace(
+            position_id="position-1",
+            symbol="ALTUSDT",
+            structure_stop_price=D("103"),
+        )
+        service.runtime = SimpleNamespace(
+            ledger=SimpleNamespace(append_event=lambda *_args, **_kwargs: None),
+            oms=SimpleNamespace(),
+        )
+        quote = BookQuote(
+            symbol="ALTUSDT", bid_price=D("97.8"), bid_quantity=D("10"),
+            ask_price=D("98"), ask_quantity=D("10"), event_time=1234,
+        )
+        service._fetch_execution_market = AsyncMock(
+            return_value=(quote, {"bids": [], "asks": []}),
+        )
+        service._execute_signal_with_market = AsyncMock(
+            return_value={"status": "closed"},
+        )
+
+        handled = asyncio.run(service._recover_failed_trail_update(
+            position,
+            D("99"),
+            1234,
+            {
+                "status": "failed",
+                "failure_kind": "UnknownExecutionStatus",
+                "old_protection": False,
+            },
+        ))
+
+        self.assertTrue(handled)
+        service._execute_signal_with_market.assert_awaited_once()
+        signal = service._execute_signal_with_market.await_args.args[0]
+        self.assertEqual(signal.rule, "trailing_first_arm_unavailable")
+
+    def test_first_trail_arm_definite_rejection_retries_once(self) -> None:
+        service = SharedPaperSignalLiveTradingService.__new__(
+            SharedPaperSignalLiveTradingService
+        )
+        service._oms_lock = asyncio.Lock()
+        position = SimpleNamespace(
+            position_id="position-1",
+            symbol="ALTUSDT",
+            structure_stop_price=D("103"),
+        )
+        oms = SimpleNamespace(
+            update_trail=AsyncMock(return_value={"status": "updated"}),
+            clear_safe_halt_reasons=lambda reasons: list(reasons),
+        )
+        service.runtime = SimpleNamespace(
+            ledger=SimpleNamespace(append_event=lambda *_args, **_kwargs: None),
+            oms=oms,
+        )
+        quote = BookQuote(
+            symbol="ALTUSDT", bid_price=D("97.8"), bid_quantity=D("10"),
+            ask_price=D("98"), ask_quantity=D("10"), event_time=1234,
+        )
+        service._fetch_execution_market = AsyncMock(
+            return_value=(quote, {"bids": [], "asks": []}),
+        )
+        service._execute_signal_with_market = AsyncMock()
+
+        handled = asyncio.run(service._recover_failed_trail_update(
+            position,
+            D("99"),
+            1234,
+            {
+                "status": "failed",
+                "failure_kind": "GatewayError",
+                "old_protection": False,
+                "halt_reason": "trail_replace_unresolved:ALTUSDT:GatewayError",
+            },
+        ))
+
+        self.assertTrue(handled)
+        oms.update_trail.assert_awaited_once_with(
+            "position-1", D("99"), True, 1235,
+        )
+        service._execute_signal_with_market.assert_not_awaited()
+
+    def test_first_trail_arm_uses_prior_quote_when_refetch_fails(self) -> None:
+        service = SharedPaperSignalLiveTradingService.__new__(
+            SharedPaperSignalLiveTradingService
+        )
+        service._oms_lock = asyncio.Lock()
+        position = SimpleNamespace(
+            position_id="position-1",
+            symbol="ALTUSDT",
+            structure_stop_price=D("103"),
+        )
+        recorded: list[str] = []
+        service.runtime = SimpleNamespace(
+            ledger=SimpleNamespace(
+                append_event=lambda _time, event, *_args, **_kwargs: recorded.append(event),
+            ),
+            oms=SimpleNamespace(),
+        )
+        prior_quote = BookQuote(
+            symbol="ALTUSDT", bid_price=D("97.8"), bid_quantity=D("10"),
+            ask_price=D("98"), ask_quantity=D("10"), event_time=1200,
+        )
+        prior_depth = {"bids": [], "asks": []}
+        service._fetch_execution_market = AsyncMock(side_effect=GatewayError("offline"))
+        service._execute_signal_with_market = AsyncMock(
+            return_value={"status": "closed"},
+        )
+
+        handled = asyncio.run(service._recover_failed_trail_update(
+            position,
+            D("99"),
+            1234,
+            {
+                "status": "failed",
+                "failure_kind": "UnknownExecutionStatus",
+                "old_protection": False,
+            },
+            fallback_quote=prior_quote,
+            fallback_depth=prior_depth,
+        ))
+
+        self.assertTrue(handled)
+        self.assertIn("TRAIL_FAILURE_USING_PRIOR_MARKET", recorded)
+        call = service._execute_signal_with_market.await_args
+        self.assertIs(call.args[1], prior_quote)
+        self.assertIs(call.args[2], prior_depth)
 
     def test_protection_state_roundtrip(self) -> None:
         with tempfile.TemporaryDirectory() as td:

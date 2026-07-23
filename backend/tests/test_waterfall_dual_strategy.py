@@ -435,6 +435,35 @@ class BoardFlowGateExitTests(unittest.TestCase):
         self.assertEqual([s.action for s in signals], ["take_profit"])
         self.assertNotIn("SYM", eng.positions)
 
+    def test_rearmed_trail_uses_open_when_trigger_is_already_crossed(self) -> None:
+        eng = self._engine(0.30)
+        eng.cfg["slippage_bps"] = 0
+        eng.positions["SYM"] = self._position()
+        rebound = Candle(
+            "SYM", "1m", self.START + 20 * 60_000,
+            99.0, 100.0, 98.5, 99.5, 100.0,
+            self.START + 20 * 60_000 + 59_999,
+            10_000.0, 100, 1.0, 7000.0,
+        )
+        _, changed, signals = eng.on_kline(KlineClosed("SYM", "1m", rebound))
+        self.assertEqual([signal.action for signal in signals], ["take_profit"])
+        self.assertEqual(changed[0].exit_price, 99.0)
+        self.assertEqual(changed[0].exit_reason, "take_profit_trailing")
+
+    def test_structure_stop_uses_open_when_market_is_already_above_stop(self) -> None:
+        eng = self._engine(0.60)
+        eng.cfg["slippage_bps"] = 0
+        eng.positions["SYM"] = self._position()
+        gap = Candle(
+            "SYM", "1m", self.START + 20 * 60_000,
+            105.0, 106.0, 104.0, 105.0, 100.0,
+            self.START + 20 * 60_000 + 59_999,
+            10_000.0, 100, 1.0, 4000.0,
+        )
+        _, changed, signals = eng.on_kline(KlineClosed("SYM", "1m", gap))
+        self.assertEqual([signal.action for signal in signals], ["stop_loss"])
+        self.assertEqual(changed[0].exit_price, 105.0)
+
     def test_stop_loss_never_gated_by_flow(self) -> None:
         eng = self._engine(0.60)  # sellers dominant, but a stop must still fire
         eng.positions["SYM"] = self._position()

@@ -791,6 +791,7 @@ class LiveOrderManager:
                     "sizing_equity": str(self.risk.sizing_equity),
                     "drawdown_at_entry": str(self.risk.sizing_drawdown_pct),
                     "sizing_factor": str(self.risk.sizing_factor),
+                    "leverage": str(self.config.leverage),
                     "margin_fraction": str(
                         min(
                             D(str(self.config.margin_fraction_cap)),
@@ -1073,7 +1074,11 @@ class LiveOrderManager:
                 position.updated_time = order.updated_time
                 self.ledger.save_position(position)
             self.safe_halt(f"exit_order_rejected:{order.client_order_id}")
-        return {"status": position.status, "order": order.to_dict()}
+        return {
+            "status": position.status,
+            "order": order.to_dict(),
+            "position": position.to_dict(),
+        }
 
     async def _resolve_unknown_exit_order(
         self, position: LivePosition, order: LiveOrder, exc: Exception
@@ -1212,10 +1217,10 @@ class LiveOrderManager:
     async def update_trail(
         self, position_id: str, desired_price: Decimal, arm: bool, decision_time: int,
         *, force_replace: bool = False,
-    ) -> None:
+    ) -> dict[str, Any]:
         position = self.positions.get(position_id)
         if not position or not position.protected:
-            return
+            return {"status": "position_unavailable", "position_id": position_id}
         old_id = position.trail_client_algo_id
         if not arm or desired_price <= 0:
             if old_id and self.can_send_reduce_orders:
@@ -1226,22 +1231,27 @@ class LiveOrderManager:
                         now_ms(), "TRAIL_CANCEL_UNRESOLVED", old_id, {"error": str(exc)},
                     )
                     self.safe_halt(f"trail_cancel_unresolved:{old_id}")
-                    return
+                    return {
+                        "status": "failed",
+                        "failure_kind": type(exc).__name__,
+                        "old_protection": True,
+                        "halt_reason": f"trail_cancel_unresolved:{old_id}",
+                    }
             position.trail_client_algo_id = ""
             position.trail_algo_id = None
             position.trail_price = D("0")
             self.ledger.save_position(position)
-            return
+            return {"status": "disarmed", "old_protection": bool(old_id)}
         rules = self.rules.get(position.symbol)
         desired = rules.price_up(desired_price)
         if old_id and desired == position.trail_price and not force_replace:
-            return
+            return {"status": "unchanged", "old_protection": True}
         new_id = short_id(
             "tr", f"{position.position_id}:{decision_time}:{desired}:{position.quantity}"
         )
         if not self.can_send_reduce_orders:
             self.ledger.append_event(decision_time, "TRAIL_DRY_RUN", position_id, {"price": str(desired), "arm": True})
-            return
+            return {"status": "dry_run", "old_protection": bool(old_id)}
         params = {
             "algoType": "CONDITIONAL", "symbol": position.symbol, "side": "BUY",
             "positionSide": self.config.position_side, "type": "STOP_MARKET",
@@ -1255,8 +1265,17 @@ class LiveOrderManager:
             result = await self._place_algo_confirmed(params)
         except (GatewayError, UnknownExecutionStatus) as exc:
             self.ledger.append_event(now_ms(), "TRAIL_REPLACE_FAILED", position_id, {"error": str(exc)})
-            self.safe_halt(f"trail_replace_unresolved:{position.symbol}:{type(exc).__name__}")
-            return
+            halt_reason = (
+                f"trail_replace_unresolved:{position.symbol}:{type(exc).__name__}"
+            )
+            self.safe_halt(halt_reason)
+            return {
+                "status": "failed",
+                "failure_kind": type(exc).__name__,
+                "old_protection": bool(old_id),
+                "halt_reason": halt_reason,
+                "desired_price": str(desired),
+            }
         position.trail_algo_id = int(result.get("algoId") or 0) or None
         position.trail_client_algo_id = new_id
         position.trail_price = desired
@@ -1274,6 +1293,16 @@ class LiveOrderManager:
             except (GatewayError, UnknownExecutionStatus) as exc:
                 self.ledger.append_event(now_ms(), "OLD_TRAIL_CANCEL_FAILED", old_id, {"error": str(exc)})
                 self.safe_halt(f"old_trail_cancel_unresolved:{old_id}")
+                return {
+                    "status": "updated_with_old_cancel_unresolved",
+                    "old_protection": True,
+                    "desired_price": str(desired),
+                }
+        return {
+            "status": "updated",
+            "old_protection": bool(old_id),
+            "desired_price": str(desired),
+        }
 
     async def handle_user_event(self, payload: dict[str, Any]) -> None:
         event_type = str(payload.get("e") or "")

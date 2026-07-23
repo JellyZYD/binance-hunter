@@ -85,6 +85,7 @@ class LiveLedger:
                 );
                 CREATE INDEX IF NOT EXISTS idx_live_orders_intent ON live_orders(intent_id, updated_time);
                 CREATE INDEX IF NOT EXISTS idx_live_orders_exchange ON live_orders(exchange_order_id);
+                CREATE INDEX IF NOT EXISTS idx_live_orders_updated ON live_orders(updated_time);
 
                 CREATE TABLE IF NOT EXISTS live_fills(
                     exchange_order_id INTEGER NOT NULL,
@@ -101,6 +102,7 @@ class LiveLedger:
                     trade_time INTEGER NOT NULL,
                     PRIMARY KEY(exchange_order_id, trade_id)
                 );
+                CREATE INDEX IF NOT EXISTS idx_live_fills_time ON live_fills(trade_time);
 
                 CREATE TABLE IF NOT EXISTS live_positions(
                     position_id TEXT PRIMARY KEY,
@@ -126,6 +128,7 @@ class LiveLedger:
                     metadata_json TEXT NOT NULL
                 );
                 CREATE INDEX IF NOT EXISTS idx_live_positions_status ON live_positions(status, updated_time);
+                CREATE INDEX IF NOT EXISTS idx_live_positions_updated ON live_positions(updated_time);
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_live_positions_open_symbol
                     ON live_positions(symbol) WHERE status IN ('open','closing');
 
@@ -458,7 +461,7 @@ class LiveLedger:
             )
             return True
 
-    def dashboard_snapshot(self, limit: int = 30) -> dict[str, Any]:
+    def dashboard_snapshot(self, limit: int = 30, leverage: int = 1) -> dict[str, Any]:
         with self.connection() as conn:
             account_row = conn.execute(
                 "SELECT * FROM live_account_snapshots ORDER BY snapshot_time DESC LIMIT 1"
@@ -470,13 +473,18 @@ class LiveLedger:
             ]
             orders = [
                 dict(row) for row in conn.execute(
-                    """SELECT o.*,i.decision_time,i.signal_price,
+                    """SELECT o.*,i.position_id AS strategy_position_id,
+                    i.decision_time,i.signal_price,
+                    p.entry_price AS position_entry_price,
+                    p.metadata_json AS position_metadata_json,
                     CASE WHEN o.submit_time>0 THEN o.submit_time-i.decision_time ELSE NULL END AS signal_to_submit_ms,
                     CASE WHEN o.ack_time>0 AND o.submit_time>0 THEN o.ack_time-o.submit_time ELSE NULL END AS submit_to_ack_ms,
                     CASE WHEN o.first_fill_time>0 AND o.submit_time>0 THEN o.first_fill_time-o.submit_time ELSE NULL END AS submit_to_first_fill_ms,
                     CASE WHEN o.first_fill_time>0 THEN o.first_fill_time-i.decision_time ELSE NULL END AS signal_to_fill_ms,
                     CASE WHEN o.final_fill_time>0 THEN o.final_fill_time-i.decision_time ELSE NULL END AS signal_to_final_fill_ms
-                    FROM live_orders o LEFT JOIN live_intents i ON i.intent_id=o.intent_id
+                    FROM live_orders o
+                    LEFT JOIN live_intents i ON i.intent_id=o.intent_id
+                    LEFT JOIN live_positions p ON p.position_id=i.position_id
                     ORDER BY o.updated_time DESC LIMIT ?""",
                     (int(limit),),
                 )
@@ -492,20 +500,78 @@ class LiveLedger:
                     (int(limit),),
                 )
             ]
+            sizing_start_row = conn.execute(
+                "SELECT value FROM live_meta WHERE key='sizing_start_time'"
+            ).fetchone()
+            sizing_start = int(sizing_start_row[0] or 0) if sizing_start_row else 0
+            income_row = conn.execute(
+                """
+                SELECT
+                    COALESCE(SUM(CASE WHEN income_type='REALIZED_PNL'
+                        THEN CAST(amount AS REAL) ELSE 0 END),0) AS gross_realized_pnl,
+                    COALESCE(SUM(CASE WHEN income_type='COMMISSION'
+                        THEN CAST(amount AS REAL) ELSE 0 END),0) AS commission,
+                    COALESCE(SUM(CASE WHEN income_type='FUNDING_FEE'
+                        THEN CAST(amount AS REAL) ELSE 0 END),0) AS funding_fee,
+                    COALESCE(SUM(CASE WHEN income_type='INSURANCE_CLEAR'
+                        THEN CAST(amount AS REAL) ELSE 0 END),0) AS insurance_clear
+                FROM live_income
+                WHERE income_time>=?
+                """,
+                (sizing_start,),
+            ).fetchone()
+            position_stats = conn.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN status='closed' THEN 1 ELSE 0 END) AS closed_positions,
+                    SUM(CASE WHEN status IN ('open','closing') THEN 1 ELSE 0 END) AS open_positions
+                FROM live_positions
+                """
+            ).fetchone()
         for row in positions:
-            row["metadata"] = json.loads(row.pop("metadata_json", "{}") or "{}")
+            row["metadata"] = self._decode_object(
+                row.pop("metadata_json", "{}")
+            )
+            self._add_position_money(row, row["metadata"], leverage)
+        for row in orders:
+            metadata = self._decode_object(
+                row.pop("position_metadata_json", "{}")
+            )
+            self._add_position_money(
+                row,
+                metadata,
+                leverage,
+                entry_price=row.pop("position_entry_price", None) or row.get("average_price"),
+                quantity=metadata.get("initial_quantity") or row.get("filled_quantity"),
+            )
         account = dict(account_row) if account_row else None
         if account:
             account.pop("raw_json", None)
+        gross_realized = Decimal(str(income_row["gross_realized_pnl"] or 0))
+        commission = Decimal(str(income_row["commission"] or 0))
+        funding = Decimal(str(income_row["funding_fee"] or 0))
+        insurance = Decimal(str(income_row["insurance_clear"] or 0))
         return {
             "account": account,
             "positions": positions,
             "orders": orders,
             "fills": fills,
             "events": events,
+            "performance": {
+                "gross_realized_pnl_usdt": str(gross_realized),
+                "commission_usdt": str(commission),
+                "commission_cost_usdt": str(max(Decimal("0"), -commission)),
+                "funding_fee_usdt": str(funding),
+                "insurance_clear_usdt": str(insurance),
+                "net_realized_pnl_usdt": str(
+                    gross_realized + commission + funding + insurance
+                ),
+                "open_positions": int(position_stats["open_positions"] or 0),
+                "closed_positions": int(position_stats["closed_positions"] or 0),
+            },
             "safe_halt_reason": self.get_meta("safe_halt_reason"),
             "sizing": {
-                "start_time": int(self.get_meta("sizing_start_time", "0") or 0),
+                "start_time": sizing_start,
                 "initial_equity": self.get_meta("sizing_initial_equity", "0"),
                 "current_equity": self.get_meta("sizing_current_equity", "0"),
                 "peak_equity": self.get_meta("sizing_peak_equity", "0"),
@@ -515,12 +581,61 @@ class LiveLedger:
             "service": {
                 "heartbeat_time": int(self.get_meta("service_heartbeat_time", "0") or 0),
                 "status": self.get_meta("service_status"),
-                "pid": int(self.get_meta("service_pid", "0") or 0),
                 "processed_events": int(self.get_meta("service_processed_events", "0") or 0),
                 "processed_signals": int(
                     self.get_meta("service_processed_signals", "0") or 0
                 ),
-                "signal_source": self.get_meta("shared_signal_source_db"),
+                "signal_source_mode": (
+                    "shared_paper_db"
+                    if self.get_meta("shared_signal_source_db")
+                    else ""
+                ),
                 "signal_strategy": self.get_meta("shared_signal_strategy"),
             },
         }
+
+    @staticmethod
+    def _decode_object(raw: Any) -> dict[str, Any]:
+        try:
+            value = json.loads(str(raw or "{}"))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    @staticmethod
+    def _add_position_money(
+        row: dict[str, Any],
+        metadata: dict[str, Any],
+        default_leverage: int,
+        *,
+        entry_price: Any | None = None,
+        quantity: Any | None = None,
+    ) -> None:
+        price = LiveLedger._decimal(
+            entry_price or row.get("entry_price") or "0"
+        )
+        initial_quantity = LiveLedger._decimal(
+            quantity or metadata.get("initial_quantity") or row.get("quantity") or "0"
+        )
+        position_leverage = LiveLedger._decimal(
+            metadata.get("leverage") or default_leverage or 1,
+            Decimal("1"),
+        )
+        initial_notional = price * initial_quantity
+        initial_margin = (
+            initial_notional / position_leverage
+            if position_leverage > 0
+            else Decimal("0")
+        )
+        row["initial_quantity"] = str(initial_quantity)
+        row["initial_notional_usdt"] = str(initial_notional)
+        row["initial_margin_usdt"] = str(initial_margin)
+        row["leverage"] = str(position_leverage)
+
+    @staticmethod
+    def _decimal(value: Any, default: Decimal = Decimal("0")) -> Decimal:
+        try:
+            parsed = Decimal(str(value))
+        except (ArithmeticError, TypeError, ValueError):
+            return default
+        return parsed if parsed.is_finite() else default
