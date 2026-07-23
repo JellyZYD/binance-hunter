@@ -446,7 +446,7 @@ export default function WaterfallDashboard() {
         <span>最多持仓：{String(cfg.max_open_positions || '-')}</span>
         <span>类型：{Array.isArray(cfg.enabled_families) ? cfg.enabled_families.join(', ') : '-'}</span>
         <span>Core5：{cfg.core5_enabled ? '开启' : '已停用'}</span>
-        <span>实盘下单：{cfg.real_order_enabled ? '已开启' : '关闭'}</span>
+        <span>纸面引擎直连下单：{cfg.real_order_enabled ? '已开启' : '关闭（由隔离 OMS 执行）'}</span>
       </section>
 
       {system ? (

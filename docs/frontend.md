@@ -42,6 +42,9 @@ notional per position/order, protection status, decision-to-fill latency, and
 signal/arrival slippage. Quantity is not the primary user-facing sizing field.
 API keys, secrets, webhook URLs and raw exchange payloads are never returned.
 The public response also omits the service PID and the private SQLite path.
+The paper strategy strip labels its own direct execution as disabled because
+real orders are sent only by the isolated live OMS; this is not a live-status
+warning.
 
 On a server with `backend/config/live.server.json`, the read-only API uses that
 file only to report the effective non-secret execution mode and risk limits.
