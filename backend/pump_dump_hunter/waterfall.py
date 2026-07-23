@@ -891,6 +891,39 @@ def build_waterfall_engines(settings: dict[str, Any]) -> tuple[dict[str, Any], d
     return cfg, board_cfg, engine, extra_engines
 
 
+def persist_live_protection_state(
+    store: Store,
+    engine: Any,
+    symbol: str,
+    signals: list[WaterfallSignal],
+) -> None:
+    """Publish the strategy's exact trailing decision for the live executor."""
+    state = (
+        engine.live_protection_state(symbol)
+        if hasattr(engine, "live_protection_state")
+        else None
+    )
+    if state:
+        store.upsert_waterfall_protection_state({
+            "strategy": engine.strategy,
+            "symbol": symbol,
+            "position_id": state["position_id"],
+            "decision_time": int(state["decision_time"]),
+            "trail_price": float(state["trail_price"]),
+            "arm_trail": bool(state["arm_trail"]),
+            "flow_hold_through": bool(state.get("flow_hold_through", False)),
+            "updated_time": utc_ms(),
+        })
+        return
+    if any(
+        signal.strategy == engine.strategy
+        and signal.symbol == symbol
+        and signal.action != "open_short"
+        for signal in signals
+    ):
+        store.delete_waterfall_protection_state(engine.strategy, symbol)
+
+
 async def waterfall_monitor(
     settings: dict[str, Any],
     broad_top: int | None = None,
@@ -915,6 +948,10 @@ async def waterfall_monitor(
         eng.load_recent_state(
             store.waterfall_position_rows(limit=0, strategy=eng.strategy),
             store.waterfall_signal_rows(limit=1000, strategy=eng.strategy),
+        )
+        store.prune_waterfall_protection_states(
+            eng.strategy,
+            {position.position_id for position in eng.positions.values()},
         )
 
     paper_accounts: ClaudePaperAccounts | None = None
@@ -943,6 +980,10 @@ async def waterfall_monitor(
     source = WebSocketMarketSource(settings, symbols, ["1m"], micro_streams=micro_streams)
     agen = source.market_events()
     next_discovery = utc_ms() + every * 1000
+    last_candle_close_ms = max(
+        (dq[-1].close_time for dq in engine.candles.values() if dq),
+        default=0,
+    )
     print(f"waterfall strategy={engine.strategy} symbols={len(symbols)}", flush=True)
     try:
         while samples <= 0 or processed < samples:
@@ -974,6 +1015,7 @@ async def waterfall_monitor(
                 write_monitor_health(Path(dirs["db"]).parent, {
                     "events": processed, "open_positions": open_n,
                     "universe": len(symbols), "watch_symbols": len(engine.candles),
+                    "last_candle_close_ms": last_candle_close_ms,
                 })
                 if rss > float(cfg.get("rss_soft_limit_mb", 1100)):
                     print(f"[{local_stamp()}] WARNING waterfall rss {rss:.0f}MB over soft limit; systemd MemoryMax will restart cleanly if it climbs further", flush=True)
@@ -990,22 +1032,44 @@ async def waterfall_monitor(
             # monitor — log and move on. Position + signal writes stay atomic per
             # symbol so a failure can't leave a half-open paper trade.
             try:
+                candle_time_advanced = event.candle.close_time > last_candle_close_ms
+                last_candle_close_ms = max(last_candle_close_ms, event.candle.close_time)
                 store.save_candles([event.candle])
+                if candle_time_advanced:
+                    open_n = len(engine.positions) + sum(len(e.positions) for e in extra_engines)
+                    write_monitor_health(Path(dirs["db"]).parent, {
+                        "events": processed, "open_positions": open_n,
+                        "universe": len(symbols), "watch_symbols": len(engine.candles),
+                        "last_candle_close_ms": last_candle_close_ms,
+                    })
+                    last_health_ms = now_ms
                 watch, positions, signals = engine.on_kline(event)
+                engine_results = [(engine, signals)]
                 for eng in extra_engines:
                     _w2, p2, s2 = eng.on_kline(event)
                     positions = [*positions, *p2]
                     signals = [*signals, *s2]
+                    engine_results.append((eng, s2))
                 store.upsert_waterfall_watch(watch)
-                # Execution first: the paper position is persisted here, BEFORE
-                # the WeCom push, so a slow/failed webhook can never lose the
-                # trade record. The signal row is written once (save_* is
-                # INSERT OR IGNORE) with the real push status; the push itself
-                # is best-effort and cannot raise out of this loop.
+                # Publish position, protection and signal before notifications.
+                # The live executor tails this durable outbox, so a slow WeCom
+                # webhook cannot add seconds to real-order latency.
                 for pos in positions:
                     store.upsert_waterfall_position(pos.to_dict())
+                for eng, engine_signals in engine_results:
+                    persist_live_protection_state(
+                        store, eng, event.symbol, engine_signals,
+                    )
                 changed_by_id = {pos.position_id: pos.to_dict() for pos in positions}
                 for signal in signals:
+                    inserted = store.save_waterfall_signal(
+                        signal.to_dict(),
+                        pushed=False,
+                        push_error="pending",
+                        publish_outbox=True,
+                    )
+                    if not inserted:
+                        continue
                     executor.handle_signal(signal)
                     if paper_accounts is not None:
                         paper_accounts.apply_signal(signal, changed_by_id.get(signal.position_id))
@@ -1013,7 +1077,9 @@ async def waterfall_monitor(
                         pushed, msg = sink.emit(signal)
                     except Exception as pexc:
                         pushed, msg = False, f"{type(pexc).__name__}: {pexc}"
-                    store.save_waterfall_signal(signal.to_dict(), pushed=pushed, push_error="" if pushed else msg)
+                    store.update_waterfall_signal_push(
+                        signal.signal_id, pushed, "" if pushed else msg,
+                    )
             except Exception as exc:
                 print(f"[{local_stamp()}] waterfall event error {getattr(event, 'symbol', '')}: {type(exc).__name__}: {exc}", flush=True)
             if processed % int(settings.get("websocket", {}).get("heartbeat_events", 250)) == 0:
@@ -1353,9 +1419,7 @@ def prewarm_waterfall_symbols(
         has_internal_gap = bool(gap_starts)
         if cached and gap_min <= 0 and not has_internal_gap:
             # A newly listed contract can legitimately have fewer than `limit`
-            # candles. If its cache is current, repeatedly asking Binance for
-            # 1500 rows cannot create pre-listing history and only delays live
-            # startup. Stale or empty caches still take the REST path below.
+            # candles. A current cache cannot gain pre-listing history.
             return symbol, cached, []
         if not allow_rest:
             return symbol, cached, []  # REST is banned/unavailable: websocket + DB only

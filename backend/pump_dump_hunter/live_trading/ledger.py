@@ -517,5 +517,10 @@ class LiveLedger:
                 "status": self.get_meta("service_status"),
                 "pid": int(self.get_meta("service_pid", "0") or 0),
                 "processed_events": int(self.get_meta("service_processed_events", "0") or 0),
+                "processed_signals": int(
+                    self.get_meta("service_processed_signals", "0") or 0
+                ),
+                "signal_source": self.get_meta("shared_signal_source_db"),
+                "signal_strategy": self.get_meta("shared_signal_strategy"),
             },
         }

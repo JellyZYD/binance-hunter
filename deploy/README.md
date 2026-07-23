@@ -71,6 +71,8 @@ curl -s https://pixia.cc/api/hunter/waterfall/summary | python3 -m json.tool | g
 
 **监控进程健康自报**：监控进程每 ~30s 把 RSS/事件数/持仓/币数写 `storage/monitor_health.json`，`/api/system` 读出，`/waterfall` 页"监控进程"卡显示监控 RSS + 存活。`waterfall_quant.rss_soft_limit_mb`（默认 1100）超限日志告警。
 
+**内存保持有界**：启动时会为当前币池加载策略所需的 24h 1m 历史；此后每 15 分钟刷新只预热新增或断档币，并释放已离池且无持仓币种的 K 线，不再重放全市场历史。`/api/system` 的全库 K 线统计缓存 5 分钟，K 线新鲜度直接使用监控心跳。2 核 2G 服务器预热并发固定为 `--max-workers 3`。
+
 ## 前端部署：Vercel（推荐，2G 机器免构建）
 
 2G 机器构建 Next.js 易 OOM。前端已可完全托管在 Vercel，服务器只跑后端：
@@ -245,6 +247,50 @@ grep VmRSS /proc/$(pgrep -f 'run.py monitor')/status
 # 采集器三路数据（启动 ~5min 后才有文件）
 ls -lh /opt/binance-hunter/backend/storage/micro/
 ```
+
+## 实盘执行服务（私密、同源）
+
+实盘不再订阅第二套 400 币 K 线。`binance-hunter-monitor` 把 Claude 信号
+及追踪保护状态发布到 `backend/storage/hunter.db`，`binance-hunter-live`
+仅消费该有序 outbox，并维护 Binance 私有流、OMS 和交易所 Algo 止损。
+
+首次安装前必须由管理员创建 `/etc/binance-hunter-live.env`，权限 `0600`：
+
+```text
+BINANCE_API_KEY=...
+BINANCE_API_SECRET=...
+WECOM_WEBHOOK_URL=...
+BINANCE_LIVE_AUTOSTART_CONFIRM=I_UNDERSTAND_BINANCE_LIVE_ORDERS
+```
+
+密钥文件不得放在仓库内。安装过程：
+
+```bash
+cd /opt/binance-hunter
+python3 deploy/build-live-server-config.py --max-notional-usdt 21
+install -m 0644 deploy/systemd/binance-hunter-live.service \
+  /etc/systemd/system/binance-hunter-live.service
+systemctl daemon-reload
+systemctl enable --now binance-hunter-live
+```
+
+体检：
+
+```bash
+systemctl status binance-hunter-monitor binance-hunter-live --no-pager
+journalctl -u binance-hunter-live -n 100 --no-pager
+sqlite3 backend/storage/live_trading.db \
+  "select key,value from live_meta where key like 'service_%' or key='safe_halt_reason';"
+```
+
+正常状态应满足：`service_status=running`、心跳小于 10 秒、
+`service_processed_events` 持续增加、`safe_halt_reason` 为空。每个真实持仓
+必须在交易所同时存在结构保护 Algo 单。代码更新可以重启 monitor 和 live，
+游标与确定性 intent 会阻止历史信号重放。
+
+实盘服务不持有第二套公共 K 线流，资源只用于私有用户流、OMS、保护单和
+权威对账；systemd 的 CPU/IO 权重与 OOM 优先级高于默认服务。共享行情源
+异常时只停止增加风险，退出与交易所止损维护继续运行并自动等待恢复。
 
 > 心跳日志频率由 `websocket.heartbeat_events` 控制（当前 7500 ≈ 30s 一条）。
 > API 内网端口 `127.0.0.1:8787`（`/api/hunter/...` 经 Nginx 代理对外）。

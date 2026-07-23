@@ -1585,3 +1585,100 @@ class LiveOrderManager:
             "exchange_positions": sorted(exchange_symbols),
             "open_algo_orders": len(open_algos),
         }
+
+    def recoverable_halts_after_reconcile(
+        self,
+        exchange_state: dict[str, Any],
+    ) -> set[str]:
+        """Return operational halts proven resolved by an exchange snapshot.
+
+        Unknown executions and external positions/orders are deliberately not
+        included. They still require manual review.
+        """
+        reasons = [
+            item for item in self.safe_halt_reason.split(" | ") if item
+        ]
+        if not reasons:
+            return set()
+        exchange_positions = {
+            str(row.get("symbol")): row
+            for row in exchange_state.get("positions", [])
+            if D(str(row.get("positionAmt") or "0")) != 0
+            and str(row.get("positionSide") or self.config.position_side)
+            == self.config.position_side
+        }
+        open_orders = {
+            str(row.get("clientOrderId") or row.get("origClientOrderId") or "")
+            for row in exchange_state.get("open_orders", [])
+        }
+        open_algo_rows = {
+            str(row.get("clientAlgoId") or row.get("caid") or ""): row
+            for row in exchange_state.get("open_algo_orders", [])
+            if str(row.get("clientAlgoId") or row.get("caid") or "")
+        }
+
+        def structure_ok(symbol: str) -> bool:
+            position = self.positions_by_symbol.get(symbol)
+            if position is None:
+                return symbol not in exchange_positions
+            client_id = position.structure_client_algo_id
+            row = open_algo_rows.get(client_id)
+            if not position.protected or not client_id or row is None:
+                return False
+            algo_quantity = D(str(
+                row.get("quantity") or row.get("origQty") or "0"
+            ))
+            return algo_quantity <= 0 or algo_quantity == position.quantity
+
+        resolved: set[str] = set()
+        cancel_prefixes = {
+            "trail_cancel_unresolved:": open_algo_rows,
+            "old_trail_cancel_unresolved:": open_algo_rows,
+            "old_structure_cancel_unresolved:": open_algo_rows,
+            "closed_position_algo_cancel_unresolved:": open_algo_rows,
+            "orphan_algo_cancel_failed:": open_algo_rows,
+            "orphan_order_cancel_failed:": open_orders,
+        }
+        for reason in reasons:
+            matched_cancel = False
+            for prefix, active in cancel_prefixes.items():
+                if reason.startswith(prefix):
+                    client_id = reason[len(prefix):].split(":", 1)[0]
+                    if client_id and client_id not in active:
+                        resolved.add(reason)
+                    matched_cancel = True
+                    break
+            if matched_cancel:
+                continue
+            if reason.startswith("structure_stop_missing:"):
+                symbol = reason.split(":", 2)[1]
+                if structure_ok(symbol):
+                    resolved.add(reason)
+                continue
+            if reason.startswith("structure_quantity_mismatch:"):
+                symbol = reason.split(":", 2)[1]
+                if structure_ok(symbol):
+                    resolved.add(reason)
+                continue
+            if reason.startswith("position_quantity_mismatch:"):
+                symbol = reason.split(":", 2)[1]
+                position = self.positions_by_symbol.get(symbol)
+                exchange = exchange_positions.get(symbol)
+                if position is None and exchange is None:
+                    resolved.add(reason)
+                elif position is not None and exchange is not None:
+                    exchange_qty = abs(D(str(exchange.get("positionAmt") or "0")))
+                    if exchange_qty == position.quantity and structure_ok(symbol):
+                        resolved.add(reason)
+                continue
+            if reason.startswith("trail_replace_unresolved:"):
+                symbol = reason.split(":", 2)[1]
+                position = self.positions_by_symbol.get(symbol)
+                if position is None:
+                    resolved.add(reason)
+                elif (
+                    position.trail_client_algo_id
+                    and position.trail_client_algo_id in open_algo_rows
+                ):
+                    resolved.add(reason)
+        return resolved

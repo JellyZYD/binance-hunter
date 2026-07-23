@@ -18,6 +18,7 @@
 /backend/.venv/
 /backend/storage/*
 !/backend/storage/.gitkeep
+/backend/config/live.server.json
 /backend/alerts/*
 !/backend/alerts/.gitkeep
 /backend/data/cache/*
@@ -26,6 +27,7 @@
 !/backend/reports/.gitkeep
 /backend/**/__pycache__/
 /backend/**/*.py[cod]
+/deploy/__pycache__/
 
 # ---- env files (opt-in commit via .env.example) ----
 .env

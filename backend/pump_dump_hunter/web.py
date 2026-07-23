@@ -177,6 +177,9 @@ class DashboardHandler(BaseHTTPRequestHandler):
 
         try:
             candle_stat = self.store.candle_stat_1m()
+            health = sysmon.read_monitor_health(self.store.db_path.parent)
+            if health and int(health.get("last_candle_close_ms") or 0) > 0:
+                candle_stat["last_close_ms"] = int(health["last_candle_close_ms"])
         except Exception:
             candle_stat = None
         return sysmon.collect(self.store.db_path, candle_stat)

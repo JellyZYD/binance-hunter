@@ -10,6 +10,7 @@ APP_DIR="${APP_DIR:-${CLONE_DIR}/frontend}"
 BACKEND_DIR="${BACKEND_DIR:-${CLONE_DIR}/backend}"
 INSTALL_FRONTEND="${INSTALL_FRONTEND:-1}"
 VERIFY_LIVE="${VERIFY_LIVE:-1}"
+LIVE_MAX_NOTIONAL_USDT="${LIVE_MAX_NOTIONAL_USDT:-21}"
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Run as root: sudo bash deploy/update.sh" >&2
@@ -28,6 +29,14 @@ fi
 . .venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
+if [ -f /etc/binance-hunter-live.env ] \
+  && systemctl cat binance-hunter-live.service >/dev/null 2>&1; then
+  cd "$CLONE_DIR"
+  "$BACKEND_DIR/.venv/bin/python" deploy/build-live-server-config.py \
+    --max-notional-usdt "$LIVE_MAX_NOTIONAL_USDT"
+  install -m 0644 deploy/systemd/binance-hunter-live.service \
+    /etc/systemd/system/binance-hunter-live.service
+fi
 
 echo "[3/5] Update frontend"
 if [ "$INSTALL_FRONTEND" = "1" ]; then
@@ -42,6 +51,9 @@ systemctl restart binance-hunter-api.service
 systemctl restart binance-hunter-monitor.service
 if systemctl cat binance-hunter-micro.service >/dev/null 2>&1; then
   systemctl restart binance-hunter-micro.service
+fi
+if systemctl cat binance-hunter-live.service >/dev/null 2>&1; then
+  systemctl restart binance-hunter-live.service
 fi
 if [ "$INSTALL_FRONTEND" = "1" ] && systemctl list-unit-files binance-hunter-web.service >/dev/null 2>&1; then
   systemctl restart binance-hunter-web.service

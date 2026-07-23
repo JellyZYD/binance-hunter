@@ -21,6 +21,7 @@ from .live_trading.credentials import CredentialError
 from .live_trading.gateway import GatewayError
 from .live_trading.service import (
     ClaudeLiveTradingService,
+    SharedPaperSignalLiveTradingService,
     build_runtime,
     consume_order_nonce,
     issue_order_nonce,
@@ -98,9 +99,12 @@ def cmd_live_run(args) -> int:
             max_notional_override=args.max_notional_usdt,
             orders_authorized=authorized,
         )
-        service = ClaudeLiveTradingService(
-            settings, runtime, broad_top=args.broad_top, max_workers=args.max_workers,
-        )
+        if runtime.config.signal_source == "shared_paper_db":
+            service = SharedPaperSignalLiveTradingService(settings, runtime)
+        else:
+            service = ClaudeLiveTradingService(
+                settings, runtime, broad_top=args.broad_top, max_workers=args.max_workers,
+            )
         try:
             await service.run(samples=args.samples)
         finally:
@@ -610,7 +614,10 @@ def build_parser() -> argparse.ArgumentParser:
     live_nonce.add_argument("--ttl-seconds", type=int, default=300)
     live_nonce.set_defaults(func=cmd_live_issue_nonce)
 
-    live_run = sub.add_parser("live-run", help="run isolated Claude live/dry execution service")
+    live_run = sub.add_parser(
+        "live-run",
+        help="run Claude live/dry execution service from configured signal source",
+    )
     live_run.add_argument("--config", default=None)
     live_run.add_argument("--mode", choices=["dry_run", "testnet", "live_micro", "live"], default="dry_run")
     live_run.add_argument("--max-notional-usdt", type=float, default=None)

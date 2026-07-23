@@ -1,9 +1,22 @@
 import unittest
 
+from pump_dump_hunter.data.store import Store
 from pump_dump_hunter.web import annotate_pumps
+
+from .helpers import candle, temp_settings
 
 
 class WebApiTests(unittest.TestCase):
+    def test_candle_stats_are_shared_between_dashboard_polls(self):
+        settings = temp_settings()
+        store = Store(settings["paths"]["db_path"])
+        store.save_candles([candle("ONEUSDT", "1m", 1_700_000_000_000, 1.0, 1.0)])
+        self.assertEqual(store.candle_stat_1m(cache_seconds=300)["count"], 1)
+
+        store.save_candles([candle("ONEUSDT", "1m", 1_700_000_060_000, 1.0, 1.0)])
+        self.assertEqual(store.candle_stat_1m(cache_seconds=300)["count"], 1)
+        self.assertEqual(store.candle_stat_1m(cache_seconds=0)["count"], 2)
+
     def test_annotate_pumps_uses_formal_and_long_derived_thresholds(self):
         rows = [
             {"symbol": "LOWUSDT", "max_gain_pct": 20.0, "evidence": []},

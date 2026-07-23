@@ -307,12 +307,12 @@
     "market_base_url": "https://fapi.binance.com",
     "rest_base_url": "https://papi.binance.com",
     "ws_stream_url": "wss://fstream.binance.com/pm",
-    "leverage": 10,
+    "leverage": 5,
     "isolated_margin": false,
     "require_one_way": false,
     "max_open_positions": 3,
     "sizing_mode": "realized_drawdown_ladder",
-    "base_margin_fraction": 0.1,
+    "base_margin_fraction": 0.2,
     "drawdown_ladder": [
       {"below": 0.05, "factor": 1.0},
       {"below": 0.1, "factor": 0.75},
@@ -320,8 +320,8 @@
       {"below": null, "factor": 0.25}
     ],
     "risk_per_trade": 0.0025,
-    "margin_fraction_cap": 0.1,
-    "max_notional_usdt": 20.0,
+    "margin_fraction_cap": 0.2,
+    "max_notional_usdt": 21.0,
     "liquidation_stop_buffer_pct": 0.05,
     "max_entry_slippage_bps": 30.0,
     "ioc_slippage_bps": 12.0,
@@ -338,6 +338,10 @@
     "allowed_symbols": [],
     "dashboard_enabled": false,
     "notify_wecom": true,
-    "notify_dry_run": false
+    "notify_dry_run": false,
+    "signal_source": "shared_paper_db",
+    "signal_poll_interval_ms": 100,
+    "max_entry_signal_age_seconds": 30,
+    "source_health_stale_seconds": 150
   }
 }

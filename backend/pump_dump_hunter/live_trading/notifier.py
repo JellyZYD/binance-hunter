@@ -84,3 +84,22 @@ class LiveEventNotifier:
             "> 权威账户、持仓及订单对账已通过\n"
             f"> 已解除 {', '.join(cleared)}"
         )
+
+    def source_degraded(
+        self,
+        reason: str,
+        detail: dict[str, Any],
+    ) -> tuple[bool, str]:
+        return self._send(
+            "**实盘信号源暂不可用**\n"
+            "> 已暂停新开仓，现有仓位仍由交易所止损保护\n"
+            f"> 原因 {reason} | 监控延迟 {detail.get('monitor_age_seconds')}s"
+        )
+
+    def source_recovered(self, detail: dict[str, Any]) -> tuple[bool, str]:
+        return self._send(
+            "**实盘信号源已自动恢复**\n"
+            "> 纸面与实盘继续共用同一策略信号\n"
+            f"> K线延迟 {detail.get('candle_age_seconds')}s | "
+            f"监管 {detail.get('universe')} 币"
+        )

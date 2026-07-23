@@ -2,14 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import sqlite3
 import tempfile
 import time
+from collections import deque
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import requests
 
@@ -35,17 +37,35 @@ from pump_dump_hunter.live_trading.notifier import LiveEventNotifier
 from pump_dump_hunter.live_trading.oms import LiveOrderManager
 from pump_dump_hunter.live_trading.service import (
     ClaudeLiveTradingService,
+    SharedPaperSignalLiveTradingService,
     consume_order_nonce,
     fetch_reconcile_inputs,
     issue_order_nonce,
+    missing_entry_history_opens,
     recoverable_connectivity_halts,
     signal_to_intent,
+    universe_requires_stream_rebuild,
 )
+from pump_dump_hunter.live_trading.signal_source import (
+    SharedPaperSignalSource,
+    SignalCursor,
+)
+from pump_dump_hunter.data.store import Store
+from pump_dump_hunter.models import Candle, KlineClosed
 from pump_dump_hunter.waterfall import WaterfallSignal
 from tests.helpers import temp_settings
 
 
 D = Decimal
+
+
+def minute_candle(open_time: int, close: float = 100.0) -> Candle:
+    return Candle(
+        symbol="ALTUSDT", interval="1m", open_time=open_time,
+        open=close, high=close, low=close, close=close, volume=10.0,
+        close_time=open_time + 59_999, quote_volume=1_000.0, trades=1,
+        taker_buy_base=5.0, taker_buy_quote=500.0,
+    )
 
 
 def exchange_info() -> dict:
@@ -221,6 +241,31 @@ class LiveTradingTests(unittest.TestCase):
         self.assertEqual(ledger.pending_orders(), [])
         self.assertEqual(gateway.trade_ws.order_calls, [])
         self.assertTrue(manager.safe_halt_reason.startswith("symbol_configuration_failed:"))
+
+    def test_reconcile_proof_clears_only_resolved_protection_halt(self) -> None:
+        manager, _gateway, _ledger = self.manager()
+        result = asyncio.run(manager.handle_intent(intent(), self.quote))
+        self.assertEqual(result["status"], "filled")
+        position = manager.positions_by_symbol["ALTUSDT"]
+        protection_reason = "structure_stop_missing:ALTUSDT:GatewayError"
+        external_reason = "external_open_orders:['ALTUSDT:user-order']"
+        manager.safe_halt(protection_reason)
+        manager.safe_halt(external_reason)
+        state = {
+            "positions": [{
+                "symbol": "ALTUSDT",
+                "positionAmt": str(-position.quantity),
+                "positionSide": manager.config.position_side,
+            }],
+            "open_orders": [],
+            "open_algo_orders": [{
+                "clientAlgoId": position.structure_client_algo_id,
+                "quantity": str(position.quantity),
+            }],
+        }
+        resolved = manager.recoverable_halts_after_reconcile(state)
+        self.assertIn(protection_reason, resolved)
+        self.assertNotIn(external_reason, resolved)
 
     def test_portfolio_margin_config_uses_papi_and_hedge_mode(self) -> None:
         config = live_config(self.root)
@@ -1164,6 +1209,378 @@ class LiveTradingTests(unittest.TestCase):
         service._heartbeat("running", 17, force=True)
         service._heartbeat("running", 12, force=True)
         self.assertEqual(meta["service_processed_events"], "17")
+
+
+class LiveMarketContinuityTests(unittest.TestCase):
+    def test_missing_entry_history_uses_only_closed_history(self) -> None:
+        minute = 60_000
+        candles = [minute_candle(offset * minute) for offset in (0, 1, 3, 4)]
+        self.assertEqual(
+            missing_entry_history_opens(candles, 5 * minute, lookback_minutes=5),
+            [2 * minute],
+        )
+
+    def test_same_universe_does_not_require_websocket_rebuild(self) -> None:
+        self.assertFalse(universe_requires_stream_rebuild(
+            ["ALTUSDT", "betausdt"], ["BETAUSDT", "ALTUSDT"],
+        ))
+        self.assertTrue(universe_requires_stream_rebuild(
+            ["ALTUSDT"], ["ALTUSDT", "NEWUSDT"],
+        ))
+
+    def test_candidate_gap_is_repaired_before_current_decision(self) -> None:
+        minute = 60_000
+        decision_open = 1440 * minute
+        missing_open = 417 * minute
+        history = [
+            minute_candle(offset * minute, 100.0 if offset == 0 else 141.0)
+            for offset in range(1440)
+            if offset * minute != missing_open
+        ]
+
+        class Engine:
+            def __init__(self) -> None:
+                self.candles = {"ALTUSDT": deque(history, maxlen=1500)}
+                self.positions: dict[str, object] = {}
+                self.cfg = {"min_ret_24h": 0.40}
+
+            def prime_candles(self, incoming):
+                merged = {row.open_time: row for row in self.candles["ALTUSDT"]}
+                merged.update({row.open_time: row for row in incoming})
+                self.candles["ALTUSDT"] = deque(
+                    [merged[key] for key in sorted(merged)], maxlen=1500,
+                )
+                return []
+
+        class Rest:
+            def __init__(self) -> None:
+                self.calls: list[tuple] = []
+
+            def klines(self, *args):
+                self.calls.append(args)
+                return [minute_candle(missing_open, 141.0)]
+
+        saved: list[Candle] = []
+        events: list[tuple] = []
+        service = ClaudeLiveTradingService.__new__(ClaudeLiveTradingService)
+        service.engine = Engine()
+        service.strategy_store = SimpleNamespace(
+            save_candles=lambda rows: saved.extend(rows),
+            upsert_waterfall_watch=lambda _rows: None,
+        )
+        service.runtime = SimpleNamespace(
+            ledger=SimpleNamespace(append_event=lambda *args: events.append(args)),
+        )
+        service._gap_repair_next_attempt_ms = {}
+        current = minute_candle(decision_open, 141.0)
+        repaired = asyncio.run(service._repair_entry_history_if_needed(
+            KlineClosed("ALTUSDT", "1m", current), Rest(),
+        ))
+
+        self.assertTrue(repaired)
+        self.assertEqual([row.open_time for row in saved], [missing_open])
+        self.assertEqual(
+            missing_entry_history_opens(
+                list(service.engine.candles["ALTUSDT"]), decision_open,
+            ),
+            [],
+        )
+        self.assertEqual(events[-1][1], "MARKET_CANDLE_GAP_REPAIRED")
+
+
+class SharedPaperSignalExecutionTests(unittest.TestCase):
+    @staticmethod
+    def signal_row(signal_id: str, decision_time: int, action: str = "open_short") -> dict:
+        return WaterfallSignal(
+            signal_id=signal_id,
+            position_id=f"position-{signal_id}",
+            symbol="ALTUSDT",
+            strategy="claude_board_wf_1m",
+            action=action,
+            family="board_24h40_dd7",
+            rule="claude_e1",
+            decision_time=decision_time,
+            price=100.0,
+            stop_price=102.0,
+            evidence=["test"],
+        ).to_dict()
+
+    def test_shared_source_preserves_insert_order_at_same_timestamp(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db_path = Path(td) / "hunter.db"
+            store = Store(db_path)
+            store.save_waterfall_signal(
+                self.signal_row("signal-b", 1000), publish_outbox=True,
+            )
+            store.save_waterfall_signal(
+                self.signal_row("signal-a", 1000), publish_outbox=True,
+            )
+            store.save_waterfall_signal(
+                self.signal_row("signal-c", 2000), publish_outbox=True,
+            )
+            source = SharedPaperSignalSource(db_path, "claude_board_wf_1m")
+            try:
+                rows = source.signals_after(SignalCursor())
+                signals = [signal for _sequence, signal in rows]
+                self.assertEqual(
+                    [signal.signal_id for signal in signals],
+                    ["signal-b", "signal-a", "signal-c"],
+                )
+                self.assertEqual(
+                    source.latest_cursor(),
+                    SignalCursor(3, 2000, "signal-c"),
+                )
+            finally:
+                source.close()
+
+    def test_first_start_skips_existing_outbox_and_resumes_from_cursor(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            db_path = root / "hunter.db"
+            store = Store(db_path)
+            store.save_waterfall_signal(
+                self.signal_row("historical", 1000), publish_outbox=True,
+            )
+            ledger = LiveLedger(root / "live.db")
+            service = SharedPaperSignalLiveTradingService.__new__(
+                SharedPaperSignalLiveTradingService
+            )
+            service.signal_source = SharedPaperSignalSource(
+                db_path, "claude_board_wf_1m",
+            )
+            service.runtime = SimpleNamespace(ledger=ledger)
+            try:
+                service._initialize_source_cursor()
+                self.assertEqual(
+                    service._cursor,
+                    SignalCursor(1, 1000, "historical"),
+                )
+                store.save_waterfall_signal(
+                    self.signal_row("fresh", 2000), publish_outbox=True,
+                )
+                pending = service.signal_source.signals_after(service._cursor)
+                self.assertEqual(
+                    [signal.signal_id for _sequence, signal in pending],
+                    ["fresh"],
+                )
+            finally:
+                service.signal_source.close()
+
+    def test_stale_entry_is_skipped_without_execution(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            store = Store(root / "hunter.db")
+            stale_time = int(time.time() * 1000) - 31_000
+            store.save_waterfall_signal(
+                self.signal_row("stale", stale_time), publish_outbox=True,
+            )
+            ledger = LiveLedger(root / "live.db")
+            service = SharedPaperSignalLiveTradingService.__new__(
+                SharedPaperSignalLiveTradingService
+            )
+            service.signal_source = SharedPaperSignalSource(
+                root / "hunter.db", "claude_board_wf_1m",
+            )
+            service._cursor = SignalCursor()
+            service._processed_signals = 0
+            service._source_db_error = ""
+            service._source_db_retry_at_ms = 0
+            service.runtime = SimpleNamespace(
+                config=SimpleNamespace(max_entry_signal_age_seconds=30),
+                oms=SimpleNamespace(safe_halt_reason=""),
+                ledger=ledger,
+            )
+            service._handle_signal = AsyncMock()
+            try:
+                handled = asyncio.run(service._poll_signals_once(True))
+                self.assertEqual(handled, 1)
+                service._handle_signal.assert_not_awaited()
+                self.assertEqual(service._cursor.signal_id, "stale")
+            finally:
+                service.signal_source.close()
+
+    def test_unhealthy_source_skips_entry_but_does_not_block_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            store = Store(root / "hunter.db")
+            decision_time = int(time.time() * 1000)
+            store.save_waterfall_signal(
+                self.signal_row("entry", decision_time), publish_outbox=True,
+            )
+            store.save_waterfall_signal(
+                self.signal_row("exit", decision_time, action="take_profit"),
+                publish_outbox=True,
+            )
+            ledger = LiveLedger(root / "live.db")
+            service = SharedPaperSignalLiveTradingService.__new__(
+                SharedPaperSignalLiveTradingService
+            )
+            service.signal_source = SharedPaperSignalSource(
+                root / "hunter.db", "claude_board_wf_1m",
+            )
+            service._cursor = SignalCursor()
+            service._processed_signals = 0
+            service._source_db_error = ""
+            service._source_db_retry_at_ms = 0
+            service._source_health_reason = "closed_1m_candle_stale"
+            service.runtime = SimpleNamespace(
+                config=SimpleNamespace(max_entry_signal_age_seconds=30),
+                oms=SimpleNamespace(safe_halt_reason=""),
+                ledger=ledger,
+            )
+            service._handle_signal = AsyncMock(return_value={"status": "closed"})
+            try:
+                handled = asyncio.run(service._poll_signals_once(False))
+                self.assertEqual(handled, 2)
+                service._handle_signal.assert_awaited_once()
+                handled_signal = service._handle_signal.await_args.args[0]
+                self.assertEqual(handled_signal.action, "take_profit")
+                self.assertEqual(service._cursor.signal_id, "exit")
+            finally:
+                service.signal_source.close()
+
+    def test_transient_market_snapshot_failure_does_not_safe_halt(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ledger = LiveLedger(Path(td) / "live.db")
+            safe_halts: list[str] = []
+
+            class Rest:
+                def book_ticker(self, _symbol):
+                    raise GatewayError("temporary network failure")
+
+                def depth(self, _symbol, _limit):
+                    raise GatewayError("temporary network failure")
+
+            service = ClaudeLiveTradingService.__new__(ClaudeLiveTradingService)
+            service.runtime = SimpleNamespace(
+                gateway=SimpleNamespace(rest=Rest()),
+                ledger=ledger,
+                oms=SimpleNamespace(safe_halt=lambda reason: safe_halts.append(reason)),
+            )
+            service._oms_lock = asyncio.Lock()
+            result = asyncio.run(service._handle_signal(WaterfallSignal(
+                signal_id="network",
+                position_id="position-network",
+                symbol="ALTUSDT",
+                strategy="claude_board_wf_1m",
+                action="open_short",
+                family="board",
+                rule="e1",
+                decision_time=int(time.time() * 1000),
+                price=100.0,
+                stop_price=102.0,
+            )))
+            self.assertEqual(result["status"], "market_unavailable")
+            self.assertEqual(safe_halts, [])
+
+    def test_shared_source_read_failure_pauses_without_stopping_service(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ledger = LiveLedger(Path(td) / "live.db")
+
+            class BrokenSource:
+                db_path = Path(td) / "hunter.db"
+                closed = False
+
+                def signals_after(self, _cursor, limit=100):
+                    raise sqlite3.OperationalError("database is locked")
+
+                def close(self):
+                    self.closed = True
+
+            service = SharedPaperSignalLiveTradingService.__new__(
+                SharedPaperSignalLiveTradingService
+            )
+            service.signal_source = BrokenSource()
+            service._cursor = SignalCursor()
+            service._source_db_error = ""
+            service._source_db_failures = 0
+            service._source_db_retry_at_ms = 0
+            service._source_health_initialized = False
+            service._source_healthy = True
+            service._source_health_reason = ""
+            service.runtime = SimpleNamespace(ledger=ledger)
+            service.notifier = SimpleNamespace(
+                source_degraded=lambda _reason, _detail: (False, ""),
+            )
+            handled = asyncio.run(service._poll_signals_once(True))
+            self.assertEqual(handled, 0)
+            self.assertEqual(service._source_db_failures, 1)
+            self.assertIn("database is locked", service._source_db_error)
+            self.assertGreater(service._source_db_retry_at_ms, int(time.time() * 1000))
+            self.assertTrue(service.signal_source.closed)
+            self.assertFalse(service._source_healthy)
+
+    def test_shared_protective_exit_reuses_fetched_market_snapshot(self) -> None:
+        service = SharedPaperSignalLiveTradingService.__new__(
+            SharedPaperSignalLiveTradingService
+        )
+        service._source_db_error = ""
+        service._protection_cache = {}
+        service._oms_lock = asyncio.Lock()
+        service.signal_source = SimpleNamespace(
+            protection_states=lambda: [{
+                "symbol": "ALTUSDT",
+                "position_id": "position-1",
+                "decision_time": 1234,
+                "trail_price": 99.0,
+                "arm_trail": True,
+            }],
+        )
+        position = SimpleNamespace(
+            position_id="position-1",
+            structure_stop_price=D("103"),
+        )
+        service.runtime = SimpleNamespace(
+            oms=SimpleNamespace(
+                positions_by_symbol={"ALTUSDT": position},
+                safe_halt_reason="",
+            ),
+        )
+        quote = BookQuote(
+            symbol="ALTUSDT",
+            bid_price=D("99.9"),
+            bid_quantity=D("10"),
+            ask_price=D("100"),
+            ask_quantity=D("10"),
+            event_time=1234,
+        )
+        depth = {"bids": [["99.9", "10"]], "asks": [["100", "10"]]}
+        service._fetch_execution_market = AsyncMock(return_value=(quote, depth))
+        service._execute_signal_with_market = AsyncMock(
+            return_value={"status": "closed"},
+        )
+
+        asyncio.run(service._sync_shared_protection_once())
+
+        service._fetch_execution_market.assert_awaited_once_with("ALTUSDT")
+        service._execute_signal_with_market.assert_awaited_once()
+        call = service._execute_signal_with_market.await_args
+        self.assertIs(call.args[1], quote)
+        self.assertIs(call.args[2], depth)
+
+    def test_protection_state_roundtrip(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            store = Store(Path(td) / "hunter.db")
+            store.upsert_waterfall_protection_state({
+                "strategy": "claude_board_wf_1m",
+                "symbol": "ALTUSDT",
+                "position_id": "position-1",
+                "decision_time": 1234,
+                "trail_price": 98.5,
+                "arm_trail": True,
+                "flow_hold_through": False,
+                "updated_time": 1235,
+            })
+            rows = store.waterfall_protection_rows("claude_board_wf_1m")
+            self.assertEqual(len(rows), 1)
+            self.assertTrue(rows[0]["arm_trail"])
+            store.prune_waterfall_protection_states(
+                "claude_board_wf_1m", set(),
+            )
+            self.assertEqual(
+                store.waterfall_protection_rows("claude_board_wf_1m"),
+                [],
+            )
 
 
 if __name__ == "__main__":

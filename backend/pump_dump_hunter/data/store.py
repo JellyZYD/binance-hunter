@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +14,9 @@ class Store:
     def __init__(self, db_path: str | Path):
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._candle_stat_lock = threading.Lock()
+        self._candle_stat_cached_at = 0.0
+        self._candle_stat_cache: dict[str, Any] | None = None
         self.init_db()
 
     def connect(self) -> sqlite3.Connection:
@@ -50,6 +55,9 @@ class Store:
                     taker_buy_quote REAL NOT NULL,
                     PRIMARY KEY(symbol, interval, open_time)
                 );
+
+                CREATE INDEX IF NOT EXISTS idx_candles_interval_close
+                    ON candles(interval, close_time);
 
                 CREATE TABLE IF NOT EXISTS liquidity_snapshots(
                     run_id TEXT NOT NULL,
@@ -235,6 +243,34 @@ class Store:
 
                 CREATE INDEX IF NOT EXISTS idx_waterfall_signals_time
                     ON waterfall_signals(decision_time DESC);
+                CREATE INDEX IF NOT EXISTS idx_waterfall_signals_strategy_cursor
+                    ON waterfall_signals(strategy, decision_time, signal_id);
+
+                CREATE TABLE IF NOT EXISTS waterfall_signal_outbox(
+                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                    signal_id TEXT NOT NULL UNIQUE,
+                    strategy TEXT NOT NULL,
+                    decision_time INTEGER NOT NULL,
+                    created_time INTEGER NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_waterfall_signal_outbox_strategy
+                    ON waterfall_signal_outbox(strategy, seq);
+
+                CREATE TABLE IF NOT EXISTS waterfall_protection_state(
+                    strategy TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    position_id TEXT NOT NULL,
+                    decision_time INTEGER NOT NULL,
+                    trail_price REAL NOT NULL DEFAULT 0,
+                    arm_trail INTEGER NOT NULL DEFAULT 0,
+                    flow_hold_through INTEGER NOT NULL DEFAULT 0,
+                    updated_time INTEGER NOT NULL,
+                    PRIMARY KEY(strategy, symbol)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_waterfall_protection_strategy
+                    ON waterfall_protection_state(strategy, updated_time);
 
                 CREATE TABLE IF NOT EXISTS waterfall_paper_accounts(
                     account_id TEXT PRIMARY KEY,
@@ -909,10 +945,16 @@ class Store:
         finally:
             conn.close()
 
-    def save_waterfall_signal(self, row: dict[str, Any], pushed: bool = False, push_error: str = "") -> None:
+    def save_waterfall_signal(
+        self,
+        row: dict[str, Any],
+        pushed: bool = False,
+        push_error: str = "",
+        publish_outbox: bool = False,
+    ) -> bool:
         conn = self.connect()
         try:
-            conn.execute(
+            cursor = conn.execute(
                 """INSERT OR IGNORE INTO waterfall_signals(
                     signal_id, position_id, symbol, strategy, action, family, rule, decision_time,
                     price, stop_price, pnl_pct, confidence, tier, notional_usdt, margin_usdt,
@@ -941,7 +983,122 @@ class Store:
                     push_error,
                 ),
             )
+            inserted = cursor.rowcount > 0
+            if inserted and publish_outbox:
+                conn.execute(
+                    """INSERT INTO waterfall_signal_outbox(
+                        signal_id,strategy,decision_time,created_time
+                    ) VALUES(?,?,?,?)""",
+                    (
+                        str(row["signal_id"]),
+                        str(row["strategy"]),
+                        int(row["decision_time"]),
+                        int(row["decision_time"]),
+                    ),
+                )
             conn.commit()
+            return inserted
+        finally:
+            conn.close()
+
+    def update_waterfall_signal_push(
+        self,
+        signal_id: str,
+        pushed: bool,
+        push_error: str = "",
+    ) -> None:
+        conn = self.connect()
+        try:
+            conn.execute(
+                "UPDATE waterfall_signals SET pushed=?,push_error=? WHERE signal_id=?",
+                (1 if pushed else 0, str(push_error or ""), str(signal_id)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def upsert_waterfall_protection_state(self, row: dict[str, Any]) -> None:
+        conn = self.connect()
+        try:
+            conn.execute(
+                """INSERT INTO waterfall_protection_state(
+                    strategy,symbol,position_id,decision_time,trail_price,
+                    arm_trail,flow_hold_through,updated_time
+                ) VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(strategy,symbol) DO UPDATE SET
+                    position_id=excluded.position_id,
+                    decision_time=excluded.decision_time,
+                    trail_price=excluded.trail_price,
+                    arm_trail=excluded.arm_trail,
+                    flow_hold_through=excluded.flow_hold_through,
+                    updated_time=excluded.updated_time""",
+                (
+                    str(row["strategy"]),
+                    str(row["symbol"]),
+                    str(row["position_id"]),
+                    int(row["decision_time"]),
+                    float(row.get("trail_price") or 0.0),
+                    1 if row.get("arm_trail") else 0,
+                    1 if row.get("flow_hold_through") else 0,
+                    int(row.get("updated_time") or row["decision_time"]),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def delete_waterfall_protection_state(self, strategy: str, symbol: str) -> None:
+        conn = self.connect()
+        try:
+            conn.execute(
+                "DELETE FROM waterfall_protection_state WHERE strategy=? AND symbol=?",
+                (str(strategy), str(symbol)),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def prune_waterfall_protection_states(
+        self,
+        strategy: str,
+        active_position_ids: set[str],
+    ) -> None:
+        conn = self.connect()
+        try:
+            if active_position_ids:
+                placeholders = ",".join("?" for _ in active_position_ids)
+                conn.execute(
+                    f"DELETE FROM waterfall_protection_state "
+                    f"WHERE strategy=? AND position_id NOT IN ({placeholders})",
+                    (str(strategy), *sorted(active_position_ids)),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM waterfall_protection_state WHERE strategy=?",
+                    (str(strategy),),
+                )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def waterfall_protection_rows(self, strategy: str) -> list[dict[str, Any]]:
+        conn = self.connect()
+        try:
+            rows = conn.execute(
+                """SELECT strategy,symbol,position_id,decision_time,trail_price,
+                arm_trail,flow_hold_through,updated_time
+                FROM waterfall_protection_state
+                WHERE strategy=? ORDER BY updated_time, symbol""",
+                (str(strategy),),
+            ).fetchall()
+            return [
+                {
+                    **dict(row),
+                    "arm_trail": bool(row["arm_trail"]),
+                    "flow_hold_through": bool(row["flow_hold_through"]),
+                }
+                for row in rows
+            ]
         finally:
             conn.close()
 
@@ -1025,21 +1182,37 @@ class Store:
         finally:
             conn.close()
 
-    def candle_stat_1m(self) -> dict[str, Any]:
-        conn = self.connect()
-        try:
-            row = conn.execute(
-                "SELECT COUNT(*) AS n, MIN(close_time) AS lo, MAX(close_time) AS hi FROM candles WHERE interval='1m'"
-            ).fetchone()
-            lo = int(row["lo"]) if row and row["lo"] else 0
-            hi = int(row["hi"]) if row and row["hi"] else 0
-            return {
-                "count": int(row["n"]) if row and row["n"] else 0,
-                "last_close_ms": hi,
-                "span_days": round((hi - lo) / 86_400_000, 1) if (lo and hi) else 0.0,
-            }
-        finally:
-            conn.close()
+    def candle_stat_1m(self, cache_seconds: float = 300.0) -> dict[str, Any]:
+        """Return dashboard-only candle totals without rescanning on every poll.
+
+        The dashboard requests /api/system every few seconds. Serializing those
+        identical full-table aggregates through SQLite used to leave dozens of
+        blocked HTTP threads behind while the monitor was writing its prewarm
+        batch. One process-wide Store instance serves the API, so a small shared
+        cache is sufficient and candle freshness is overlaid from monitor health.
+        """
+        now = time.monotonic()
+        with self._candle_stat_lock:
+            if self._candle_stat_cache is not None and now - self._candle_stat_cached_at < cache_seconds:
+                return dict(self._candle_stat_cache)
+            conn = self.connect()
+            try:
+                row = conn.execute(
+                    "SELECT COUNT(*) AS n, MIN(close_time) AS lo, MAX(close_time) AS hi "
+                    "FROM candles WHERE interval='1m'"
+                ).fetchone()
+                lo = int(row["lo"]) if row and row["lo"] else 0
+                hi = int(row["hi"]) if row and row["hi"] else 0
+                result = {
+                    "count": int(row["n"]) if row and row["n"] else 0,
+                    "last_close_ms": hi,
+                    "span_days": round((hi - lo) / 86_400_000, 1) if (lo and hi) else 0.0,
+                }
+            finally:
+                conn.close()
+            self._candle_stat_cache = result
+            self._candle_stat_cached_at = now
+            return dict(result)
 
     def waterfall_strategies(self) -> list[str]:
         conn = self.connect()

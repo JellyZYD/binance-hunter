@@ -1,0 +1,28 @@
+[Unit]
+Description=Binance Hunter Claude live execution
+Wants=network-online.target binance-hunter-monitor.service
+After=network-online.target binance-hunter-monitor.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/binance-hunter
+EnvironmentFile=/etc/binance-hunter-live.env
+ExecStart=/opt/binance-hunter/backend/.venv/bin/python /opt/binance-hunter/deploy/run-live-service.py --config /opt/binance-hunter/backend/config/live.server.json --max-notional-usdt 21
+Restart=always
+RestartSec=5
+KillSignal=SIGINT
+TimeoutStopSec=20
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+CPUWeight=200
+IOWeight=200
+OOMScoreAdjust=-250
+MemoryHigh=250M
+MemoryMax=400M
+
+[Install]
+WantedBy=multi-user.target

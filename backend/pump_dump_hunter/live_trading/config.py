@@ -13,6 +13,7 @@ VALID_EXECUTION_POLICIES = {"market", "ioc", "maker_first", "randomized"}
 VALID_ACCOUNT_APIS = {"usdm", "portfolio_margin"}
 VALID_POSITION_MODES = {"one_way", "hedge"}
 VALID_SIZING_MODES = {"risk_based", "realized_drawdown_ladder"}
+VALID_SIGNAL_SOURCES = {"standalone_kline", "shared_paper_db"}
 
 
 DEFAULT_DRAWDOWN_LADDER = (
@@ -58,6 +59,11 @@ class LiveTradingConfig:
     daily_loss_limit_pct: float
     allowed_symbols: tuple[str, ...]
     dashboard_enabled: bool
+    signal_source: str
+    shared_signal_db_path: Path
+    signal_poll_interval_ms: int
+    max_entry_signal_age_seconds: int
+    source_health_stale_seconds: int
 
     @classmethod
     def from_settings(
@@ -96,6 +102,14 @@ class LiveTradingConfig:
         ledger = Path(raw.get("ledger_path") or "storage/live_trading.db")
         if not ledger.is_absolute():
             ledger = resolve_path(ledger)
+        shared_signal_db = Path(
+            raw.get("shared_signal_db_path")
+            or (settings.get("paths") or {}).get("db_path")
+            or "storage/hunter.db"
+        )
+        if not shared_signal_db.is_absolute():
+            shared_signal_db = resolve_path(shared_signal_db)
+        signal_source = str(raw.get("signal_source") or "standalone_kline").lower()
         testnet = mode == "testnet"
         if testnet and account_api == "portfolio_margin":
             raise ValueError("Binance Portfolio Margin is not supported by the USD-M testnet")
@@ -171,6 +185,11 @@ class LiveTradingConfig:
             daily_loss_limit_pct=float(raw.get("daily_loss_limit_pct", 0.02)),
             allowed_symbols=tuple(str(x).upper() for x in raw.get("allowed_symbols", [])),
             dashboard_enabled=bool(raw.get("dashboard_enabled", False)),
+            signal_source=signal_source,
+            shared_signal_db_path=shared_signal_db,
+            signal_poll_interval_ms=int(raw.get("signal_poll_interval_ms", 100)),
+            max_entry_signal_age_seconds=int(raw.get("max_entry_signal_age_seconds", 30)),
+            source_health_stale_seconds=int(raw.get("source_health_stale_seconds", 150)),
         )
         cfg.validate()
         return cfg
@@ -196,6 +215,16 @@ class LiveTradingConfig:
             raise ValueError("max_open_positions must be positive")
         if self.sizing_mode not in VALID_SIZING_MODES:
             raise ValueError(f"unknown live sizing mode: {self.sizing_mode}")
+        if self.signal_source not in VALID_SIGNAL_SOURCES:
+            raise ValueError(f"unknown live signal source: {self.signal_source}")
+        if self.shared_signal_db_path.resolve() == self.ledger_path.resolve():
+            raise ValueError("shared signal DB and live ledger must be separate files")
+        if self.signal_poll_interval_ms < 50 or self.signal_poll_interval_ms > 5_000:
+            raise ValueError("signal_poll_interval_ms must be in 50..5000")
+        if self.max_entry_signal_age_seconds < 1 or self.max_entry_signal_age_seconds > 300:
+            raise ValueError("max_entry_signal_age_seconds must be in 1..300")
+        if self.source_health_stale_seconds < 60 or self.source_health_stale_seconds > 600:
+            raise ValueError("source_health_stale_seconds must be in 60..600")
         if not 0 < self.base_margin_fraction <= 0.25:
             raise ValueError("base_margin_fraction must be in (0, 0.25]")
         prior = -1.0
