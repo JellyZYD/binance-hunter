@@ -61,6 +61,12 @@ publishes ordered Claude signals and exact trailing-protection state to the
 shared `hunter.db`; live execution tails that durable outbox at 100ms intervals.
 It does not run a second 400-symbol WebSocket or independently reconstruct
 signals, eliminating paper/live missing-candle divergence.
+If an ordered exit arrives after its position was already closed by an exchange
+Algo order, live execution records the no-position result without fetching a
+redundant book/depth snapshot. A following entry therefore reaches its own
+market snapshot sooner, while exits for real positions keep the full execution
+path. No-position exits are audited locally but do not send a false fill
+notification or block the next signal on the notification webhook.
 
 The live reconciliation path is self-healing for connectivity failures. Account,
 position, ordinary-order and Algo-order state form the authoritative critical

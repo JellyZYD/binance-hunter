@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import requests
 
@@ -226,6 +226,23 @@ class LiveTradingTests(unittest.TestCase):
         self.assertEqual(second["status"], "duplicate_intent")
         self.assertEqual(gateway.trade_ws.order_calls, [])
         self.assertIsNotNone(ledger.order(next(iter(manager.orders))))
+
+    def test_live_position_exit_requires_market_quote(self) -> None:
+        manager, gateway, _ledger = self.manager()
+        opened = asyncio.run(manager.handle_intent(intent(), self.quote))
+        self.assertEqual(opened["status"], "filled")
+        before = len(gateway.trade_ws.order_calls)
+
+        with self.assertRaisesRegex(ValueError, "market quote is required"):
+            asyncio.run(
+                manager.handle_intent(
+                    intent(IntentAction.CLOSE_SHORT, "missing-exit-quote"),
+                    None,
+                )
+            )
+
+        self.assertEqual(len(gateway.trade_ws.order_calls), before)
+        self.assertIn("ALTUSDT", manager.positions_by_symbol)
 
     def test_symbol_configuration_failure_is_not_left_as_inflight_order(self) -> None:
         manager, gateway, ledger = self.manager()
@@ -1640,6 +1657,185 @@ class SharedPaperSignalExecutionTests(unittest.TestCase):
             )))
             self.assertEqual(result["status"], "market_unavailable")
             self.assertEqual(safe_halts, [])
+
+    def test_exit_for_already_flat_position_skips_market_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ledger = LiveLedger(Path(td) / "live.db")
+            oms = SimpleNamespace(
+                positions={},
+                positions_by_symbol={},
+                account=None,
+                handle_intent=AsyncMock(return_value={"status": "no_live_position"}),
+            )
+            service = ClaudeLiveTradingService.__new__(ClaudeLiveTradingService)
+            service.runtime = SimpleNamespace(ledger=ledger, oms=oms)
+            service._oms_lock = asyncio.Lock()
+            service._fetch_execution_market = AsyncMock()
+            service._sync_execution_outcome = Mock()
+            notify = Mock(return_value=(True, ""))
+            service.notifier = SimpleNamespace(
+                intent_result=notify,
+            )
+            signal = WaterfallSignal(
+                signal_id="flat-exit",
+                position_id="position-flat-exit",
+                symbol="ALTUSDT",
+                strategy="claude_board_wf_1m",
+                action="take_profit",
+                family="board",
+                rule="e1",
+                decision_time=int(time.time() * 1000),
+                price=99.0,
+                stop_price=102.0,
+            )
+
+            result = asyncio.run(service._handle_signal(signal))
+
+            self.assertEqual(result["status"], "no_live_position")
+            service._fetch_execution_market.assert_not_awaited()
+            oms.handle_intent.assert_awaited_once()
+            call = oms.handle_intent.await_args
+            self.assertIsNone(call.args[1])
+            self.assertIsNone(call.args[2])
+            service._sync_execution_outcome.assert_called_once()
+            with ledger.connection() as conn:
+                event_types = [
+                    row["event_type"]
+                    for row in conn.execute(
+                        "SELECT event_type FROM live_events ORDER BY id"
+                    ).fetchall()
+                ]
+            self.assertIn("STRATEGY_INTENT_RESULT", event_types)
+            self.assertIn("LIVE_NOTIFICATION", event_types)
+            notify.assert_not_called()
+            with ledger.connection() as conn:
+                notification = conn.execute(
+                    """
+                    SELECT payload_json
+                    FROM live_events
+                    WHERE event_type='LIVE_NOTIFICATION'
+                    ORDER BY id DESC
+                    LIMIT 1
+                    """
+                ).fetchone()
+            self.assertIn("no_live_position_suppressed", notification["payload_json"])
+
+    def test_exit_for_live_position_still_fetches_market_snapshot(self) -> None:
+        service = ClaudeLiveTradingService.__new__(ClaudeLiveTradingService)
+        position = SimpleNamespace(position_id="position-live")
+        service.runtime = SimpleNamespace(
+            oms=SimpleNamespace(
+                positions={"position-live": position},
+                positions_by_symbol={"ALTUSDT": position},
+            ),
+        )
+        service._oms_lock = asyncio.Lock()
+        quote = BookQuote(
+            symbol="ALTUSDT",
+            bid_price=D("98.9"),
+            bid_quantity=D("10"),
+            ask_price=D("99"),
+            ask_quantity=D("10"),
+            event_time=1234,
+        )
+        depth = {"bids": [["98.9", "10"]], "asks": [["99", "10"]]}
+        service._fetch_execution_market = AsyncMock(return_value=(quote, depth))
+        service._execute_signal_with_market = AsyncMock(
+            return_value={"status": "closed"},
+        )
+        signal = WaterfallSignal(
+            signal_id="live-exit",
+            position_id="position-live",
+            symbol="ALTUSDT",
+            strategy="claude_board_wf_1m",
+            action="take_profit",
+            family="board",
+            rule="e1",
+            decision_time=int(time.time() * 1000),
+            price=99.0,
+            stop_price=102.0,
+        )
+
+        result = asyncio.run(service._handle_signal(signal, position))
+
+        self.assertEqual(result["status"], "closed")
+        service._fetch_execution_market.assert_awaited_once_with("ALTUSDT")
+        service._execute_signal_with_market.assert_awaited_once()
+        call = service._execute_signal_with_market.await_args
+        self.assertIs(call.args[1], quote)
+        self.assertIs(call.args[2], depth)
+
+    def test_flat_exit_then_entry_fetches_only_entry_market_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            ledger = LiveLedger(Path(td) / "live.db")
+            oms = SimpleNamespace(
+                positions={},
+                positions_by_symbol={},
+                account=None,
+                safe_halt=Mock(),
+                handle_intent=AsyncMock(side_effect=[
+                    {"status": "no_live_position"},
+                    {"status": "entry_rejected_for_test"},
+                ]),
+            )
+            service = ClaudeLiveTradingService.__new__(ClaudeLiveTradingService)
+            service.runtime = SimpleNamespace(ledger=ledger, oms=oms)
+            service._oms_lock = asyncio.Lock()
+            service._sync_execution_outcome = Mock()
+            notify = Mock(return_value=(True, ""))
+            service.notifier = SimpleNamespace(
+                intent_result=notify,
+            )
+            quote = BookQuote(
+                symbol="ALTUSDT",
+                bid_price=D("98.9"),
+                bid_quantity=D("10"),
+                ask_price=D("99"),
+                ask_quantity=D("10"),
+                event_time=1234,
+            )
+            depth = {"bids": [["98.9", "10"]], "asks": [["99", "10"]]}
+            service._fetch_execution_market = AsyncMock(
+                return_value=(quote, depth),
+            )
+            decision_time = int(time.time() * 1000)
+            exit_signal = WaterfallSignal(
+                signal_id="old-exit",
+                position_id="position-old",
+                symbol="ALTUSDT",
+                strategy="claude_board_wf_1m",
+                action="take_profit",
+                family="board",
+                rule="e1",
+                decision_time=decision_time,
+                price=99.0,
+                stop_price=102.0,
+            )
+            entry_signal = WaterfallSignal(
+                signal_id="new-entry",
+                position_id="position-new",
+                symbol="ALTUSDT",
+                strategy="claude_board_wf_1m",
+                action="open_short",
+                family="board",
+                rule="e1",
+                decision_time=decision_time,
+                price=99.0,
+                stop_price=102.0,
+            )
+
+            exit_result = asyncio.run(service._handle_signal(exit_signal))
+            entry_result = asyncio.run(service._handle_signal(entry_signal))
+
+            self.assertEqual(exit_result["status"], "no_live_position")
+            self.assertEqual(entry_result["status"], "entry_rejected_for_test")
+            service._fetch_execution_market.assert_awaited_once_with("ALTUSDT")
+            self.assertEqual(oms.handle_intent.await_count, 2)
+            entry_call = oms.handle_intent.await_args_list[1]
+            self.assertIs(entry_call.args[1], quote)
+            self.assertIs(entry_call.args[2], depth)
+            oms.safe_halt.assert_not_called()
+            notify.assert_called_once()
 
     def test_shared_source_read_failure_pauses_without_stopping_service(self) -> None:
         with tempfile.TemporaryDirectory() as td:

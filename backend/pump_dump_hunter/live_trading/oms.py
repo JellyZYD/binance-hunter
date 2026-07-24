@@ -296,9 +296,16 @@ class LiveOrderManager:
     async def handle_intent(
         self,
         intent: TradeIntent,
-        quote: BookQuote,
+        quote: BookQuote | None,
         depth: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if quote is None:
+            position = (
+                self.positions.get(intent.position_id)
+                or self.positions_by_symbol.get(intent.symbol)
+            )
+            if intent.action == IntentAction.OPEN_SHORT or position is not None:
+                raise ValueError("market quote is required for live execution")
         inserted = self.ledger.save_intent(intent)
         self._intent_cache[intent.intent_id] = intent
         if not inserted:
@@ -980,11 +987,15 @@ class LiveOrderManager:
         except GatewayError as exc:
             self.ledger.append_event(now_ms(), "LIQUIDATION_QUERY_FAILED", position.position_id, {"error": str(exc)})
 
-    async def _close_short(self, intent: TradeIntent, quote: BookQuote) -> dict[str, Any]:
+    async def _close_short(
+        self, intent: TradeIntent, quote: BookQuote | None
+    ) -> dict[str, Any]:
         position = self.positions.get(intent.position_id) or self.positions_by_symbol.get(intent.symbol)
         if not position:
             self.ledger.append_event(now_ms(), "EXIT_WITHOUT_LIVE_POSITION", intent.intent_id, {"symbol": intent.symbol})
             return {"status": "no_live_position"}
+        if quote is None:
+            raise ValueError("market quote is required for a live exit")
         if position.status == "closing":
             return {"status": "already_closing", "position_id": position.position_id}
         rules = self.rules.get(position.symbol)

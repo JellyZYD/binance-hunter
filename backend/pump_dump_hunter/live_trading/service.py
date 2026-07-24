@@ -521,6 +521,13 @@ class ClaudeLiveTradingService:
         self, signal: WaterfallSignal, strategy_position: Any | None = None
     ) -> dict[str, Any]:
         intent = signal_to_intent(signal)
+        flat_exit_result = await self._execute_flat_exit_without_market(
+            signal,
+            strategy_position,
+            intent,
+        )
+        if flat_exit_result is not None:
+            return flat_exit_result
         try:
             quote, depth = await self._fetch_execution_market(signal.symbol)
         except asyncio.CancelledError:
@@ -549,6 +556,37 @@ class ClaudeLiveTradingService:
             intent=intent,
         )
 
+    async def _execute_flat_exit_without_market(
+        self,
+        signal: WaterfallSignal,
+        strategy_position: Any | None,
+        intent: TradeIntent,
+    ) -> dict[str, Any] | None:
+        if intent.action == IntentAction.OPEN_SHORT:
+            return None
+        try:
+            async with self._oms_lock:
+                position = (
+                    self.runtime.oms.positions.get(intent.position_id)
+                    or self.runtime.oms.positions_by_symbol.get(intent.symbol)
+                )
+                if position is not None:
+                    return None
+                result = await self.runtime.oms.handle_intent(intent, None, None)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            self.runtime.oms.safe_halt(
+                f"flat_exit_execution_failed:{type(exc).__name__}"
+            )
+            result = {"status": "execution_error", "error": type(exc).__name__}
+        return await self._finalize_execution_result(
+            signal,
+            strategy_position,
+            intent,
+            result,
+        )
+
     async def _execute_signal_with_market(
         self,
         signal: WaterfallSignal,
@@ -567,6 +605,20 @@ class ClaudeLiveTradingService:
         except Exception as exc:
             self.runtime.oms.safe_halt(f"intent_execution_failed:{type(exc).__name__}")
             result = {"status": "execution_error", "error": type(exc).__name__}
+        return await self._finalize_execution_result(
+            signal,
+            strategy_position,
+            intent,
+            result,
+        )
+
+    async def _finalize_execution_result(
+        self,
+        signal: WaterfallSignal,
+        strategy_position: Any | None,
+        intent: TradeIntent,
+        result: dict[str, Any],
+    ) -> dict[str, Any]:
         if self.runtime.oms.account is not None:
             result = {
                 **result,
@@ -577,7 +629,14 @@ class ClaudeLiveTradingService:
             utc_ms(), "STRATEGY_INTENT_RESULT", intent.intent_id,
             {"signal_id": signal.signal_id, "result": result},
         )
-        pushed, push_error = await asyncio.to_thread(self.notifier.intent_result, intent, result)
+        if result.get("status") == "no_live_position":
+            pushed, push_error = False, "no_live_position_suppressed"
+        else:
+            pushed, push_error = await asyncio.to_thread(
+                self.notifier.intent_result,
+                intent,
+                result,
+            )
         self.runtime.ledger.append_event(
             utc_ms(), "LIVE_NOTIFICATION", intent.intent_id,
             {"pushed": pushed, "error": "" if pushed else push_error},
