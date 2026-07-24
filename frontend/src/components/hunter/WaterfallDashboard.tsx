@@ -172,6 +172,13 @@ type LiveSummary = {
     peak_equity: string;
     drawdown_pct: string;
     factor: string;
+    principal_equity: string;
+    net_cash_flow: string;
+    cash_in: string;
+    cash_out: string;
+    trading_income: string;
+    unit_nav: string;
+    peak_unit_nav: string;
   };
   service?: {
     heartbeat_time: number;
@@ -191,6 +198,9 @@ type LiveSummary = {
     commission_cost_usdt: string;
     funding_fee_usdt: string;
     insurance_clear_usdt: string;
+    cash_in_usdt: string;
+    cash_out_usdt: string;
+    net_cash_flow_usdt: string;
     net_realized_pnl_usdt: string;
     open_positions: number;
     closed_positions: number;
@@ -427,6 +437,8 @@ export default function WaterfallDashboard() {
           <div className="live-facts">
             <span>权益 {usdt(live.account?.margin_balance ?? 0)}</span>
             <span>可用 {usdt(live.account?.available_balance ?? 0)}</span>
+            <span>可投入 {usdt(live.sizing?.current_equity ?? 0)}</span>
+            <span>净划转 {usdt(live.sizing?.net_cash_flow ?? 0)}</span>
             <span>持仓 {live.positions.filter((row) => row.status === 'open').length}/{live.max_open_positions}</span>
             <span>{fmt(live.leverage, 0)}x · 单笔≤{usdt(live.max_notional_usdt)}</span>
             <span>仓位 {pct(live.base_margin_fraction, 0)} × {fmt(live.sizing?.factor ?? 1, 2)}</span>
@@ -552,7 +564,13 @@ export default function WaterfallDashboard() {
                 label="账户权益"
                 value={usdt(live.account?.margin_balance ?? 0)}
                 tone="cyan"
-                sub={`策略起点 ${usdt(live.sizing?.initial_equity ?? 0)}`}
+                sub={`可投入 ${usdt(live.sizing?.current_equity ?? 0)}`}
+              />
+              <Metric
+                label="资金本金"
+                value={usdt(live.sizing?.principal_equity ?? 0)}
+                tone="cyan"
+                sub={`转入 ${usdt(live.sizing?.cash_in ?? 0)} · 转出 ${usdt(live.sizing?.cash_out ?? 0)}`}
               />
               <Metric
                 label="可用余额"
@@ -578,10 +596,10 @@ export default function WaterfallDashboard() {
                 sub={`资金费 ${usdt(live.performance?.funding_fee_usdt ?? 0, 4)}`}
               />
               <Metric
-                label="实现回撤"
+                label="资金流调整回撤"
                 value={pct(live.sizing?.drawdown_pct ?? 0)}
                 tone={Number(live.sizing?.drawdown_pct ?? 0) >= 0.15 ? 'red' : 'neutral'}
-                sub={`缩仓系数 ${fmt(live.sizing?.factor ?? 1, 2)}`}
+                sub={`缩仓系数 ${fmt(live.sizing?.factor ?? 1, 2)} · 净划转 ${usdt(live.sizing?.net_cash_flow ?? 0)}`}
               />
               <Metric
                 label="持仓"

@@ -35,6 +35,7 @@ from pump_dump_hunter.live_trading.models import (
 )
 from pump_dump_hunter.live_trading.notifier import LiveEventNotifier
 from pump_dump_hunter.live_trading.oms import LiveOrderManager
+from pump_dump_hunter.live_trading.risk import cashflow_adjusted_sizing_state
 from pump_dump_hunter.live_trading.service import (
     ClaudeLiveTradingService,
     SharedPaperSignalLiveTradingService,
@@ -966,40 +967,42 @@ class LiveTradingTests(unittest.TestCase):
             {"tranId": 101, "incomeType": "REALIZED_PNL", "asset": "USDT", "income": "-6", "time": start + 2},
         ])
         state = manager.refresh_sizing_state(initialize=True)
-        self.assertEqual(state["equity"], D("94"))
-        self.assertEqual(state["drawdown_pct"], D("0.06"))
-        self.assertEqual(state["factor"], D("0.75"))
+        self.assertEqual(state["equity"], D("44"))
+        self.assertEqual(state["principal_equity"], D("50"))
+        self.assertEqual(state["net_cash_flow"], D("-50"))
+        self.assertEqual(state["drawdown_pct"], D("0.12"))
+        self.assertEqual(state["factor"], D("0.5"))
         decision = manager.risk.evaluate_short_entry(
             intent(suffix="ladder-75"), self.quote,
             self.rules.get("ALTUSDT"), self.account, 0,
         )
         self.assertTrue(decision.approved)
-        self.assertEqual(decision.notional, D("70.5000"))
-        self.assertEqual(decision.margin_fraction, D("0.0750"))
+        self.assertEqual(decision.notional, D("22.0000"))
+        self.assertEqual(decision.margin_fraction, D("0.050"))
 
         ledger.save_income([
             {"tranId": 102, "incomeType": "REALIZED_PNL", "asset": "USDT", "income": "-5", "time": start + 3},
         ])
         state = manager.refresh_sizing_state(initialize=True)
-        self.assertEqual(state["equity"], D("89"))
-        self.assertEqual(state["factor"], D("0.5"))
+        self.assertEqual(state["equity"], D("39"))
+        self.assertEqual(state["factor"], D("0.25"))
         decision = manager.risk.evaluate_short_entry(
             intent(suffix="ladder-50"), self.quote,
             self.rules.get("ALTUSDT"), self.account, 0,
         )
-        self.assertEqual(decision.notional, D("44.5000"))
+        self.assertEqual(decision.notional, D("9.700"))
 
         ledger.save_income([
             {"tranId": 103, "incomeType": "COMMISSION", "asset": "USDT", "income": "-5", "time": start + 4},
         ])
         state = manager.refresh_sizing_state(initialize=True)
-        self.assertEqual(state["equity"], D("84"))
+        self.assertEqual(state["equity"], D("34"))
         self.assertEqual(state["factor"], D("0.25"))
         decision = manager.risk.evaluate_short_entry(
             intent(suffix="ladder-25"), self.quote,
             self.rules.get("ALTUSDT"), self.account, 0,
         )
-        self.assertEqual(decision.notional, D("21.0000"))
+        self.assertEqual(decision.notional, D("8.50000"))
 
     def test_drawdown_sizing_baseline_and_peak_survive_restart(self) -> None:
         cfg = ladder_live_config(self.root)
@@ -1014,8 +1017,8 @@ class LiveTradingTests(unittest.TestCase):
             {"tranId": 202, "incomeType": "TRANSFER", "asset": "USDT", "income": "-40", "time": start + 2},
         ])
         first.refresh_sizing_state(initialize=True)
-        self.assertEqual(first.risk.sizing_equity, D("110"))
-        self.assertEqual(first.risk.sizing_peak_equity, D("110"))
+        self.assertEqual(first.risk.sizing_equity, D("70"))
+        self.assertEqual(first.risk.sizing_peak_equity, D("70"))
 
         ledger.save_income([
             {"tranId": 203, "incomeType": "REALIZED_PNL", "asset": "USDT", "income": "-8", "time": start + 3},
@@ -1026,10 +1029,121 @@ class LiveTradingTests(unittest.TestCase):
         )
         restarted.set_account(AccountSnapshot(10, D("62"), D("62"), D("62"), D("0"), D("0")))
         self.assertEqual(restarted.sizing_start_time, start)
-        self.assertEqual(restarted.risk.sizing_equity, D("102"))
-        self.assertEqual(restarted.risk.sizing_peak_equity, D("110"))
-        self.assertAlmostEqual(float(restarted.risk.sizing_drawdown_pct), 8 / 110, places=9)
-        self.assertEqual(restarted.risk.sizing_factor, D("0.75"))
+        self.assertEqual(restarted.risk.sizing_equity, D("62"))
+        self.assertEqual(restarted.risk.sizing_peak_equity, D("70"))
+        self.assertAlmostEqual(float(restarted.risk.sizing_drawdown_pct), 8 / 70, places=9)
+        self.assertEqual(restarted.risk.sizing_factor, D("0.5"))
+
+    def test_cash_flow_does_not_change_time_weighted_drawdown(self) -> None:
+        before = cashflow_adjusted_sizing_state(
+            D("100"),
+            [{
+                "tran_id": 1, "income_type": "REALIZED_PNL",
+                "amount": "-10", "income_time": 1,
+            }],
+        )
+        after_deposit = cashflow_adjusted_sizing_state(
+            D("100"),
+            [
+                {
+                    "tran_id": 1, "income_type": "REALIZED_PNL",
+                    "amount": "-10", "income_time": 1,
+                },
+                {
+                    "tran_id": 2, "income_type": "TRANSFER",
+                    "amount": "50", "income_time": 2,
+                },
+            ],
+        )
+        after_withdrawal = cashflow_adjusted_sizing_state(
+            D("100"),
+            [
+                {
+                    "tran_id": 1, "income_type": "REALIZED_PNL",
+                    "amount": "-10", "income_time": 1,
+                },
+                {
+                    "tran_id": 2, "income_type": "TRANSFER",
+                    "amount": "-40", "income_time": 2,
+                },
+            ],
+        )
+        self.assertEqual(before["drawdown_pct"], D("0.1"))
+        self.assertEqual(after_deposit["drawdown_pct"], D("0.1"))
+        self.assertEqual(after_withdrawal["drawdown_pct"], D("0.1"))
+        self.assertEqual(after_deposit["equity"], D("140"))
+        self.assertEqual(after_deposit["principal_equity"], D("150"))
+        self.assertEqual(after_withdrawal["equity"], D("50"))
+        self.assertEqual(after_withdrawal["principal_equity"], D("60"))
+
+    def test_drawdown_sizing_is_capped_by_actual_exchange_equity(self) -> None:
+        cfg = ladder_live_config(self.root)
+        ledger = LiveLedger(cfg.ledger_path)
+        manager = LiveOrderManager(
+            cfg, FakeGateway(), ledger, self.rules, orders_authorized=True,
+        )
+        manager.set_account(self.account)
+        start = manager.sizing_start_time
+        ledger.save_income([{
+            "tranId": 301, "incomeType": "TRANSFER", "asset": "USDT",
+            "income": "100", "time": start + 1,
+        }])
+        manager.refresh_sizing_state(initialize=True)
+        actual = AccountSnapshot(20, D("80"), D("80"), D("80"), D("0"), D("0"))
+        decision = manager.risk.evaluate_short_entry(
+            intent(suffix="actual-cap"), self.quote,
+            self.rules.get("ALTUSDT"), actual, 0,
+        )
+        self.assertTrue(decision.approved)
+        self.assertEqual(decision.sizing_equity, D("80"))
+        self.assertEqual(decision.notional, D("80.000"))
+
+    def test_income_key_is_unique_per_income_type(self) -> None:
+        ledger = LiveLedger(self.root / "income-key.db")
+        saved = ledger.save_income([
+            {
+                "tranId": 77, "incomeType": "TRANSFER", "asset": "USDT",
+                "income": "25", "time": 1,
+            },
+            {
+                "tranId": 77, "incomeType": "COMMISSION", "asset": "USDT",
+                "income": "-0.1", "time": 2,
+            },
+        ])
+        self.assertEqual(saved, 2)
+        events = ledger.sizing_income_events_since(0)
+        self.assertEqual(len(events), 2)
+        self.assertEqual(ledger.trading_income_since(0), D("-0.1"))
+
+    def test_legacy_income_primary_key_migrates_without_data_loss(self) -> None:
+        path = self.root / "legacy-income.db"
+        with sqlite3.connect(path) as conn:
+            conn.execute(
+                """
+                CREATE TABLE live_income(
+                    tran_id INTEGER PRIMARY KEY,
+                    income_type TEXT NOT NULL,
+                    asset TEXT NOT NULL,
+                    symbol TEXT NOT NULL,
+                    amount TEXT NOT NULL,
+                    income_time INTEGER NOT NULL,
+                    raw_json TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO live_income VALUES(?,?,?,?,?,?,?)",
+                (9, "TRANSFER", "USDT", "", "12", 1, "{}"),
+            )
+        ledger = LiveLedger(path)
+        self.assertEqual(
+            ledger.save_income([{
+                "tranId": 9, "incomeType": "COMMISSION", "asset": "USDT",
+                "income": "-0.2", "time": 2,
+            }]),
+            1,
+        )
+        self.assertEqual(len(ledger.sizing_income_events_since(0)), 2)
 
     def test_added_fill_replaces_structure_stop_new_before_old_cancel(self) -> None:
         manager, gateway, _ledger = self.manager()

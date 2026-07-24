@@ -10,6 +10,15 @@ from typing import Any
 from .models import AccountSnapshot, LiveFill, LiveOrder, LivePosition, TradeIntent
 
 
+TRADING_INCOME_TYPES = (
+    "REALIZED_PNL",
+    "COMMISSION",
+    "FUNDING_FEE",
+    "INSURANCE_CLEAR",
+)
+CASH_FLOW_INCOME_TYPES = ("TRANSFER",)
+
+
 class LiveLedger:
     def __init__(self, path: str | Path):
         self.path = Path(path)
@@ -155,13 +164,14 @@ class LiveLedger:
                 );
 
                 CREATE TABLE IF NOT EXISTS live_income(
-                    tran_id INTEGER PRIMARY KEY,
+                    tran_id INTEGER NOT NULL,
                     income_type TEXT NOT NULL,
                     asset TEXT NOT NULL,
                     symbol TEXT NOT NULL,
                     amount TEXT NOT NULL,
                     income_time INTEGER NOT NULL,
-                    raw_json TEXT NOT NULL
+                    raw_json TEXT NOT NULL,
+                    PRIMARY KEY(income_type, tran_id)
                 );
                 CREATE INDEX IF NOT EXISTS idx_live_income_time ON live_income(income_time, income_type);
 
@@ -199,6 +209,48 @@ class LiveLedger:
             for name, definition in order_migrations.items():
                 if name not in columns:
                     conn.execute(f"ALTER TABLE live_orders ADD COLUMN {name} {definition}")
+            # Binance only guarantees tranId uniqueness within one incomeType.
+            # Acquire the writer lock before inspecting so concurrent API/live
+            # process starts cannot both attempt this one-time migration.
+            conn.commit()
+            conn.execute("BEGIN IMMEDIATE")
+            income_pk = [
+                str(row[1])
+                for row in sorted(
+                    conn.execute("PRAGMA table_info(live_income)").fetchall(),
+                    key=lambda row: int(row[5]) if int(row[5]) > 0 else 99,
+                )
+                if int(row[5]) > 0
+            ]
+            if income_pk == ["tran_id"]:
+                conn.execute("ALTER TABLE live_income RENAME TO live_income_legacy")
+                conn.execute(
+                    """
+                    CREATE TABLE live_income(
+                        tran_id INTEGER NOT NULL,
+                        income_type TEXT NOT NULL,
+                        asset TEXT NOT NULL,
+                        symbol TEXT NOT NULL,
+                        amount TEXT NOT NULL,
+                        income_time INTEGER NOT NULL,
+                        raw_json TEXT NOT NULL,
+                        PRIMARY KEY(income_type, tran_id)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO live_income
+                    SELECT tran_id,income_type,asset,symbol,amount,income_time,raw_json
+                    FROM live_income_legacy
+                    """
+                )
+                conn.execute("DROP TABLE live_income_legacy")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_live_income_time "
+                "ON live_income(income_time, income_type)"
+            )
+            conn.commit()
             conn.execute("DROP INDEX IF EXISTS idx_live_positions_open_symbol")
             conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_live_positions_open_symbol "
@@ -468,14 +520,31 @@ class LiveLedger:
         return saved
 
     def trading_income_since(self, start_time: int) -> Decimal:
-        included = ("REALIZED_PNL", "COMMISSION", "FUNDING_FEE", "INSURANCE_CLEAR")
+        placeholders = ",".join("?" for _ in TRADING_INCOME_TYPES)
+        with self.connection() as conn:
+            rows = conn.execute(
+                f"""SELECT amount FROM live_income
+                WHERE income_time>=? AND asset='USDT'
+                AND income_type IN ({placeholders})""",
+                (int(start_time), *TRADING_INCOME_TYPES),
+            ).fetchall()
+            return sum((Decimal(str(row[0])) for row in rows), Decimal("0"))
+
+    def sizing_income_events_since(
+        self, start_time: int, asset: str = "USDT"
+    ) -> list[dict[str, Any]]:
+        included = (*TRADING_INCOME_TYPES, *CASH_FLOW_INCOME_TYPES)
         placeholders = ",".join("?" for _ in included)
         with self.connection() as conn:
             rows = conn.execute(
-                f"SELECT amount FROM live_income WHERE income_time>=? AND income_type IN ({placeholders})",
-                (int(start_time), *included),
+                f"""SELECT tran_id,income_type,asset,amount,income_time
+                FROM live_income
+                WHERE income_time>=? AND asset=?
+                AND income_type IN ({placeholders})
+                ORDER BY income_time,income_type,tran_id""",
+                (int(start_time), str(asset).upper(), *included),
             ).fetchall()
-            return sum((Decimal(str(row[0])) for row in rows), Decimal("0"))
+        return [dict(row) for row in rows]
 
     def exit_fill_summary(self, symbol: str, start_time: int) -> dict[str, Decimal]:
         with self.connection() as conn:
@@ -585,7 +654,13 @@ class LiveLedger:
                     COALESCE(SUM(CASE WHEN income_type='FUNDING_FEE'
                         THEN CAST(amount AS REAL) ELSE 0 END),0) AS funding_fee,
                     COALESCE(SUM(CASE WHEN income_type='INSURANCE_CLEAR'
-                        THEN CAST(amount AS REAL) ELSE 0 END),0) AS insurance_clear
+                        THEN CAST(amount AS REAL) ELSE 0 END),0) AS insurance_clear,
+                    COALESCE(SUM(CASE WHEN income_type='TRANSFER' AND asset='USDT'
+                        AND CAST(amount AS REAL)>0
+                        THEN CAST(amount AS REAL) ELSE 0 END),0) AS cash_in,
+                    COALESCE(SUM(CASE WHEN income_type='TRANSFER' AND asset='USDT'
+                        AND CAST(amount AS REAL)<0
+                        THEN -CAST(amount AS REAL) ELSE 0 END),0) AS cash_out
                 FROM live_income
                 WHERE income_time>=?
                 """,
@@ -622,6 +697,8 @@ class LiveLedger:
         commission = Decimal(str(income_row["commission"] or 0))
         funding = Decimal(str(income_row["funding_fee"] or 0))
         insurance = Decimal(str(income_row["insurance_clear"] or 0))
+        cash_in = Decimal(str(income_row["cash_in"] or 0))
+        cash_out = Decimal(str(income_row["cash_out"] or 0))
         return {
             "account": account,
             "positions": positions,
@@ -634,6 +711,9 @@ class LiveLedger:
                 "commission_cost_usdt": str(max(Decimal("0"), -commission)),
                 "funding_fee_usdt": str(funding),
                 "insurance_clear_usdt": str(insurance),
+                "cash_in_usdt": str(cash_in),
+                "cash_out_usdt": str(cash_out),
+                "net_cash_flow_usdt": str(cash_in - cash_out),
                 "net_realized_pnl_usdt": str(
                     gross_realized + commission + funding + insurance
                 ),
@@ -648,6 +728,13 @@ class LiveLedger:
                 "peak_equity": self.get_meta("sizing_peak_equity", "0"),
                 "drawdown_pct": self.get_meta("sizing_current_drawdown", "0"),
                 "factor": self.get_meta("sizing_factor", "1"),
+                "principal_equity": self.get_meta("sizing_principal_equity", "0"),
+                "net_cash_flow": self.get_meta("sizing_net_cash_flow", "0"),
+                "cash_in": self.get_meta("sizing_cash_in", "0"),
+                "cash_out": self.get_meta("sizing_cash_out", "0"),
+                "trading_income": self.get_meta("sizing_trading_income", "0"),
+                "unit_nav": self.get_meta("sizing_unit_nav", "1"),
+                "peak_unit_nav": self.get_meta("sizing_peak_unit_nav", "1"),
             },
             "service": {
                 "heartbeat_time": int(self.get_meta("service_heartbeat_time", "0") or 0),

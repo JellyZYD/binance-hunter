@@ -11,6 +11,74 @@ from .models import AccountSnapshot, BookQuote, RiskDecision, TradeIntent
 D = Decimal
 
 
+def cashflow_adjusted_sizing_state(
+    initial_equity: Decimal,
+    income_events: list[dict[str, Any]],
+) -> dict[str, Decimal]:
+    """Rebuild investable capital and time-weighted drawdown from ledger events."""
+    initial = max(D("0"), D(initial_equity))
+    equity = initial
+    units = initial
+    nav = D("1")
+    peak_nav = D("1")
+    trading_income = D("0")
+    cash_in = D("0")
+    cash_out = D("0")
+
+    grouped: dict[int, dict[str, Decimal]] = {}
+    for row in income_events:
+        stamp = int(row.get("income_time") or 0)
+        bucket = grouped.setdefault(stamp, {"trading": D("0"), "cash_flow": D("0")})
+        amount = D(str(row.get("amount") or "0"))
+        if str(row.get("income_type") or "") == "TRANSFER":
+            bucket["cash_flow"] += amount
+            if amount >= 0:
+                cash_in += amount
+            else:
+                cash_out += -amount
+        else:
+            bucket["trading"] += amount
+            trading_income += amount
+
+    for stamp in sorted(grouped):
+        trading = grouped[stamp]["trading"]
+        if trading:
+            equity = max(D("0"), equity + trading)
+            if units > 0:
+                nav = max(D("0"), equity / units)
+                peak_nav = max(peak_nav, nav)
+
+        cash_flow = grouped[stamp]["cash_flow"]
+        if cash_flow:
+            if equity + cash_flow <= 0:
+                equity = D("0")
+                units = D("0")
+            else:
+                allocation_nav = nav if nav > 0 else D("1")
+                units = max(D("0"), units + cash_flow / allocation_nav)
+                equity += cash_flow
+
+    net_cash_flow = cash_in - cash_out
+    principal = max(D("0"), initial + net_cash_flow)
+    drawdown = (
+        max(D("0"), D("1") - nav / peak_nav)
+        if peak_nav > 0
+        else D("0")
+    )
+    return {
+        "equity": max(D("0"), equity),
+        "peak_equity": max(D("0"), peak_nav * units),
+        "drawdown_pct": drawdown,
+        "principal_equity": principal,
+        "net_cash_flow": net_cash_flow,
+        "cash_in": cash_in,
+        "cash_out": cash_out,
+        "trading_income": trading_income,
+        "unit_nav": nav,
+        "peak_unit_nav": peak_nav,
+    }
+
+
 def account_snapshot_from_api(account: dict[str, Any], now_ms: int) -> AccountSnapshot:
     return AccountSnapshot(
         snapshot_time=now_ms,
@@ -96,7 +164,9 @@ class LiveRiskManager:
         if self.config.sizing_mode == "realized_drawdown_ladder":
             if self.sizing_equity <= 0:
                 return RiskDecision(False, "sizing_state_missing", stop_distance_pct=stop_distance)
-            sizing_equity = self.sizing_equity
+            # Income history can lag a transfer. Never size above the
+            # exchange's authoritative current margin balance.
+            sizing_equity = min(self.sizing_equity, equity)
             margin_fraction = min(
                 D(str(self.config.margin_fraction_cap)),
                 D(str(self.config.base_margin_fraction)) * self.sizing_factor,

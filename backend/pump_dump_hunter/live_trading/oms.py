@@ -22,7 +22,7 @@ from .models import (
     OrderState,
     TradeIntent,
 )
-from .risk import LiveRiskManager
+from .risk import LiveRiskManager, cashflow_adjusted_sizing_state
 
 
 D = Decimal
@@ -142,7 +142,7 @@ class LiveOrderManager:
         return int(self.ledger.get_meta("sizing_start_time", "0") or 0)
 
     def refresh_sizing_state(self, *, initialize: bool = False) -> dict[str, Decimal]:
-        """Refresh realized-equity sizing without treating cash transfers as PnL."""
+        """Refresh cash-flow-adjusted capital and time-weighted drawdown."""
         if self.account is None:
             return {}
         account_equity = max(D("0"), self.account.margin_balance)
@@ -158,6 +158,13 @@ class LiveOrderManager:
                 "peak_equity": account_equity,
                 "drawdown_pct": D("0"),
                 "factor": D("1"),
+                "principal_equity": account_equity,
+                "net_cash_flow": D("0"),
+                "cash_in": D("0"),
+                "cash_out": D("0"),
+                "trading_income": D("0"),
+                "unit_nav": D("1"),
+                "peak_unit_nav": D("1"),
             }
 
         start_time = self.sizing_start_time
@@ -167,6 +174,18 @@ class LiveOrderManager:
             peak = account_equity
             drawdown = D("0")
             factor = D(str(self.config.drawdown_factor(0.0)))
+            state = {
+                "equity": current,
+                "peak_equity": peak,
+                "drawdown_pct": drawdown,
+                "principal_equity": account_equity,
+                "net_cash_flow": D("0"),
+                "cash_in": D("0"),
+                "cash_out": D("0"),
+                "trading_income": D("0"),
+                "unit_nav": D("1"),
+                "peak_unit_nav": D("1"),
+            }
             if initialize:
                 start_time = max(1, int(self.account.snapshot_time))
                 stamp = now_ms()
@@ -185,16 +204,36 @@ class LiveOrderManager:
                 )
         else:
             initial = max(D("0"), D(initial_text))
-            trading_income = self.ledger.trading_income_since(start_time)
-            current = max(D("0"), initial + trading_income)
-            prior_peak = D(self.ledger.get_meta("sizing_peak_equity", str(initial)) or str(initial))
-            peak = max(initial, prior_peak, current)
-            drawdown = max(D("0"), D("1") - current / peak) if peak > 0 else D("0")
+            state = cashflow_adjusted_sizing_state(
+                initial,
+                self.ledger.sizing_income_events_since(start_time),
+            )
+            current = state["equity"]
+            peak = state["peak_equity"]
+            drawdown = state["drawdown_pct"]
             factor = D(str(self.config.drawdown_factor(float(drawdown))))
             if initialize:
                 stamp = now_ms()
                 prior_factor = self.ledger.get_meta("sizing_factor")
+                prior_cash_flow = D(
+                    self.ledger.get_meta("sizing_net_cash_flow", "0") or "0"
+                )
                 self.ledger.set_meta("sizing_peak_equity", str(peak), stamp)
+                if prior_cash_flow != state["net_cash_flow"]:
+                    self.ledger.append_event(
+                        stamp,
+                        "SIZING_CASH_FLOW_RECONCILED",
+                        "",
+                        {
+                            "cash_flow_delta": str(
+                                state["net_cash_flow"] - prior_cash_flow
+                            ),
+                            "net_cash_flow": str(state["net_cash_flow"]),
+                            "principal_equity": str(state["principal_equity"]),
+                            "current_equity": str(current),
+                            "drawdown_pct": str(drawdown),
+                        },
+                    )
                 if prior_factor and D(prior_factor) != factor:
                     self.ledger.append_event(
                         stamp,
@@ -220,12 +259,17 @@ class LiveOrderManager:
             self.ledger.set_meta("sizing_current_equity", str(current), stamp)
             self.ledger.set_meta("sizing_current_drawdown", str(drawdown), stamp)
             self.ledger.set_meta("sizing_factor", str(factor), stamp)
-        return {
-            "equity": current,
-            "peak_equity": peak,
-            "drawdown_pct": drawdown,
-            "factor": factor,
-        }
+            for key in (
+                "principal_equity",
+                "net_cash_flow",
+                "cash_in",
+                "cash_out",
+                "trading_income",
+                "unit_nav",
+                "peak_unit_nav",
+            ):
+                self.ledger.set_meta(f"sizing_{key}", str(state[key]), stamp)
+        return {**state, "factor": factor}
 
     def safe_halt(self, reason: str) -> None:
         reason = str(reason or "").strip()

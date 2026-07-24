@@ -51,10 +51,13 @@ webhook URLs or raw exchange responses.
 
 The live sizing path uses 20% base margin, 5x exchange leverage, and
 realized-equity drawdown factors
-`1.0/0.75/0.50/0.25` at 5%/10%/15% drawdown. Deposits, withdrawals and
-transfers do not change strategy equity or its drawdown tier. At most three live
-positions, an explicit notional cap and exchange depth remain hard operational
-limits.
+`1.0/0.75/0.50/0.25` at 5%/10%/15% drawdown. USDT transfers are reconciled
+from Binance income history: deposits increase investable principal and
+withdrawals reduce it, while a unitized time-weighted NAV prevents either cash
+flow from creating trading profit, loss or drawdown. Order sizing is capped by
+both adjusted strategy capital and the exchange's current margin balance. At
+most three live positions, an explicit notional cap and exchange depth remain
+hard operational limits.
 
 The server paper monitor is the sole public K-line and strategy engine. It
 publishes ordered Claude signals and exact trailing-protection state to the
