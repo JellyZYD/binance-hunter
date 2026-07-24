@@ -308,6 +308,7 @@ class LiveLedger:
                     algo_id=excluded.algo_id, status=excluded.status,
                     trigger_price=excluded.trigger_price, raw_json=excluded.raw_json,
                     updated_time=excluded.updated_time
+                WHERE excluded.updated_time>=live_algo_orders.updated_time
                 """,
                 (
                     row["client_algo_id"], row["position_id"], row["symbol"], row["role"],
@@ -316,6 +317,76 @@ class LiveLedger:
                     int(row["updated_time"]),
                 ),
             )
+
+    def algo(self, client_algo_id: str) -> dict[str, Any] | None:
+        with self.connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM live_algo_orders WHERE client_algo_id=?",
+                (client_algo_id,),
+            ).fetchone()
+        return dict(row) if row else None
+
+    def update_algo_status(
+        self,
+        client_algo_id: str,
+        status: str,
+        updated_time: int,
+        raw: dict[str, Any] | None = None,
+    ) -> bool:
+        with self.connection() as conn:
+            if raw is None:
+                cur = conn.execute(
+                    """UPDATE live_algo_orders
+                    SET status=?,updated_time=?
+                    WHERE client_algo_id=? AND updated_time<=?""",
+                    (status, int(updated_time), client_algo_id, int(updated_time)),
+                )
+            else:
+                cur = conn.execute(
+                    """UPDATE live_algo_orders
+                    SET status=?,raw_json=?,updated_time=?
+                    WHERE client_algo_id=? AND updated_time<=?""",
+                    (
+                        status,
+                        json.dumps(raw, ensure_ascii=False, separators=(",", ":")),
+                        int(updated_time),
+                        client_algo_id,
+                        int(updated_time),
+                    ),
+                )
+        return bool(cur.rowcount)
+
+    def close_absent_algos_for_closed_positions(
+        self,
+        active_client_ids: set[str],
+        updated_time: int,
+    ) -> list[str]:
+        active_statuses = (
+            "SUBMITTING", "NEW", "ACCEPTED", "PENDING", "WORKING",
+            "TRIGGERING", "TRIGGERED",
+        )
+        placeholders = ",".join("?" for _ in active_statuses)
+        with self.connection() as conn:
+            rows = conn.execute(
+                f"""SELECT a.client_algo_id
+                FROM live_algo_orders a
+                JOIN live_positions p ON p.position_id=a.position_id
+                WHERE p.status='closed' AND UPPER(a.status) IN ({placeholders})""",
+                active_statuses,
+            ).fetchall()
+            stale = sorted(
+                str(row["client_algo_id"])
+                for row in rows
+                if str(row["client_algo_id"]) not in active_client_ids
+            )
+            if stale:
+                conn.executemany(
+                    """UPDATE live_algo_orders
+                    SET status='CLOSED_ABSENT',updated_time=?
+                    WHERE client_algo_id=?""",
+                    [(int(updated_time), client_id) for client_id in stale],
+                )
+        return stale
 
     def save_account_snapshot(self, snapshot: AccountSnapshot, raw: dict[str, Any] | None = None) -> None:
         row = snapshot.to_dict()

@@ -935,6 +935,9 @@ class LiveOrderManager:
             result = await self.gateway.trade_ws.cancel_algo(client_algo_id)
             status = str(result.get("algoStatus") or result.get("status") or "").upper()
             if status in terminal_states:
+                self.ledger.update_algo_status(
+                    client_algo_id, status, now_ms(), result,
+                )
                 return result
             original = UnknownExecutionStatus(
                 f"algo cancel response not terminal for {client_algo_id}: {status or 'UNKNOWN'}"
@@ -954,6 +957,9 @@ class LiveOrderManager:
             raise UnknownExecutionStatus(
                 f"algo cancel not terminal for {client_algo_id}: {status or 'UNKNOWN'}"
             ) from original
+        self.ledger.update_algo_status(
+            client_algo_id, status, now_ms(), result,
+        )
         return result
 
     async def _refresh_liquidation(self, position: LivePosition) -> None:
@@ -1316,7 +1322,10 @@ class LiveOrderManager:
             if waiter:
                 waiter.set()
         elif event_type == "ALGO_UPDATE":
-            self._handle_algo_update(payload.get("o") or payload, event_time)
+            self._handle_algo_update(
+                payload.get("ao") or payload.get("o") or payload,
+                event_time,
+            )
         elif event_type == "ACCOUNT_UPDATE":
             self._handle_account_update(payload, event_time)
         elif event_type == "riskLevelChange":
@@ -1357,14 +1366,19 @@ class LiveOrderManager:
 
     def _handle_algo_update(self, data: dict[str, Any], event_time: int) -> None:
         client_id = str(data.get("caid") or data.get("clientAlgoId") or "")
+        if not client_id:
+            return
+        status = str(data.get("X") or data.get("algoStatus") or "UNKNOWN")
         position = next(
             (p for p in self.positions.values() if client_id in {p.structure_client_algo_id, p.trail_client_algo_id}),
             None,
         )
         if not position:
+            self.ledger.update_algo_status(
+                client_id, status, event_time, data,
+            )
             return
         role = "structure_stop" if client_id == position.structure_client_algo_id else "trailing_exit"
-        status = str(data.get("X") or data.get("algoStatus") or "UNKNOWN")
         self.ledger.save_algo({
             "client_algo_id": client_id, "position_id": position.position_id,
             "symbol": position.symbol, "role": role, "algo_id": int(data.get("aid") or 0) or None,
@@ -1458,6 +1472,9 @@ class LiveOrderManager:
             for row in exchange_state.get("open_algo_orders", [])
             if str(row.get("clientAlgoId") or row.get("caid") or "")
         }
+        self.ledger.close_absent_algos_for_closed_positions(
+            set(open_algo_rows), now_ms(),
+        )
         local_symbols = set(self.positions_by_symbol)
         exchange_symbols = set(exchange_positions)
         if exchange_symbols - local_symbols:

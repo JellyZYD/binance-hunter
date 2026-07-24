@@ -686,6 +686,91 @@ class LiveTradingTests(unittest.TestCase):
             manager.safe_halt_reason.startswith("closed_position_algo_cancel_unresolved:")
         )
 
+    def test_confirmed_algo_cancel_persists_terminal_status(self) -> None:
+        manager, _gateway, ledger = self.manager()
+        asyncio.run(manager.handle_intent(intent(), self.quote))
+        position = manager.positions_by_symbol["ALTUSDT"]
+        client_algo_id = position.structure_client_algo_id
+
+        result = asyncio.run(
+            manager.handle_intent(
+                intent(IntentAction.CLOSE_SHORT, "exit-terminal-algo"),
+                self.quote,
+            )
+        )
+
+        self.assertEqual(result["status"], "closed")
+        self.assertEqual(ledger.algo(client_algo_id)["status"], "CANCELED")
+
+    def test_late_algo_update_persists_after_position_closes(self) -> None:
+        manager, _gateway, ledger = self.manager()
+        asyncio.run(manager.handle_intent(intent(), self.quote))
+        position = manager.positions_by_symbol["ALTUSDT"]
+        client_algo_id = position.structure_client_algo_id
+        asyncio.run(
+            manager.handle_intent(
+                intent(IntentAction.CLOSE_SHORT, "exit-before-algo-event"),
+                self.quote,
+            )
+        )
+        stale_time = max(
+            int(ledger.algo(client_algo_id)["updated_time"]),
+            int(time.time() * 1000),
+        )
+        ledger.update_algo_status(client_algo_id, "NEW", stale_time, {})
+
+        asyncio.run(manager.handle_user_event({
+            "e": "ALGO_UPDATE",
+            "E": stale_time + 1,
+            "ao": {
+                "caid": client_algo_id,
+                "X": "FINISHED",
+                "aid": 99,
+                "tp": "102",
+            },
+        }))
+
+        stored = ledger.algo(client_algo_id)
+        self.assertEqual(stored["status"], "FINISHED")
+        self.assertEqual(stored["updated_time"], stale_time + 1)
+        asyncio.run(manager.handle_user_event({
+            "e": "ALGO_UPDATE",
+            "E": stale_time,
+            "ao": {
+                "caid": client_algo_id,
+                "X": "TRIGGERED",
+                "aid": 99,
+                "tp": "102",
+            },
+        }))
+        self.assertEqual(ledger.algo(client_algo_id)["status"], "FINISHED")
+
+    def test_reconcile_closes_absent_algos_for_closed_positions(self) -> None:
+        manager, _gateway, ledger = self.manager()
+        asyncio.run(manager.handle_intent(intent(), self.quote))
+        position = manager.positions_by_symbol["ALTUSDT"]
+        client_algo_id = position.structure_client_algo_id
+        asyncio.run(
+            manager.handle_intent(
+                intent(IntentAction.CLOSE_SHORT, "exit-before-reconcile"),
+                self.quote,
+            )
+        )
+        stale_time = max(
+            int(ledger.algo(client_algo_id)["updated_time"]),
+            int(time.time() * 1000),
+        )
+        ledger.update_algo_status(client_algo_id, "NEW", stale_time, {})
+
+        result = asyncio.run(manager.reconcile({
+            "positions": [],
+            "open_orders": [],
+            "open_algo_orders": [],
+        }))
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(ledger.algo(client_algo_id)["status"], "CLOSED_ABSENT")
+
     def test_explicit_exit_rejection_restores_open_position_and_halts(self) -> None:
         manager, gateway, ledger = self.manager()
         asyncio.run(manager.handle_intent(intent(), self.quote))
